@@ -470,7 +470,6 @@ class ExploreBusiness(generics.ListAPIView):
 
 
 class BusinessBanner(generics.ListAPIView):
-    # todo for every category
 
     permission_classes = [AllowAny]
     pagination_class = BusinessPagination

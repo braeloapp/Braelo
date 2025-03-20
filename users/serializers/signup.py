@@ -42,6 +42,7 @@ class EmailSignup(serializers.Serializer):
     email = serializers.EmailField(required=True)
     name = serializers.CharField(required=True)
     password = serializers.CharField(write_only=True, required=True)
+    role = serializers.BooleanField(required=False, default=False)
 
     class Meta:
         model = User
@@ -49,8 +50,14 @@ class EmailSignup(serializers.Serializer):
         extra_kwargs = {'password': {'write_only': True}}
 
     def validate(self, data):
+        admin_path = "/admin-panel/signup"
+        request = self.context['request']
         email = data.get('email')
         password = data.get('password')
+        if request.path == admin_path:
+            role = request.data.get('role')
+            if not role:
+                raise ValidationError({'role': 'Admin must add role.'})
         if not email:
             raise ValidationError({'email': 'Email is required.'})
         if not password:
@@ -66,6 +73,7 @@ class EmailSignup(serializers.Serializer):
         if validated_data:
             validated_data['created_at'] = timezone.now()
             validated_data['updated_at'] = timezone.now()
+            validated_data['is_staff'] = validated_data.get('role', False)
             validated_data['is_active'] = True
             validated_data['is_email_verified'] = True
             user = User.objects.create_user(**validated_data)

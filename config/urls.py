@@ -20,5 +20,6 @@ urlpatterns = [
     path('chats/', include('chats.urls')),
     path('listing/', include('listings.urls')),
     path('report/', include('feedbacks.urls')),
+    path('admin-panel/', include('admin_panel.urls')),
     path('notifications/', include('notifications.urls')),
 ]

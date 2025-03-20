@@ -54,7 +54,7 @@ class ListSynchronize:
             raise OperationError(f'flip_status: Operation error: {oe}')
 
     @staticmethod
-    def listsync(data, _id, update=False):
+    def listsync(data, _id, update=False, admin=False):
         '''
         Save listing doc to listsync collection.
         '''
@@ -102,14 +102,19 @@ class ListSynchronize:
             obj['salary_range'] = data['salary_range']
         try:
             if update:
+                obj.pop('user_id', None)
                 update_fields = {
                     f'set__{key}': value
                     for key, value in obj.items()
                     if value is not None
                 }
-                result = ListSync.objects(
-                    listing_id=str(_id), user_id=data['user_id']
-                ).modify(upsert=False, new=True, **update_fields)
+                query = {'listing_id': str(_id)}
+                if not admin:
+                    query['user_id'] = data['user_id']
+
+                result = ListSync.objects(**query).modify(
+                    upsert=False, new=True, **update_fields
+                )
 
                 if not result:
                     raise ValidationError(
@@ -121,6 +126,9 @@ class ListSynchronize:
                 result = list_sync_entry
 
             return result
+
+        except ValidationError as ve:
+            raise ve
 
         except Exception as e:
             raise ValidationError(

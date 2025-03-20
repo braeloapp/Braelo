@@ -141,6 +141,7 @@ INSTALLED_APPS = [
     'listings',
     'notifications',
     'fcm_django',
+    "admin_panel",
 ]
 
 AUTH_USER_MODEL = 'users.User'

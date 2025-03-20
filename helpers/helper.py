@@ -17,18 +17,26 @@ from django.core.files.uploadedfile import InMemoryUploadedFile
 
 def get_error_details(error_info):
     '''
-    gets Error message through exceptions.
-    :param error_info: exception error. (dict)
+    Gets error message through exceptions.
+    :param error_info: exception error. (dict or list)
     :return: error information. (string)
     '''
-    error_message = None
-    for key, errors in error_info.items():
-        if isinstance(errors, list):
-            error_message = str(errors[0]) if errors else 'Unknown error'
-            error_message = f'{key}: {error_message}'
-        else:
-            error_message = f'{key}: {str(errors)}'
-    return error_message
+
+    if isinstance(error_info, list):
+        return f'Error: {str(error_info[0])}' if error_info else 'Unknown error'
+
+    elif isinstance(error_info, dict):
+        for key, errors in error_info.items():
+            if isinstance(errors, list):
+                return (
+                    f'{key}: {str(errors[0])}'
+                    if errors
+                    else f'{key}: Unknown error'
+                )
+            else:
+                return f'{key}: {str(errors)}'
+
+    return 'Unknown error format'
 
 
 def response(status, message, data, error=None):

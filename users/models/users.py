@@ -113,6 +113,10 @@ class User(AbstractUser):
     city = models.CharField(max_length=15, null=True, blank=True)
     zip_code = models.CharField(max_length=15, null=True, blank=True)
 
+    # Admin Panel
+    is_warned = models.BooleanField(default=False)
+    is_banned = models.BooleanField(default=False)
+
     # New field for storing OTP
     otp = models.CharField(max_length=6, null=True, blank=True)
     otp_created_at = models.DateTimeField(auto_now=True)

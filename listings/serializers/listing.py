@@ -105,8 +105,19 @@ class Serializer(serializers.DocumentSerializer):
         Handle the update of listings and related fields.
         This method can be extended by child classes for custom logic.
         '''
+
+        admin_path = "/admin-panel"
         pictures = validated_data.pop('pictures', None)
         user = self.context['request'].user
+        admin = self.context['request'].path.startswith(admin_path) and (
+            user.is_staff or user.is_superuser
+        )
+        if instance.user_id != user.id:
+            if not admin:
+                raise ValidationError(
+                    {'Error': 'You cannot change someone else listings'}
+                )
+
         if pictures:
             # Delete already existed ones
             if instance.pictures:
@@ -126,6 +137,8 @@ class Serializer(serializers.DocumentSerializer):
             validated_data['pictures'] = s3_urls
 
         # Update other fields
+        user_id = validated_data.get('user_id')
+        validated_data.pop('user_id', None)
         for attr, value in validated_data.items():
             current_value = getattr(instance, attr, None)
             if current_value != value:
@@ -134,8 +147,12 @@ class Serializer(serializers.DocumentSerializer):
         # Update timestamps
         instance.updated_at = timezone.now()
         instance.save()
+        # Adding it back to send to listysync
+        validated_data['user_id'] = user_id
         # Update list sync collection
-        ListSynchronize.listsync(validated_data, instance.id, update=True)
+        ListSynchronize.listsync(
+            validated_data, instance.id, update=True, admin=admin
+        )
         return instance
 
     def validate(self, data):

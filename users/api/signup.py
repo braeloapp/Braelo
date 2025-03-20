@@ -44,7 +44,8 @@ class SignUpWithEmail(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
-        user = self.get_serializer(data=data)
+        admin_path = "/admin-panel/signup"
+        user = self.get_serializer(data=data, context={'request': request})
         user.is_valid(raise_exception=True)
         # add username to the validated data
         user.validated_data['username'] = user.validated_data['email']
@@ -52,6 +53,18 @@ class SignUpWithEmail(generics.CreateAPIView):
         if not user:
             # todo: needs better logic
             raise Exception('Cannot Add user to Database')
+        if request.path == admin_path:
+            admin_data = {
+                'email': user.email,
+                'name': user.name,
+                'created_at': user.created_at,
+            }
+            return response(
+                status=status.HTTP_201_CREATED,
+                message='User Signed Up',
+                data=admin_data,
+            )
+
         # Generate JWT token after user creation
         token = get_token(user)
         # Combine user data with token data
@@ -135,7 +148,12 @@ class LoginAuth(generics.CreateAPIView):
 
         user = User.objects.filter(email=email).first()
 
+        # if user exits then update provider id
         if user:
+            if user.is_banned:
+                raise ValidationError(
+                    {'User': 'Sorry, Your Account is Banned.'}
+                )
             existing_provider_id = getattr(user, f'{login_type}_id', None)
             if (
                 existing_provider_id is not None
@@ -155,6 +173,8 @@ class LoginAuth(generics.CreateAPIView):
                 'business_name': business.business_name if business else None,
                 'token': token,
                 'user_status': user.is_business,
+                'is_warned': user.is_warned,
+                'is_banned': user.is_banned,
             }
             return response_data
 
@@ -210,15 +230,22 @@ class LoginAuth(generics.CreateAPIView):
             # Check if the phone_number exists
             user = User.objects.filter(phone_number=phone_number).first()
             if user:
+                if user.is_banned:
+                    raise ValidationError(
+                        {'User': 'Sorry, Your Account is Banned.'}
+                    )
                 token = get_token(user)
                 business = Business.objects.filter(user_id=user.id).first()
                 data = {
                     'phone': user.phone_number,
+                    'name': user.name,
                     'business_name': (
                         business.business_name if business else None
                     ),
                     'token': token,
                     'user_status': user.is_business,
+                    'is_warned': user.is_warned,
+                    'is_banned': user.is_banned,
                 }
                 return response(
                     status=status.HTTP_200_OK,

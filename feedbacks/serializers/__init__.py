@@ -11,3 +11,4 @@ __init__ file.
 '''
 
 from feedbacks.serializers.feedbacks import *
+from feedbacks.serializers.report_user import ReportMessageSerializer

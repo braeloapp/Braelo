@@ -10,6 +10,7 @@ get notifications endpoints.
 ---------------------------------------------------
 '''
 
+from mongoengine.queryset import Q
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_mongoengine import generics
@@ -46,4 +47,8 @@ class FetchNotificationsAPI(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return Notification.objects.filter(user_id=user.id)
+        notifications = Notification.objects.filter(
+            Q(type='admin') | Q(user_id=user.id)
+        )
+
+        return notifications

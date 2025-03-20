@@ -17,6 +17,7 @@ from mongoengine.fields import (
     ListField,
     DateTimeField,
     EmailField,
+    BooleanField,
 )
 
 
@@ -24,8 +25,10 @@ class Requests(Document):
     user_id = IntField()
     email = EmailField(required=True)
     subject = StringField(required=True)
+    status = StringField(default='Active')
     description = StringField(required=True)
     attachments = ListField(required=False, default=None)
+    is_active = BooleanField(default=True)
     created_at = DateTimeField()
 
     meta = {

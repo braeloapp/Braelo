@@ -35,7 +35,7 @@ class LoginWithEmail(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
-        user = self.get_serializer(data=data)
+        user = self.get_serializer(data=data, context={'request': request})
         user.is_valid(raise_exception=True)
         user = user.validated_data
         token = get_token(user)
@@ -46,6 +46,8 @@ class LoginWithEmail(generics.CreateAPIView):
             'business_name': business.business_name if business else None,
             'token': token,
             'user_status': user.is_business,
+            'is_warned': user.is_warned,
+            'is_banned': user.is_banned,
         }
         return response(
             status=status.HTTP_200_OK,

@@ -68,6 +68,8 @@ class EmailLogin(serializers.Serializer):
     password = serializers.CharField(required=True)
 
     def validate(self, data):
+        request = self.context['request']
+        admin_path = "/admin-panel/login"
         email = data.get('email')
         password = data.get('password')
         # Check if the user with the provided email exists
@@ -76,6 +78,12 @@ class EmailLogin(serializers.Serializer):
             raise ValidationError(
                 {'email': 'No user found with this email address.'}
             )
+        if user.is_banned:
+            raise ValidationError({'User': 'Sorry, Your Account is Banned.'})
+        if request.path == admin_path and not (
+            user.is_staff or user.is_superuser
+        ):
+            raise ValidationError({'error': 'Access denied. Admins only.'})
         # Check if the provided password matches the stored password
         if not check_password(password, user.password):
             raise ValidationError({'password': 'Incorrect password.'})

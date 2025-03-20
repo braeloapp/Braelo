@@ -205,3 +205,81 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
             message='listing delete successfully',
             data={},
         )
+
+
+class DeleteListing(generics.RetrieveDestroyAPIView):
+    '''
+    Deletes a listing from category and listsync collection.
+    Admins can delete any listing, while regular users can only delete their own.
+    '''
+
+    permission_classes = [IsAuthenticated]
+
+    @handle_exceptions
+    def delete(self, request):
+        user = request.user
+        user_id = user.id
+        admin_path = "/admin-panel"
+        listing_id = request.data.get('listing_id')
+        category = request.data.get('category')
+
+        if not category or not listing_id:
+            raise ValidationError(
+                {
+                    'Parameters': 'Category and listing_id are required parameters.'
+                }
+            )
+
+        if category not in MODEL_MAP:
+            raise ValidationError(
+                {
+                    'category': f'Invalid category. Choose from {list(MODEL_MAP.keys())}.'
+                }
+            )
+
+        # Check if the user is an admin
+        admin = request.path.startswith(admin_path) and (
+            user.is_staff or user.is_superuser
+        )
+
+        listing = MODEL_MAP[category].objects.filter(id=listing_id).first()
+        if not listing:
+            return response(
+                status=status.HTTP_204_NO_CONTENT,
+                message='No listing found in category collection',
+                data={},
+            )
+
+        listing_owner_id = listing.user_id
+
+        # Admin can delete any listing; regular users can only delete their own
+        if not admin and listing_owner_id != user_id:
+            raise ValidationError(
+                {'Error': 'You cannot delete someone else listing'}
+            )
+
+        with transaction.atomic():
+            deleted_category_count = (
+                MODEL_MAP[category].objects.filter(id=listing_id).delete()
+            )
+            deleted_listsync_count = ListSync.objects.filter(
+                listing_id=listing_id
+            ).delete()
+
+            if deleted_category_count == 0 and deleted_listsync_count == 0:
+                return response(
+                    status=status.HTTP_204_NO_CONTENT,
+                    message='No listing found in either category or listsync collection',
+                    data={},
+                )
+
+            # Decrease the count for the original owner
+            User.objects.filter(id=listing_owner_id, is_business=False).update(
+                listings_count=F('listings_count') - 1
+            )
+
+        return response(
+            status=status.HTTP_200_OK,
+            message='Listing deleted successfully',
+            data={},
+        )
