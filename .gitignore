@@ -39,3 +39,5 @@ notifications/migrations/__pycache__/
 notifications/models/__pycache__/
 notifications/serializers/__pycache__/
  chats/__pycache__/
+ admin_panel/**/__pycache__/
+**/__pycache__/

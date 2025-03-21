@@ -1,0 +1,1 @@
+from admin_panel.serializers.users import UserSerializer
