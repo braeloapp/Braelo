@@ -6,14 +6,12 @@ from rest_framework.pagination import PageNumberPagination
 
 
 from users.models import User
-from feedbacks.models import Requests,ReportMessage
+from feedbacks.models import Requests, ReportMessage
 from feedbacks.serializers import RequestsSerializer
 from admin_panel.serializers import UserSerializer
 from notifications.models import Notification
 from notifications.serializers import NotificationSerializer
 from firebase_admin import messaging
-
-
 
 
 class Pagination(PageNumberPagination):
@@ -31,7 +29,8 @@ class Pagination(PageNumberPagination):
             status=status.HTTP_200_OK,
             message='Records fetched Successfully',
             data=paginated_data,
-        ) 
+        )
+
 
 class AllUsers(generics.ListAPIView):
 
@@ -39,7 +38,6 @@ class AllUsers(generics.ListAPIView):
     serializer_class = UserSerializer
     queryset = User.objects.all()
     pagination_class = Pagination
-
 
 
 class AllFeedback(generics.ListAPIView):
@@ -52,6 +50,7 @@ class AllFeedback(generics.ListAPIView):
     def get_queryset(self):
         return Requests.objects.filter(is_active=True)
 
+
 class AllNotifications(generics.ListAPIView):
 
     permission_classes = [IsAdminUser]
@@ -61,9 +60,9 @@ class AllNotifications(generics.ListAPIView):
 
 
 class ReportedUsers(generics.CreateAPIView):
-    
+
     permission_classes = [IsAdminUser]
-    
+
     @handle_exceptions
     def post(self, request):
         report_id = request.data.get("report_id")
@@ -76,23 +75,33 @@ class ReportedUsers(generics.CreateAPIView):
         if not user_id:
             raise ValidationError({"Error": "user_id is required"})
         if action_type not in ("warn", "ban", "ignore"):
-            raise ValidationError({"Error": 'action_type must be {"warn", "ban", "ignore"}'})
+            raise ValidationError(
+                {"Error": 'action_type must be {"warn", "ban", "ignore"}'}
+            )
 
         # Fetch user and report
         user = User.objects.filter(id=user_id).first()
         if not user:
             raise ValidationError({"Error": "User not found"})
 
-        report = ReportMessage.objects.filter(id=report_id, is_active=True).first()
+        report = ReportMessage.objects.filter(
+            id=report_id, is_active=True
+        ).first()
         if not report:
             raise ValidationError({"Error": "No Report Found"})
-        
-        if action_type == "warn":
-           user.is_warned = True
-           if user.is_warned:  # If already warned, ban the user
-             user.is_banned = True
 
-           user.save(update_fields=["is_warned", "is_banned"] if user.is_banned else ["is_warned"])
+        if action_type == "warn":
+            user.is_warned = True
+            if user.is_warned:  # If already warned, ban the user
+                user.is_banned = True
+
+            user.save(
+                update_fields=(
+                    ["is_warned", "is_banned"]
+                    if user.is_banned
+                    else ["is_warned"]
+                )
+            )
 
         elif action_type == "ban":
             user.is_banned = True
@@ -106,42 +115,36 @@ class ReportedUsers(generics.CreateAPIView):
             status=status.HTTP_200_OK,
             message='Case Solved',
             data={},
-        ) 
-        
+        )
 
 
 class SendAdminNotification(generics.CreateAPIView):
-  
-  permission_classes = [IsAdminUser]
-    
-  def post(self, request):
 
-    data = request.data
-    user_id = request.user.id
-    title = data.get('title')
-    body = data.get('body')
-    message = messaging.Message(
-        notification=messaging.Notification(
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+
+        data = request.data
+        user_id = request.user.id
+        title = data.get('title')
+        body = data.get('body')
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            topic='Braelo',
+        )
+        messaging.send(message)
+        Notification.objects.create(
+            user_id=[user_id],
             title=title,
-            body=body
-        ),
-        topic='Braelo'
-    )
-    messaging.send(message)
-    Notification.objects.create(
-        user_id=[user_id],
-        title=title,
-        body=body,
-        type='admin',
-        data={
-            'message':'this is admin',
-        }
-    )
+            body=body,
+            type='admin',
+            data={
+                'message': 'this is admin',
+            },
+        )
 
-    return response(
-        status=status.HTTP_200_OK,
-        message='Notification Sent To All Users',
-        data={}
-    )
-    
-
+        return response(
+            status=status.HTTP_200_OK,
+            message='Notification Sent To All Users',
+            data={},
+        )

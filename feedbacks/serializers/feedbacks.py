@@ -62,4 +62,14 @@ class FeedbacksSerializer(serializers.DocumentSerializer):
         return data
 
     def create(self, validated_data):
+        user = self.context['request'].user
+        feedback_instance = Feedbacks.objects.filter(user_id=user.id).first()
+
+        # Update if already exists
+        if feedback_instance:
+            for key, value in validated_data.items():
+                setattr(feedback_instance, key, value)
+            feedback_instance.save()
+            return feedback_instance
+
         return Feedbacks.objects.create(**validated_data)

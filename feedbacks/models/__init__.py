@@ -10,6 +10,6 @@ __init__ file.
 ---------------------------------------------------
 '''
 
-from feedbacks.models.requests import Requests
-from feedbacks.models.feedbacks import Feedbacks
-from feedbacks.models.report_user import ReportMessage
+from .requests import Requests
+from .feedbacks import Feedbacks
+from .report_user import ReportMessage
