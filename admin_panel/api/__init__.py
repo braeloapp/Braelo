@@ -1,1 +1,1 @@
-from admin_panel.api.users import AllUsers,AllFeedback,SendAdminNotification
+from admin_panel.api.admin import AllUsers, AllFeedback, SendAdminNotification

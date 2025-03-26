@@ -1,3 +1,15 @@
+'''
+---------------------------------------------------
+Project:        Braelo
+Date:           March 20, 2025
+Author:         Faizan
+---------------------------------------------------
+
+Description:
+API classes for admin_panel.
+---------------------------------------------------
+'''
+
 from rest_framework import generics, status
 from helpers import response, handle_exceptions
 from rest_framework.exceptions import ValidationError
@@ -12,6 +24,8 @@ from admin_panel.serializers import UserSerializer
 from notifications.models import Notification
 from notifications.serializers import NotificationSerializer
 from firebase_admin import messaging
+from feedbacks.serializers.report_user import ReportMessageSerializer
+from admin_panel.serializers import BusinessBannerSerializer
 
 
 class Pagination(PageNumberPagination):
@@ -25,6 +39,38 @@ class Pagination(PageNumberPagination):
 
     def get_paginated_response(self, data):
         paginated_data = super().get_paginated_response(data).data
+        return response(
+            status=status.HTTP_200_OK,
+            message='Records fetched Successfully',
+            data=paginated_data,
+        )
+
+
+class PaginateReportedUsers(PageNumberPagination):
+    '''
+    Listing pagination configurations.
+    '''
+
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
+    def get_paginated_response(self, data):
+        paginated_data = super().get_paginated_response(data).data
+        paginate_results = paginated_data.get('results')
+
+        for record in paginate_results:
+            user = User.objects.filter(
+                id=str(record.get('reported_to'))
+            ).first()
+            record['reported_to_user'] = user.name
+            user = User.objects.filter(
+                id=str(record.get('reported_by'))
+            ).first()
+            record['reported_by_user'] = user.name
+
+        paginated_data['results'] = paginate_results
+
         return response(
             status=status.HTTP_200_OK,
             message='Records fetched Successfully',
@@ -59,9 +105,15 @@ class AllNotifications(generics.ListAPIView):
     serializer_class = NotificationSerializer
 
 
-class ReportedUsers(generics.CreateAPIView):
+class ReportedUsers(generics.ListCreateAPIView):
 
     permission_classes = [IsAdminUser]
+    pagination_class = PaginateReportedUsers
+    serializer_class = ReportMessageSerializer
+    queryset = ReportMessage.objects.all()
+
+    def get_queryset(self):
+        return ReportMessage.objects.filter(is_active=True)
 
     @handle_exceptions
     def post(self, request):
@@ -128,12 +180,8 @@ class SendAdminNotification(generics.CreateAPIView):
         user_id = request.user.id
         title = data.get('title')
         body = data.get('body')
-        message = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            topic='Braelo',
-        )
-        messaging.send(message)
-        Notification.objects.create(
+
+        notification = Notification.objects.create(
             user_id=[user_id],
             title=title,
             body=body,
@@ -142,9 +190,34 @@ class SendAdminNotification(generics.CreateAPIView):
                 'message': 'this is admin',
             },
         )
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            topic='Braelo',
+            data={'notification_id': str(notification.id)},
+        )
+        messaging.send(message)
 
         return response(
             status=status.HTTP_200_OK,
             message='Notification Sent To All Users',
+            data={},
+        )
+
+
+class AdminBanner(generics.CreateAPIView):
+
+    permission_classes = [IsAdminUser]
+    serializer_class = BusinessBannerSerializer
+
+    def post(self, request):
+
+        data = request.data
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return response(
+            status=status.HTTP_201_CREATED,
+            message='Banner Created Succesfully',
             data={},
         )

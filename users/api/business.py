@@ -12,7 +12,7 @@ Fetch Business  endpoints.
 
 import json
 from io import BytesIO
-
+from mongoengine import Q
 from rest_framework import status
 from mongoengine.errors import DoesNotExist
 from rest_framework_mongoengine import generics
@@ -32,11 +32,12 @@ from helpers import response, handle_exceptions
 from listings.serializers import ListsyncSerializer
 from listings.api.paginate_listing import Pagination
 from helpers.notifications import BUSSINESS_EVENT_DATA
-from users.serializers.business import BusinessSerailizer
+from users.serializers.business import BusinessSerailizer, BannerSearilizer
 from rest_framework.pagination import PageNumberPagination
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from listings.api.fetch_listings import get_user_recommendations
 from notifications.serializers.events import EventNotificationSerializer
+from admin_panel.models import AdminBusinessBanner
 
 
 blob_service_client = BlobServiceClient.from_connection_string(
@@ -473,18 +474,36 @@ class BusinessBanner(generics.ListAPIView):
 
     permission_classes = [AllowAny]
     pagination_class = BusinessPagination
-    serializer_class = BusinessSerailizer
+    serializer_class = BannerSearilizer
 
     def get_queryset(self):
         user_id = self.request.user.id
         category = self.request.GET.get('category')
         try:
             if category and category in CATEGORIES:
-                return Business.objects.filter(business_category=category)
+                business_banners = list(
+                    Business.objects.filter(business_category=category)
+                )
+                admin_banners = list(
+                    AdminBusinessBanner.objects.filter(
+                        business_category=category
+                    )
+                )
+                return business_banners + admin_banners
+
             interests = get_user_recommendations(user_id)
             if not interests:
-                return Business.objects.all()
-            queryset = Business.objects.filter(business_category=interests)
+                business_banners = list(Business.objects.all())
+                admin_banners = list(AdminBusinessBanner.objects.all())
+                return business_banners + admin_banners
+
+            business_banners = list(
+                Business.objects.filter(business_category=interests)
+            )
+            admin_banners = list(
+                AdminBusinessBanner.objects.filter(business_category=interests)
+            )
+            queryset = admin_banners + business_banners
         except Exception as exc:
             raise ValidationError({'Business': str(exc)})
         return queryset

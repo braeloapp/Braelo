@@ -152,63 +152,6 @@ class FlipListingStatus(generics.CreateAPIView):
 
 class DeleteListing(generics.RetrieveDestroyAPIView):
     '''
-    deletes a listing from category and listsync collection
-    '''
-
-    permission_classes = [IsAuthenticated]
-
-    @handle_exceptions
-    def delete(self, request):
-        user_id = request.user.id
-        listing_id = request.data.get('listing_id')
-        category = request.data.get('category')
-        if not category or not listing_id:
-            raise ValidationError(
-                {
-                    'Parameters': 'Category and listing_id are required parameters.'
-                }
-            )
-        if category not in MODEL_MAP:
-            raise ValidationError(
-                {
-                    'category': f'Invalid category. Choose from {list(MODEL_MAP.keys())}.'
-                }
-            )
-        with transaction.atomic():
-            deleted_category_count = (
-                MODEL_MAP[category]
-                .objects.filter(user_id=user_id, id=listing_id)
-                .delete()
-            )
-            if deleted_category_count == 0:
-                return response(
-                    status=status.HTTP_204_NO_CONTENT,
-                    message='No listing Found in category collection',
-                    data={},
-                )
-
-            deleted_listsync_count = ListSync.objects.filter(
-                user_id=user_id, listing_id=listing_id
-            ).delete()
-            if deleted_listsync_count == 0:
-                return response(
-                    status=status.HTTP_204_NO_CONTENT,
-                    message='No listing Found in listsync collection',
-                    data={},
-                )
-            User.objects.filter(id=user_id, is_business=False).update(
-                listings_count=F('listings_count') - 1
-            )
-
-        return response(
-            status=status.HTTP_200_OK,
-            message='listing delete successfully',
-            data={},
-        )
-
-
-class DeleteListing(generics.RetrieveDestroyAPIView):
-    '''
     Deletes a listing from category and listsync collection.
     Admins can delete any listing, while regular users can only delete their own.
     '''

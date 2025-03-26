@@ -10,7 +10,6 @@ Fetch Business Serializers.
 ---------------------------------------------------
 '''
 
-import json
 import uuid
 from django.utils import timezone
 from azure.storage.blob import BlobServiceClient
@@ -18,7 +17,7 @@ from rest_framework.exceptions import ValidationError
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from django.core.files.uploadedfile import InMemoryUploadedFile
 
-
+from rest_framework import serializers as SQL_serializer
 import phonenumbers
 from rest_framework_mongoengine import serializers
 from django.core.validators import validate_email
@@ -74,7 +73,7 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         '''
         s3_urls = []
         for picture in pictures:
-            unique_name = f"{uuid.uuid4()}_{picture.name}"
+            unique_name = f'{uuid.uuid4()}_{picture.name}'
             file_name = (
                 f'business_listings/{business_type}/{user.id}/{unique_name}'
             )
@@ -242,3 +241,13 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         data['is_active'] = True
 
         return data
+
+
+class BannerSearilizer(SQL_serializer.Serializer):
+
+    user_id = SQL_serializer.IntegerField(required=True)
+    business_email = SQL_serializer.CharField(required=True)
+    business_name = SQL_serializer.CharField(required=True)
+    business_banner = SQL_serializer.ListField(required=True)
+    business_category = SQL_serializer.CharField(required=True)
+    business_subcategory = SQL_serializer.CharField(required=True)

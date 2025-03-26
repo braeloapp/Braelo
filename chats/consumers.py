@@ -14,8 +14,11 @@ import json
 from asgiref.sync import async_to_sync
 from channels.exceptions import DenyConnection
 from channels.generic.websocket import WebsocketConsumer
+from channels.exceptions import StopConsumer
+from channels.layers import get_channel_layer
 from django.utils import timezone
 from mongoengine import DoesNotExist
+import redis.exceptions
 from .models import *
 
 
@@ -36,40 +39,49 @@ class ChatroomConsumer(WebsocketConsumer):
         '''
         WebSocket connect handler.
         '''
-        if not self.scope['user'].is_authenticated:
-            raise DenyConnection('Invalid or expired token.')
-
-        self.user_id = str(self.scope['user'].id)
-        # Assuming `user` is authenticated
-        self.chat_id = self.scope['url_route']['kwargs']['chat_id']
-        query_params = self.scope['query_string'].decode('utf-8')
-        params = dict(param.split('=') for param in query_params.split('&'))
-        self.second_user_id = params.get('user_id')
-        self.chat_type = 'private'
-
-        # second user id is important
-        if not self.second_user_id:
-            self.close()
-            return
-
         try:
-            self.chatroom = Chat.objects.get(
-                chat_id=self.chat_id,
-                participants__all=[self.user_id, self.second_user_id],
-                participants__size=2,
+            if not self.scope['user'].is_authenticated:
+                raise DenyConnection('Invalid or expired token.')
+
+            self.user_id = str(self.scope['user'].id)
+            self.chat_id = self.scope['url_route']['kwargs']['chat_id']
+            self.channel_layer = (
+                self.channel_layer or get_channel_layer()
+            )  # Ensure it's not None
+
+            if self.channel_layer is None:
+                self.close()
+                return  # Exit early if channel_layer is still None
+            query_params = self.scope['query_string'].decode('utf-8')
+            params = dict(param.split('=') for param in query_params.split('&'))
+            self.second_user_id = params.get('user_id')
+            self.chat_type = 'private'
+
+            if not self.second_user_id:
+                self.close()
+                return
+
+            try:
+                self.chatroom = Chat.objects.get(
+                    chat_id=self.chat_id,
+                    participants__all=[self.user_id, self.second_user_id],
+                    participants__size=2,
+                )
+            except Chat.DoesNotExist:
+                raise DenyConnection('Chat matching query does not exist.')
+
+            if len(self.chatroom.participants) > 2:
+                self.chat_type = 'group'
+
+            # Add user to the Redis group
+            async_to_sync(self.channel_layer.group_add)(
+                self.chat_id, self.channel_name
             )
-        except DoesNotExist:
-            raise DenyConnection('Chat matching query does not exist.')
+            self.accept()
 
-        # Determine chat type
-        if len(self.chatroom.participants) > 2:
-            self.chat_type = 'group'
-
-        # Add user to the Redis group
-        async_to_sync(self.channel_layer.group_add)(
-            self.chat_id, self.channel_name
-        )
-        self.accept()
+        except redis.exceptions.ConnectionError:
+            self.send(json.dumps({"error": "Can't connect to Redis"}))
+            raise StopConsumer()  # Gracefully stop without crashing
 
     def receive(self, text_data):
         '''
@@ -130,3 +142,4 @@ class ChatroomConsumer(WebsocketConsumer):
         async_to_sync(self.channel_layer.group_discard)(
             self.chat_id, self.channel_name
         )
+        raise StopConsumer()

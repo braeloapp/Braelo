@@ -18,7 +18,6 @@ from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 
-from users.api import User
 from helpers import ListSync
 from listings.api import MODEL_MAP
 from listings.api.paginate_listing import Pagination

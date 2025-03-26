@@ -29,6 +29,7 @@ class SavedItem(Document):
     subcategory = StringField(required=True)
     title = StringField(required=True)
     price = DecimalField(required=True)
+    location = StringField(required=True)
     pictures = ListField(required=True)
     saved_at = DateTimeField(required=False)
 
