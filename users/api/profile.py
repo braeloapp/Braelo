@@ -10,6 +10,7 @@ Update profile api.
 ---------------------------------------------------
 '''
 
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -19,7 +20,6 @@ from users.models import User
 from users.serializers import (
     UpdateProfileSerializer,
     UserProfileSerializer,
-    DeactivateUserSerializer,
 )
 from helpers import handle_exceptions, response, ListSync
 from users.models.business import Business
@@ -130,22 +130,38 @@ class PublicProfile(generics.CreateAPIView):
 
 class DeactivateUser(generics.CreateAPIView):
 
-    serializer_class = DeactivateUserSerializer
     permission_classes = [IsAuthenticated]
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):
         '''
-        Handle the Profile inactive mechanism.
+        Handle the profile deactivation mechanism, either for admin or non-admin.
         '''
-        context = {'request': request}
-        serializer = self.get_serializer(data=request.data, context=context)
-        serializer.is_valid(raise_exception=True)
-        updated_data = serializer.save()
+        admin_path = '/admin-panel/user/deactivate'
+
+        if request.path.startswith(admin_path):
+            user_id = request.data.get('user_id')
+            if not user_id:
+                raise ValidationError({'error': 'user_id is missing'})
+            user = User.objects.filter(id=user_id).first()
+            if not user:
+                raise ValidationError({'error': 'user not found'})
+        else:
+            user = self.request.user
+
+        if not user.is_active:
+            raise ValidationError(
+                {'user': 'This profile is already deactivated.'}
+            )
+
+        user.is_active = False
+        user.updated_at = timezone.now()
+        user.save()
+
         return response(
             status=status.HTTP_200_OK,
-            message='Profile deleted successfully',
-            data=updated_data,
+            message='Profile deactivated successfully',
+            data={},
         )
 
 

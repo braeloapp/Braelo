@@ -26,5 +26,4 @@ from users.serializers.profile import (
     InterestSerializer,
     UpdateProfileSerializer,
     UserProfileSerializer,
-    DeactivateUserSerializer,
 )

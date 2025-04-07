@@ -246,8 +246,16 @@ class DeactivateBusiness(generics.CreateAPIView):
         :return: Deactivation Message. (json)
         '''
         try:
-            user = request.user
-            user_id = user.id
+            admin_path = '/admin-panel/'
+            if request.path.startswith(admin_path):
+                user_id = request.data.get('user_id')
+                if not user_id:
+                    raise ValidationError(
+                        {'field': 'user_id is required for admin path'}
+                    )
+            else:
+                user = request.user
+                user_id = user.id
 
             if not user.is_business:
                 raise ValidationError({'user': 'User Must be business'})
@@ -302,7 +310,7 @@ class UpdateBusiness(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = BusinessSerailizer
 
-    @handle_exceptions
+    @handle_exceptions  
     def post(self, request, *args, **kwargs):
         '''
         PUT method to update a listing.
@@ -340,7 +348,13 @@ class UpdateBusiness(generics.UpdateAPIView):
         '''
         Override to fetch an object using a MongoDB ObjectId.
         '''
-        user_id = self.request.user.id
+        admin_path = '/admin-panel/business/update'
+        if self.request.path.startswith(admin_path):
+            user_id = self.request.data.get('user_id')
+            if not user_id:
+                raise ValidationError({'Admin': 'Must provide user_id'})
+        else:
+            user_id = self.request.user.id
         try:
             return Business.objects.get(user_id=user_id)
         except DoesNotExist:

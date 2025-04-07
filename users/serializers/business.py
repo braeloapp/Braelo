@@ -17,6 +17,8 @@ from rest_framework.exceptions import ValidationError
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from django.core.files.uploadedfile import InMemoryUploadedFile
 
+
+from users.models import User
 from rest_framework import serializers as SQL_serializer
 import phonenumbers
 from rest_framework_mongoengine import serializers
@@ -180,8 +182,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         return instance
 
     def validate(self, data):
-        user = self.context['request'].user
-        data['user_id'] = user.id
+
+        request = self.context['request']
+        admin_path = '/admin-panel/business/update'
         business_email = data.get('business_email')
         business_number = data.get('business_number')
         business_category = data.get('business_category')
@@ -190,6 +193,20 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         business_banner = data.get('business_banner', [])
         business_images = data.get('business_images', [])
         business_coordinates = data.get('business_coordinates')
+        # if admin is updating, find the original user
+        if request.path.startswith(admin_path):
+            fetch_user = User.objects.filter(id=self.instance.user_id).first()
+
+            if not fetch_user:
+                raise ValidationError(
+                    {'error': 'User not found for the given business'}
+                )
+            # update the user_id and user by finding the original user if admin is updating
+            data['user_id'] = fetch_user.id
+            self.context['request'].user = fetch_user
+        else:
+            user = self.context['request'].user
+            data['user_id'] = user.id
 
         # validation checks for various fields of business
         if business_category not in CATEGORIES:
@@ -235,6 +252,35 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         validate_image(business_logo, 'Logo')
         validate_image(business_images, 'Images')
         validate_image(business_banner, 'Banner')
+
+        # if admin is updating then we will check email & phone availability
+        if request.path.startswith(admin_path):
+            current_business = self.instance
+            if current_business.business_email != business_email:
+                if Business.objects.filter(
+                    business_email=business_email, id__ne=current_business.id
+                ).first():
+                    raise ValidationError(
+                        {'error': 'business email already exists'}
+                    )
+            if current_business.business_number != business_number:
+                if Business.objects.filter(
+                    business_number=business_number, id__ne=current_business.id
+                ).first():
+                    raise ValidationError(
+                        {'error': 'business number already exists'}
+                    )
+        else:
+            # if a new business is being created, email & phone availablity will be checked
+            if Business.objects.filter(business_email=business_email).first():
+                raise ValidationError(
+                    {'error': 'business email already exists'}
+                )
+
+            if Business.objects.filter(business_number=business_number).first():
+                raise ValidationError(
+                    {'error': 'business number already exists'}
+                )
 
         data['created_at'] = timezone.now()
         data['updated_at'] = timezone.now()

@@ -13,7 +13,6 @@ from mongoengine import DoesNotExist
 from rest_framework import serializers
 from rest_framework.serializers import ValidationError
 
-from django.utils import timezone
 from helpers import INTERESTS
 from users.models import Interest, User
 
@@ -79,6 +78,7 @@ class InterestSerializer(serializers.Serializer):
 
 
 class UpdateProfileSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(required=False)
     name = serializers.CharField(required=True)
     first_name = serializers.CharField(required=False)
     last_name = serializers.CharField(required=False)
@@ -97,7 +97,18 @@ class UpdateProfileSerializer(serializers.Serializer):
         '''
         Verify the provided email exists.
         '''
-        user = self.context['request'].user
+        admin_path = '/admin-panel/user/update'
+        if self.context['request'].path.startswith(admin_path):
+            user_id = data.get('user_id')
+            if not user_id:
+                raise ValidationError({'Field': 'Admin must provide user_id'})
+            user = User.objects.filter(id=user_id).first()
+            if not user:
+                raise ValidationError({'error': 'user not found'})
+            self.context['request'].user = user
+        else:
+            user = self.context['request'].user
+
         email = data.get('email')
         phone = data.get('phone')
         name = data.get('name')
@@ -229,26 +240,3 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'city',
             'zip_code',
         ]
-
-
-class DeactivateUserSerializer(serializers.Serializer):
-
-    def validate(self, data):
-        # Check if the user is already inactive.
-        user = self.context['request'].user
-        # Mark as inactive and add an update timestamp.
-        if not user.is_active:
-            raise ValidationError(
-                {'user': 'This profile is already deactivated.'}
-            )
-        data['is_active'] = False
-        data['updated_at'] = timezone.now()
-        return data
-
-    def save(self, **kwargs):
-        # Deactivate the user and update the timestamp.
-        user = self.context['request'].user
-        user.is_active = False
-        user.updated_at = self.validated_data['updated_at']
-        user.save()
-        return {'user_id': user.id, 'is_active': user.is_active}

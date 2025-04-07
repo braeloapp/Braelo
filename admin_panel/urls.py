@@ -11,7 +11,8 @@ admin_panel endpoints.
 '''
 
 from django.urls import path
-from users.api.login import LoginWithEmail
+from users.api import DeactivateUser, LoginWithEmail, UpdateProfile
+
 
 from admin_panel.api.admin import (
     AllUsers,
@@ -21,7 +22,11 @@ from admin_panel.api.admin import (
     SendAdminNotification,
     AdminBanner,
 )
-from users.api.business import FetchBusinesses
+from users.api.business import (
+    FetchBusinesses,
+    DeactivateBusiness,
+    UpdateBusiness,
+)
 from users.api.signup import SignUpWithEmail
 from listings.api.update_listing import (
     RealEstateUpdateAPI,
@@ -42,6 +47,10 @@ from listings.api.saved_listing import DeleteListing
 urlpatterns = [
     # All users fetch to admin
     path('users', AllUsers.as_view(), name='all-users'),
+    # Deactivate a user
+    path('user/deactivate', DeactivateUser.as_view(), name='deactivate-user'),
+    # Update User
+    path('user/update', UpdateProfile.as_view(), name='update-user'),
     # Report an issue to admin
     path('support', AllFeedback.as_view(), name='support'),
     # Action taken by admin, and get method for getting all reports
@@ -58,6 +67,14 @@ urlpatterns = [
     path('delete', DeleteListing.as_view(), name='delete-listings'),
     # admin adding banner
     path('banner', AdminBanner.as_view(), name='admin-adding-banner'),
+    # Delete a business
+    path(
+        'business/deactivate',
+        DeactivateBusiness.as_view(),
+        name='business-deactivate',
+    ),
+    # Update a business
+    path('business/update', UpdateBusiness.as_view(), name='update-business'),
     # Send Admin notification
     path(
         'notification/send',
