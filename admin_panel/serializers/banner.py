@@ -99,8 +99,46 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         data['user_id'] = business.user_id
         data['business_banner'] = s3_logo_url
         data['created_at'] = timezone.now()
+        data['updated_at'] = timezone.now()
 
         return data
 
     def create(self, validated_data):
         return AdminBusinessBanner.objects.create(**validated_data)
+
+    @staticmethod
+    def banner_save(data):
+        try:
+            required_fields = [
+                'user_id',
+                'business_email',
+                'business_name',
+                'business_banner',
+                'business_category',
+                'business_subcategory',
+                'created_at',
+            ]
+            missing_fields = [
+                field for field in required_fields if field not in data
+            ]
+
+            if missing_fields:
+                raise ValidationError(
+                    f'Missing required fields: {", ".join(missing_fields)}'
+                )
+            obj = {
+                'user_id': data['user_id'],
+                'business_name': data['business_name'],
+                'business_email': data['business_email'],
+                'business_banner': data['business_banner'],
+                'business_category': data['business_category'],
+                'business_subcategory': data['business_subcategory'],
+                'created_at': data['created_at'],
+            }
+            AdminBusinessBanner.objects.create(**obj)
+
+        except ValidationError as ve:
+            raise ve
+
+        except Exception as e:
+            raise ValidationError(f'Failed to save Banner :  {e}')

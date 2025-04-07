@@ -202,7 +202,7 @@ class Serializer(serializers.DocumentSerializer):
                 }
             )
         if data['from_business'] not in (True, False):
-            raise ValidationError({'is_business': 'Must be ("True","False")'})
+            raise ValidationError({'from_business': 'Must be ("True","False")'})
         if data['from_business']:
             if not Business.objects.filter(user_id=user.id).first():
                 raise ValidationError({'Error': 'Create Business First'})

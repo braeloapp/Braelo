@@ -310,7 +310,7 @@ class UpdateBusiness(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = BusinessSerailizer
 
-    @handle_exceptions  
+    @handle_exceptions
     def post(self, request, *args, **kwargs):
         '''
         PUT method to update a listing.
@@ -495,29 +495,15 @@ class BusinessBanner(generics.ListAPIView):
         category = self.request.GET.get('category')
         try:
             if category and category in CATEGORIES:
-                business_banners = list(
-                    Business.objects.filter(business_category=category)
+                return AdminBusinessBanner.objects.filter(
+                    business_category=category
                 )
-                admin_banners = list(
-                    AdminBusinessBanner.objects.filter(
-                        business_category=category
-                    )
-                )
-                return business_banners + admin_banners
-
             interests = get_user_recommendations(user_id)
             if not interests:
-                business_banners = list(Business.objects.all())
-                admin_banners = list(AdminBusinessBanner.objects.all())
-                return business_banners + admin_banners
-
-            business_banners = list(
-                Business.objects.filter(business_category=interests)
+                return AdminBusinessBanner.objects.all()
+            queryset = AdminBusinessBanner.objects.filter(
+                business_category=interests
             )
-            admin_banners = list(
-                AdminBusinessBanner.objects.filter(business_category=interests)
-            )
-            queryset = admin_banners + business_banners
         except Exception as exc:
             raise ValidationError({'Business': str(exc)})
         return queryset

@@ -11,6 +11,7 @@ Fetch Business Serializers.
 '''
 
 import uuid
+from django.db import transaction
 from django.utils import timezone
 from azure.storage.blob import BlobServiceClient
 from rest_framework.exceptions import ValidationError
@@ -19,12 +20,14 @@ from django.core.files.uploadedfile import InMemoryUploadedFile
 
 
 from users.models import User
+from admin_panel.models import AdminBusinessBanner
 from rest_framework import serializers as SQL_serializer
 import phonenumbers
 from rest_framework_mongoengine import serializers
 from django.core.validators import validate_email
 from users.models.business import Business
 from helpers.constants import CATEGORIES
+from admin_panel.serializers import BusinessBannerSerializer
 
 
 blob_service_client = BlobServiceClient.from_connection_string(
@@ -67,6 +70,13 @@ class BusinessSerailizer(serializers.DocumentSerializer):
     class Meta:
         model = Business
         fields = '__all__'
+
+    def check_duplicate(self, field, value, exclude_id=None, error_msg=None):
+        queryset = Business.objects.filter(**{field: value})
+        if exclude_id:
+            queryset = queryset.exclude(id=exclude_id)
+        if queryset.first():
+            raise ValidationError({'error': error_msg})
 
     def upload_pictures(self, pictures, business_type, user):
         '''
@@ -134,7 +144,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         validated_data['business_images'] = s3_image_urls
         validated_data['business_banner'] = s3_banner_urls
 
-        listing = Business.objects.create(**validated_data)
+        with transaction.atomic():
+            listing = Business.objects.create(**validated_data)
+            BusinessBannerSerializer.banner_save(validated_data)
         # updating fields so normal user can become business user
         user.is_business = True
         user.previous_business = True
@@ -170,15 +182,25 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             user,
         )
 
-        # Update other fields
+        # Update other fields & Banner model as well
+        banner_instance = AdminBusinessBanner.objects.filter(
+            user_id=instance.user_id
+        ).first()
         for attr, value in validated_data.items():
             current_value = getattr(instance, attr, None)
             if current_value != value:
                 setattr(instance, attr, value)
 
+            if banner_instance and hasattr(banner_instance, attr):
+                second_model_value = getattr(banner_instance, attr)
+                if second_model_value != value:
+                    setattr(banner_instance, attr, value)
+
         # Update timestamps
         instance.updated_at = timezone.now()
         instance.save()
+        banner_instance.updated_at = timezone.now()
+        banner_instance.save()
         return instance
 
     def validate(self, data):
@@ -257,29 +279,45 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         if request.path.startswith(admin_path):
             current_business = self.instance
             if current_business.business_email != business_email:
-                if Business.objects.filter(
-                    business_email=business_email, id__ne=current_business.id
-                ).first():
-                    raise ValidationError(
-                        {'error': 'business email already exists'}
-                    )
-            if current_business.business_number != business_number:
-                if Business.objects.filter(
-                    business_number=business_number, id__ne=current_business.id
-                ).first():
-                    raise ValidationError(
-                        {'error': 'business number already exists'}
-                    )
-        else:
-            # if a new business is being created, email & phone availablity will be checked
-            if Business.objects.filter(business_email=business_email).first():
-                raise ValidationError(
-                    {'error': 'business email already exists'}
+                self.check_duplicate(
+                    'business_email',
+                    business_email,
+                    exclude_id=current_business.id,
+                    error_msg='business email already exists',
                 )
-
-            if Business.objects.filter(business_number=business_number).first():
-                raise ValidationError(
-                    {'error': 'business number already exists'}
+            if current_business.business_number != business_number:
+                self.check_duplicate(
+                    'business_number',
+                    business_number,
+                    exclude_id=current_business.id,
+                    error_msg='business number already exists',
+                )
+        else:
+            # If updating an existing business
+            if self.instance:
+                if self.instance.business_email != business_email:
+                    self.check_duplicate(
+                        'business_email',
+                        business_email,
+                        error_msg='business email already exists',
+                    )
+                if self.instance.business_number != business_number:
+                    self.check_duplicate(
+                        'business_number',
+                        business_number,
+                        error_msg='business number already exists',
+                    )
+            else:
+                # Creating a new business
+                self.check_duplicate(
+                    'business_email',
+                    business_email,
+                    error_msg='business email already exists',
+                )
+                self.check_duplicate(
+                    'business_number',
+                    business_number,
+                    error_msg='business number already exists',
                 )
 
         data['created_at'] = timezone.now()
