@@ -12,7 +12,6 @@ Fetch Business  endpoints.
 
 import json
 from io import BytesIO
-from mongoengine import Q
 from rest_framework import status
 from mongoengine.errors import DoesNotExist
 from rest_framework_mongoengine import generics
@@ -26,6 +25,7 @@ from rest_framework.permissions import (
 
 import qrcode
 from helpers import ListSync
+from users.models import User
 from helpers.constants import CATEGORIES
 from users.models.business import Business
 from helpers import response, handle_exceptions
@@ -253,28 +253,29 @@ class DeactivateBusiness(generics.CreateAPIView):
                     raise ValidationError(
                         {'field': 'user_id is required for admin path'}
                     )
+                user = User.objects.filter(id=user_id).first()
             else:
                 user = request.user
                 user_id = user.id
+                if not user.is_business:
+                    raise ValidationError(
+                        {'user': 'User must be business_user'}
+                    )
 
-            if not user.is_business:
-                raise ValidationError({'user': 'User Must be business'})
-            business_status = Business.objects.get(user_id=user_id)
-            if not business_status.is_active:
-                raise ValidationError(
-                    {'Business': 'business is already deactivated'}
-                )
-            business_status.is_active = False
+            business = Business.objects.get(user_id=user_id, is_active=True)
+            business.is_active = False
             user.is_business = False
-            user.save()
-            business_status.save()
+            user.save(update_fields=['is_business'])
+            business.save(update_fields=['is_active'])
             return response(
                 status=status.HTTP_204_NO_CONTENT,
                 message='Business Deactivated Successfully',
-                data={'user_status': user.is_business},
+                data={'user_business_status': user.is_business},
             )
         except DoesNotExist:
-            raise ValidationError({'Business': 'Business not found'})
+            raise ValidationError(
+                {'Business': 'Business not found or already deactivated'}
+            )
 
 
 class FetchListings(generics.ListAPIView):
