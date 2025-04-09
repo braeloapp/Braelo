@@ -6,16 +6,17 @@ Author:         Faizan
 ---------------------------------------------------
 
 Description:
-Fetch Business  endpoints.
+Fetch Business endpoints.
 ---------------------------------------------------
 '''
 
 import json
+import qrcode
 from io import BytesIO
 from rest_framework import status
 from mongoengine.errors import DoesNotExist
 from rest_framework_mongoengine import generics
-from azure.storage.blob import BlobServiceClient
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import (
     IsAuthenticated,
@@ -23,28 +24,16 @@ from rest_framework.permissions import (
     IsAuthenticatedOrReadOnly,
 )
 
-import qrcode
-from helpers import ListSync
-from users.models import User
+from users.models import User, Business
 from helpers.constants import CATEGORIES
-from users.models.business import Business
+from helpers import ListSync, upload_pictures, BUSSINESS_EVENT_DATA
 from helpers import response, handle_exceptions
+from admin_panel.models import AdminBusinessBanner
 from listings.serializers import ListsyncSerializer
 from listings.api.paginate_listing import Pagination
-from helpers.notifications import BUSSINESS_EVENT_DATA
-from users.serializers.business import BusinessSerailizer, BannerSearilizer
-from rest_framework.pagination import PageNumberPagination
-from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from listings.api.fetch_listings import get_user_recommendations
 from notifications.serializers.events import EventNotificationSerializer
-from admin_panel.models import AdminBusinessBanner
-
-
-blob_service_client = BlobServiceClient.from_connection_string(
-    'DefaultEndpointsProtocol=https;AccountName=braelos3;AccountKey=ODvt'
-    'b8NuHRyWRsNR54wyp2lP0a7YGlM//NnhbkQKKv+JhX9E9Z+JXUSX56/sY7q0OxYPjidA5'
-    'HL0+AStWzRAYA==;EndpointSuffix=core.windows.net'
-)
+from users.serializers.business import BusinessSerailizer, BannerSearilizer
 
 
 class BusinessPagination(PageNumberPagination):
@@ -65,48 +54,31 @@ class BusinessPagination(PageNumberPagination):
 
 
 def generate_QR(business_id, user_id, business_type):
-    '''
-    Generating QR based on barelo url along with business id
-    converts img object into .png format
-    '''
-    base_url = 'braelo-fug5gcb6c0hpbpdn.canadacentral-01.azurewebsites.net'
-    business_url = f'{base_url}/auth/business/{business_id}'
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
+    """
+    Generate a QR code for the business URL, save it as PNG in-memory,
+    upload it, and return the upload result plus the URL.
+    """
+    base_url = (
+        'https://braelo-fug5gcb6c0hpbpdn.canadacentral-01.azurewebsites.net'
     )
-    qr.add_data(business_url)
-    qr.make(fit=True)
-    generate_img = qr.make_image(fill_color="black", back_color="white")
-    img_byte_array = BytesIO()
-    generate_img.save(img_byte_array, format='PNG')
-    img_byte_array.seek(0)
-    uploade_image = upload_pictures(img_byte_array, business_type, user_id)
+    business_url = f'{base_url}/auth/business/{business_id}'
+
+    img = qrcode.make(business_url)
+    # Convert PIL Image to in-memory PNG
+    picture = BytesIO()
+    picture.name = f"{business_id}.png"
+    img.save(picture, format='PNG')
+    picture.seek(0)
+
+    # Upload and return
+    uploaded_image = upload_pictures(
+        [picture], business_type, user_id, image_type='business_qr'
+    )
     data = {
-        'qr_image': uploade_image,
+        'qr_image': uploaded_image,
         'unique_url': business_url,
     }
     return data
-
-
-def upload_pictures(pictures, business_type, user_id):
-    '''
-    Handles the uploading of pictures to Azure Blob Storage.
-    Returns a list of URLs for the uploaded pictures.
-    '''
-    s3_urls = []
-    file_name = f'business_qr/{business_type}/{user_id}.png'
-    blob_client = blob_service_client.get_blob_client(
-        container=AZURE_CONTAINER_NAME, blob=file_name
-    )
-    blob_client.upload_blob(pictures, overwrite=True)
-
-    picture_url = f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{file_name}'
-    s3_urls.append(picture_url)
-
-    return s3_urls
 
 
 class BussinessListing(generics.CreateAPIView):
@@ -280,7 +252,7 @@ class DeactivateBusiness(generics.CreateAPIView):
 
 class FetchListings(generics.ListAPIView):
     '''
-    Fetch user listings created from his business acc.
+    Fetch user listings created from his business account.
     '''
 
     queryset = ListSync.objects.all()
@@ -393,6 +365,9 @@ class Activate_Business(generics.UpdateAPIView):
 
 
 class FetchSingleBusiness(generics.ListAPIView):
+    '''
+    API view that fetches a uer's business
+    '''
 
     permission_classes = [IsAuthenticated]
     serializer_class = BusinessSerailizer
@@ -416,6 +391,10 @@ class FetchSingleBusiness(generics.ListAPIView):
 
 
 class ExploreBusiness(generics.ListAPIView):
+    '''
+    API view that retrieves businesses located within a 10km radius of the specified location.
+    '''
+
     permission_classes = [AllowAny]
     serializer_class = BusinessSerailizer
 
@@ -486,6 +465,9 @@ class ExploreBusiness(generics.ListAPIView):
 
 
 class BusinessBanner(generics.ListAPIView):
+    '''
+    Paginates business banners filtered by category or user interest.
+    '''
 
     permission_classes = [AllowAny]
     pagination_class = BusinessPagination

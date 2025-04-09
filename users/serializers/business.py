@@ -10,23 +10,23 @@ Fetch Business Serializers.
 ---------------------------------------------------
 '''
 
-import uuid
 from django.db import transaction
 from django.utils import timezone
 from azure.storage.blob import BlobServiceClient
-from rest_framework.exceptions import ValidationError
-from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
-from django.core.files.uploadedfile import InMemoryUploadedFile
-
-
-from users.models import User
-from admin_panel.models import AdminBusinessBanner
-from rest_framework import serializers as SQL_serializer
-import phonenumbers
 from rest_framework_mongoengine import serializers
-from django.core.validators import validate_email
-from users.models.business import Business
-from helpers.constants import CATEGORIES
+from rest_framework.exceptions import ValidationError
+from rest_framework import serializers as SQL_serializer
+
+from users.models import User, Business
+from config import AZURE_CONTAINER_NAME
+from helpers import (
+    CATEGORIES,
+    upload_pictures,
+    validate_image,
+    validate_phone,
+    email_validation,
+)
+from admin_panel.models import AdminBusinessBanner
 from admin_panel.serializers import BusinessBannerSerializer
 
 
@@ -35,31 +35,6 @@ blob_service_client = BlobServiceClient.from_connection_string(
     'b8NuHRyWRsNR54wyp2lP0a7YGlM//NnhbkQKKv+JhX9E9Z+JXUSX56/sY7q0OxYPjidA5'
     'HL0+AStWzRAYA==;EndpointSuffix=core.windows.net'
 )
-
-
-def _validate_email(email, error_message):
-    try:
-        validate_email(email)
-    except ValidationError:
-        raise ValidationError({'email': error_message})
-
-
-def validate_phone(phone):
-    try:
-        # Parsing phone number
-        parsed_number = phonenumbers.parse(phone, None)
-        # Checking if the parsed number is a valid number
-        if not phonenumbers.is_valid_number(parsed_number):
-            raise ValidationError({'error': 'This is not valid phone number.'})
-    except phonenumbers.NumberParseException:
-        raise ValidationError({'error': 'This is not valid phone number.'})
-
-
-def validate_image(file, picture):
-    # validate image to be in correct format for saving
-    if isinstance(file, InMemoryUploadedFile):
-        if not file.name.endswith(('.jpg', '.jpeg', '.png')):
-            raise ValidationError({picture: f'Invalid {picture} format'})
 
 
 class BusinessSerailizer(serializers.DocumentSerializer):
@@ -78,28 +53,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         if queryset.first():
             raise ValidationError({'error': error_msg})
 
-    def upload_pictures(self, pictures, business_type, user):
-        '''
-        Handles the uploading of pictures to Azure Blob Storage.
-        Returns a list of URLs for the uploaded pictures.
-        '''
-        s3_urls = []
-        for picture in pictures:
-            unique_name = f'{uuid.uuid4()}_{picture.name}'
-            file_name = (
-                f'business_listings/{business_type}/{user.id}/{unique_name}'
-            )
-            blob_client = blob_service_client.get_blob_client(
-                container=AZURE_CONTAINER_NAME, blob=file_name
-            )
-            blob_client.upload_blob(picture, overwrite=True)
-
-            picture_url = f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{file_name}'
-            s3_urls.append(picture_url)
-
-        return s3_urls
-
-    def update_media(self, instance, business_type, business_media, user):
+    def update_media(
+        self, instance, business_type, business_media, user, image_type
+    ):
 
         # Delete already existed ones
         for picture_url in instance:
@@ -110,10 +66,11 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             )
             blob_client.delete_blob()
             # Upload New ones
-        s3_urls = self.upload_pictures(
+        s3_urls = upload_pictures(
             business_media,
             business_type,
-            user,
+            user.id,
+            image_type,
         )
         return s3_urls
 
@@ -128,16 +85,25 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         business_banner = validated_data.get('business_banner', [])
 
         # Upload Logo
-        s3_logo_url = self.upload_pictures(
-            bussines_logo, business_category, user
+        s3_logo_url = upload_pictures(
+            bussines_logo,
+            business_category,
+            user.id,
+            image_type='business_logo',
         )
         # Upload Business Images
-        s3_image_urls = self.upload_pictures(
-            business_images, business_category, user
+        s3_image_urls = upload_pictures(
+            business_images,
+            business_category,
+            user.id,
+            image_type='business_images',
         )
         # Upload banner
-        s3_banner_urls = self.upload_pictures(
-            business_banner, business_category, user
+        s3_banner_urls = upload_pictures(
+            business_banner,
+            business_category,
+            user.id,
+            image_type='business_banner',
         )
         # Add Urls to valdiated Fields
         validated_data['business_logo'] = s3_logo_url
@@ -168,18 +134,21 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             instance.business_category,
             business_logo,
             user,
+            image_type='business_logo',
         )
         validated_data['business_images'] = self.update_media(
             instance.business_images,
             instance.business_category,
             business_images,
             user,
+            image_type='business_images',
         )
         validated_data['business_banner'] = self.update_media(
             instance.business_banner,
             instance.business_category,
             business_banner,
             user,
+            image_type='business_banner',
         )
 
         # Update other fields & Banner model as well
@@ -204,7 +173,6 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         return instance
 
     def validate(self, data):
-
         request = self.context['request']
         admin_path = '/admin-panel/business/update'
         business_email = data.get('business_email')
@@ -269,7 +237,7 @@ class BusinessSerailizer(serializers.DocumentSerializer):
                 }
             )
 
-        _validate_email(business_email, 'Enter a valid business email address')
+        email_validation(business_email, 'Enter a valid business email address')
         validate_phone(business_number)
         validate_image(business_logo, 'Logo')
         validate_image(business_images, 'Images')
@@ -328,6 +296,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
 
 
 class BannerSearilizer(SQL_serializer.Serializer):
+    '''
+    Responsible for validating and serializing data related to business banners.
+    '''
 
     user_id = SQL_serializer.IntegerField(required=True)
     business_email = SQL_serializer.CharField(required=True)

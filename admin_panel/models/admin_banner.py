@@ -6,7 +6,7 @@ Author:         Faizan
 ---------------------------------------------------
 
 Description:
-Business Banner By Admin, model mongo based.
+Business Banner By Admin. (Mongo Based Model)
 ---------------------------------------------------
 '''
 

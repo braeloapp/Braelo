@@ -1,37 +1,23 @@
-import uuid
+'''
+---------------------------------------------------
+Project:        Braelo
+Date:           March 20, 2025
+Author:         Faizan
+---------------------------------------------------
+
+Description:
+Serializer for business banners
+---------------------------------------------------
+'''
+
 from django.utils import timezone
 from rest_framework_mongoengine import serializers
-from azure.storage.blob import BlobServiceClient
 from rest_framework.exceptions import ValidationError
-from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
-from django.core.files.uploadedfile import InMemoryUploadedFile
 
-
-from django.core.validators import validate_email
-from users.models.business import Business
 from helpers.constants import CATEGORIES
+from users.models.business import Business
 from admin_panel.models import AdminBusinessBanner
-
-
-blob_service_client = BlobServiceClient.from_connection_string(
-    "DefaultEndpointsProtocol=https;AccountName=braelos3;AccountKey=ODvt"
-    "b8NuHRyWRsNR54wyp2lP0a7YGlM//NnhbkQKKv+JhX9E9Z+JXUSX56/sY7q0OxYPjidA5"
-    "HL0+AStWzRAYA==;EndpointSuffix=core.windows.net"
-)
-
-
-def _validate_email(email, error_message):
-    try:
-        validate_email(email)
-    except ValidationError:
-        raise ValidationError({"email": error_message})
-
-
-def validate_image(file, picture):
-    # validate image to be in correct format for saving
-    if isinstance(file, InMemoryUploadedFile):
-        if not file.name.endswith(('.jpg', '.jpeg', '.png')):
-            raise ValidationError({picture: f"Invalid {picture} format"})
+from helpers import upload_pictures, email_validation, validate_image
 
 
 class BusinessBannerSerializer(serializers.DocumentSerializer):
@@ -39,27 +25,6 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
     class Meta:
         model = AdminBusinessBanner
         fields = '__all__'
-
-    def upload_pictures(self, pictures, business_type, user_id):
-        '''
-        Handles the uploading of pictures to Azure Blob Storage.
-        Returns a list of URLs for the uploaded pictures.
-        '''
-        s3_urls = []
-        for picture in pictures:
-            unique_name = f"{uuid.uuid4()}_{picture.name}"
-            file_name = (
-                f'business_banners/{business_type}/{user_id}/{unique_name}'
-            )
-            blob_client = blob_service_client.get_blob_client(
-                container=AZURE_CONTAINER_NAME, blob=file_name
-            )
-            blob_client.upload_blob(picture, overwrite=True)
-
-            picture_url = f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{file_name}'
-            s3_urls.append(picture_url)
-
-        return s3_urls
 
     def validate(self, data):
 
@@ -69,7 +34,7 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         business_subcategory = data.get('business_subcategory')
         business_banner = data.get('business_banner')
 
-        _validate_email(email, 'Enter a valid business email address')
+        email_validation(email, 'Enter a valid business email address')
         validate_image(business_banner, 'Banner')
         if business_category not in CATEGORIES:
             raise ValidationError(
@@ -92,8 +57,11 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         if not business:
             raise ValidationError({'Error': 'No business found'})
 
-        s3_logo_url = self.upload_pictures(
-            business_banner, business_category, business.user_id
+        s3_logo_url = upload_pictures(
+            business_banner,
+            business_category,
+            business.user_id,
+            image_type='business_banner',
         )
 
         data['user_id'] = business.user_id
@@ -108,6 +76,9 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
 
     @staticmethod
     def banner_save(data):
+        '''
+        saves banner when business is created in banner collection
+        '''
         try:
             required_fields = [
                 'user_id',

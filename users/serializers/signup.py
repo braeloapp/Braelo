@@ -9,19 +9,12 @@ Serializer file for users based endpoints
 ---------------------------------------------------
 '''
 
-from django.utils import timezone
-import phonenumbers
-from twilio.rest import Client
-from rest_framework import serializers
-from rest_framework.serializers import ValidationError
-from django.core.validators import validate_email
-from django.contrib.auth.hashers import check_password
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
-
-from config import settings
 from users.models import User
-from helpers import get_token, response, status
+from django.utils import timezone
+from rest_framework import serializers
+from django.core.validators import validate_email
+from rest_framework.serializers import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 
 def _validate_email(email):

@@ -12,20 +12,20 @@ API classes for admin_panel.
 
 from rest_framework import generics, status
 from helpers import response, handle_exceptions
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAdminUser
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 
 
 from users.models import User
+from firebase_admin import messaging
+from notifications.models import Notification
+from admin_panel.serializers import UserSerializer
 from feedbacks.models import Requests, ReportMessage
 from feedbacks.serializers import RequestsSerializer
-from admin_panel.serializers import UserSerializer
-from notifications.models import Notification
 from notifications.serializers import NotificationSerializer
-from firebase_admin import messaging
-from feedbacks.serializers.report_user import ReportMessageSerializer
 from admin_panel.serializers import BusinessBannerSerializer
+from feedbacks.serializers.report_user import ReportMessageSerializer
 
 
 class Pagination(PageNumberPagination):
@@ -49,6 +49,7 @@ class Pagination(PageNumberPagination):
 class PaginateReportedUsers(PageNumberPagination):
     '''
     Listing pagination configurations.
+    filters data and sends name of reported and reported_by users
     '''
 
     page_size = 10
@@ -79,6 +80,9 @@ class PaginateReportedUsers(PageNumberPagination):
 
 
 class AllUsers(generics.ListAPIView):
+    '''
+    View that fetches all users for admin
+    '''
 
     permission_classes = [IsAdminUser]
     serializer_class = UserSerializer
@@ -87,6 +91,9 @@ class AllUsers(generics.ListAPIView):
 
 
 class AllFeedback(generics.ListAPIView):
+    '''
+    View that fetches user's feedbacks for admin panel
+    '''
 
     permission_classes = [IsAdminUser]
     queryset = Requests.objects.all()
@@ -98,6 +105,9 @@ class AllFeedback(generics.ListAPIView):
 
 
 class AllNotifications(generics.ListAPIView):
+    '''
+    View that fetches all notifications for admin
+    '''
 
     permission_classes = [IsAdminUser]
     queryset = Notification.objects.all()
@@ -106,6 +116,9 @@ class AllNotifications(generics.ListAPIView):
 
 
 class ReportedUsers(generics.ListCreateAPIView):
+    '''
+    View that allows admin to take certain action on reported users
+    '''
 
     permission_classes = [IsAdminUser]
     pagination_class = PaginateReportedUsers
@@ -117,6 +130,11 @@ class ReportedUsers(generics.ListCreateAPIView):
 
     @handle_exceptions
     def post(self, request):
+        '''
+        POST method to take action on a reported user.
+        :param request: request object. (dict)
+        :return: Succesfull message. (json)
+        '''
         report_id = request.data.get("report_id")
         user_id = request.data.get("user_id")
         action_type = request.data.get("action_type")
@@ -171,11 +189,18 @@ class ReportedUsers(generics.ListCreateAPIView):
 
 
 class SendAdminNotification(generics.CreateAPIView):
+    '''
+    Send notification to all users from admin using FCM.
+    '''
 
     permission_classes = [IsAdminUser]
 
     def post(self, request):
-
+        '''
+        POST method to send notification to all users.
+        :param request: request object. (dict)
+        :return: Sucessfull message. (json)
+        '''
         data = request.data
         user_id = request.user.id
         title = data.get('title')
@@ -205,12 +230,19 @@ class SendAdminNotification(generics.CreateAPIView):
 
 
 class AdminBanner(generics.CreateAPIView):
+    '''
+    View that allows an admin to create a banner for a business
+    '''
 
     permission_classes = [IsAdminUser]
     serializer_class = BusinessBannerSerializer
 
     def post(self, request):
-
+        '''
+        POST method to update a listing.
+        :param request: request object. (dict)
+        :return: Successfull message. (json)
+        '''
         data = request.data
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
