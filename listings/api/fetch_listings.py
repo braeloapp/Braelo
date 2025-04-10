@@ -99,7 +99,14 @@ class SavedListing(generics.ListAPIView):
         :param request: request object. (dict)
         :return: saved items. (json)
         '''
-        user_id = request.user.id
+        admin_path = '/admin-panel/'
+        if request.path.startswith(admin_path) and request.user.is_superuser:
+            user_id = request.data.get('user_id')
+            if not user_id:
+                raise ValidationError({'Error': 'Admin Must Provide user_id'})
+        else:
+            user_id = request.user.id
+
         sort = '-saved_at'
 
         # Fetch all listings for the user across all categories
@@ -126,8 +133,14 @@ class UserListing(generics.CreateAPIView):
     @handle_exceptions
     def get(self, request):
         # Get the logged-in user's ID
-        user = request.user
-        user_id = user.id
+        admin_path = '/admin-panel/'
+        if request.path.startswith(admin_path) and request.user.is_superuser:
+            user_id = request.data.get('user_id')
+            if not user_id:
+                raise ValidationError({'Error': 'Admin Must Provide user_id'})
+        else:
+            user_id = request.user.id
+
         sort = '-created_at'
 
         # Fetch all listings for the user across all categories

@@ -29,7 +29,7 @@ class Message(Document):
 
     chat = ReferenceField(Chat, required=True)
     sender_id = StringField(required=True)
-    content = StringField(required=True)
+    content = StringField(required=False)
     read = BooleanField(default=False)
     media_url = StringField()
     created_at = DateTimeField()

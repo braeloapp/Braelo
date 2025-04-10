@@ -11,9 +11,10 @@ admin_panel endpoints.
 '''
 
 from django.urls import path
+
+
+from listings.api.fetch_listings import SavedListing, UserListing
 from users.api import DeactivateUser, LoginWithEmail, UpdateProfile
-
-
 from admin_panel.api.admin import (
     AllUsers,
     AllFeedback,
@@ -67,6 +68,10 @@ urlpatterns = [
     path('delete', DeleteListing.as_view(), name='delete-listings'),
     # admin adding banner
     path('banner', AdminBanner.as_view(), name='admin-adding-banner'),
+    # Get saved listings for Admin
+    path('get-save', SavedListing.as_view(), name='get-save'),
+    # Get user all listings for Admin
+    path('user/all', UserListing.as_view(), name='get-save'),
     # Delete a business
     path(
         'business/deactivate',
