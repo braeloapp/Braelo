@@ -101,7 +101,7 @@ class SavedListing(generics.ListAPIView):
         '''
         admin_path = '/admin-panel/'
         if request.path.startswith(admin_path) and request.user.is_superuser:
-            user_id = request.data.get('user_id')
+            user_id = request.GET.get('user_id')
             if not user_id:
                 raise ValidationError({'Error': 'Admin Must Provide user_id'})
         else:
@@ -135,7 +135,7 @@ class UserListing(generics.CreateAPIView):
         # Get the logged-in user's ID
         admin_path = '/admin-panel/'
         if request.path.startswith(admin_path) and request.user.is_superuser:
-            user_id = request.data.get('user_id')
+            user_id = request.GET.get('user_id')
             if not user_id:
                 raise ValidationError({'Error': 'Admin Must Provide user_id'})
         else:

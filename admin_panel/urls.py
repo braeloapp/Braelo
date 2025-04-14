@@ -14,7 +14,12 @@ from django.urls import path
 
 
 from listings.api.fetch_listings import SavedListing, UserListing
-from users.api import DeactivateUser, LoginWithEmail, UpdateProfile
+from users.api import (
+    DeactivateUser,
+    LoginWithEmail,
+    UpdateProfile,
+    FetchListings,
+)
 from admin_panel.api.admin import (
     AllUsers,
     AllFeedback,
@@ -72,6 +77,12 @@ urlpatterns = [
     path('get-save', SavedListing.as_view(), name='get-save'),
     # Get user all listings for Admin
     path('user/all', UserListing.as_view(), name='get-save'),
+    # Fetch Business Listings for admin
+    path(
+        'business/fetch/listings',
+        FetchListings.as_view(),
+        name='fetch-listings',
+    ),
     # Delete a business
     path(
         'business/deactivate',

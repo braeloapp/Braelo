@@ -261,12 +261,23 @@ class FetchListings(generics.ListAPIView):
     serializer_class = ListsyncSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        if not user.is_business:
-            raise ValidationError('User must be business')
+        admin_path = '/admin-panel/'
+        if (
+            self.request.path.startswith(admin_path)
+            and self.request.user.is_superuser
+        ):
+            user_id = self.request.query_params.get('user_id')
+            if not user_id:
+                raise ValidationError({'Error': 'Admin Must Provide user_id'})
+        else:
+            user = self.request.user
+            if not user.is_business:
+                raise ValidationError('User must be business')
+            user_id = user.id
+
         try:
             queryset = ListSync.objects.filter(
-                user_id=user.id, from_business=True
+                user_id=user_id, from_business=True
             )
             return queryset
         except Exception as exc:
