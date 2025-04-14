@@ -81,10 +81,10 @@ class ChatroomPagination(PageNumberPagination):
             record['unread_messages'] = messages_count
 
             record['message_created_at'] = (
-                last_message.created_at if last_message else []
+                last_message.created_at if last_message else ''
             )
             record['last_message'] = (
-                last_message.content if last_message else []
+                last_message.content if last_message else ''
             )
 
         paginated_data['results'] = paginate_results
@@ -160,7 +160,7 @@ class CreateChatroomApi(generics.CreateAPIView):
 
         if chatroom:
             return response(
-                status=status.HTTP_200_OK,
+                status=status.HTTP_201_CREATED,
                 message='Chat fetched successfully',
                 data=ChatSerializer(chatroom).data,
             )

@@ -79,7 +79,7 @@ class InterestSerializer(serializers.Serializer):
 
 class UpdateProfileSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=False)
-    name = serializers.CharField(required=True)
+    name = serializers.CharField(required=False)
     first_name = serializers.CharField(required=False)
     last_name = serializers.CharField(required=False)
     email = serializers.EmailField(required=False)
