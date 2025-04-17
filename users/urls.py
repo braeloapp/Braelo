@@ -50,34 +50,35 @@ urlpatterns = [
     # Testing
     path('', views.sign_in, name='sign_in'),
     # Login end points
-    path('login/email', LoginWithEmail.as_view(), name='email_login'),
-    path('verifyotp', VerifyOTP.as_view(), name='phone_login'),
+    path('login/email', LoginWithEmail.as_view()),
+    # Verify otp
+    path('verifyotp', VerifyOTP.as_view()),
     # Sign up endpoints
-    path('signup/email', SignUpWithEmail.as_view(), name='email_signup'),
+    path('signup/email', SignUpWithEmail.as_view()),
     # Sign_up/Login [Google, Apple, Phone]
-    path('login', LoginAuth.as_view(), name='google-apple-phone_login'),
+    path('login', LoginAuth.as_view()),
     # Refresh token
-    path('token/refresh', TokenRefresh.as_view(), name='token_refresh'),
+    path('token/refresh', TokenRefresh.as_view()),
     # Forgot password
-    path('forgot/password', ForgotPassword.as_view(), name='forgot_password'),
+    path('forgot/password', ForgotPassword.as_view()),
     # Change password
-    path('change/password', ChangePassword.as_view(), name='change_password'),
+    path('change/password', ChangePassword.as_view()),
     # Create new password
-    path('new/password', CreatePassword.as_view(), name='create_password'),
+    path('new/password', CreatePassword.as_view()),
     # Logout
-    path('api/logout', Logout.as_view(), name='logout'),
-    path('interests', InterestListCreateView.as_view(), name='interest'),
+    path('api/logout', Logout.as_view()),
+    path('interests', InterestListCreateView.as_view()),
     # Update Profile
-    path('update/profile', UpdateProfile.as_view(), name='update_profile'),
-    path('user/profile', UserProfile.as_view(), name='user_profile'),
+    path('update/profile', UpdateProfile.as_view()),
+    path('user/profile', UserProfile.as_view()),
     # about user
-    path('user/about', AboutUser.as_view(), name='about_user'),
+    path('user/about', AboutUser.as_view()),
     # Delete
-    path('user/delete', DeactivateUser.as_view(), name='delete_user'),
+    path('user/delete', DeactivateUser.as_view()),
     # Public Profile
-    path('public-profile', PublicProfile.as_view(), name='public_profile'),
+    path('public-profile', PublicProfile.as_view()),
     # Flip User Status
-    path('user/flip-status', FlipUserStatus.as_view(), name='flip_user_status'),
+    path('user/flip-status', FlipUserStatus.as_view()),
     # Add device Token
     path('device/token', SaveDeviceToken.as_view()),
     # Business Dashboard

@@ -12,14 +12,6 @@ admin_panel endpoints.
 
 from django.urls import path
 
-
-from listings.api.fetch_listings import SavedListing, UserListing
-from users.api import (
-    DeactivateUser,
-    LoginWithEmail,
-    UpdateProfile,
-    FetchListings,
-)
 from admin_panel.api.admin import (
     AllUsers,
     AllFeedback,
@@ -28,13 +20,18 @@ from admin_panel.api.admin import (
     SendAdminNotification,
     AdminBanner,
 )
-from users.api.business import (
+from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
     UpdateBusiness,
+    SignUpWithEmail,
+    DeactivateUser,
+    LoginWithEmail,
+    UpdateProfile,
+    FetchListings,
 )
-from users.api.signup import SignUpWithEmail
-from listings.api.update_listing import (
+
+from listings.api import (
     RealEstateUpdateAPI,
     VehicleUpdateAPI,
     ElectronicsUpdateAPI,
@@ -45,59 +42,13 @@ from listings.api.update_listing import (
     SportsHobbyUpdateAPI,
     KidsUpdateAPI,
     FurnitureUpdateAPI,
+    SavedListing,
+    UserListing,
+    DeleteListing,
 )
 
-from listings.api.saved_listing import DeleteListing
-
-
 urlpatterns = [
-    # All users fetch to admin
-    path('users', AllUsers.as_view(), name='all-users'),
-    # Deactivate a user
-    path('user/deactivate', DeactivateUser.as_view(), name='deactivate-user'),
-    # Update User
-    path('user/update', UpdateProfile.as_view(), name='update-user'),
-    # Report an issue to admin
-    path('support', AllFeedback.as_view(), name='support'),
-    # Action taken by admin, and get method for getting all reports
-    path('report/action', ReportedUsers.as_view(), name='action'),
-    # Account creation by admin
-    path('signup', SignUpWithEmail.as_view(), name='admin-signup'),
-    # Admin Login
-    path('login', LoginWithEmail.as_view(), name='admin-panel-login'),
-    # Fetch all business
-    path('business', FetchBusinesses.as_view(), name='fetch-all-business'),
-    # Read notifications
-    path('notificatons', AllNotifications.as_view(), name='read-notifications'),
-    # Delete Listings
-    path('delete', DeleteListing.as_view(), name='delete-listings'),
-    # admin adding banner
-    path('banner', AdminBanner.as_view(), name='admin-adding-banner'),
-    # Get saved listings for Admin
-    path('get-save', SavedListing.as_view(), name='get-save'),
-    # Get user all listings for Admin
-    path('user/all', UserListing.as_view(), name='get-save'),
-    # Fetch Business Listings for admin
-    path(
-        'business/fetch/listings',
-        FetchListings.as_view(),
-        name='fetch-listings',
-    ),
-    # Delete a business
-    path(
-        'business/deactivate',
-        DeactivateBusiness.as_view(),
-        name='business-deactivate',
-    ),
-    # Update a business
-    path('business/update', UpdateBusiness.as_view(), name='update-business'),
-    # Send Admin notification
-    path(
-        'notification/send',
-        SendAdminNotification.as_view(),
-        name='send-notification',
-    ),
-    # Update api
+    # Update api's
     path('jobs/<str:pk>', JobsUpdateAPI.as_view()),
     path('kids/<str:pk>', KidsUpdateAPI.as_view()),
     path('events/<str:pk>', EventsUpdateAPI.as_view()),
@@ -108,4 +59,38 @@ urlpatterns = [
     path('realestate/<str:pk>', RealEstateUpdateAPI.as_view()),
     path('electronics/<str:pk>', ElectronicsUpdateAPI.as_view()),
     path('sportshobby/<str:pk>', SportsHobbyUpdateAPI.as_view()),
+    # All users fetch to admin
+    path('users', AllUsers.as_view()),
+    # admin adding banner
+    path('banner', AdminBanner.as_view()),
+    # Report an issue to admin
+    path('support', AllFeedback.as_view()),
+    # Get user all listings for Admin
+    path('user/all', UserListing.as_view()),
+    # Admin Login
+    path('login', LoginWithEmail.as_view()),
+    # Delete Listings
+    path('delete', DeleteListing.as_view()),
+    # Get saved listings for Admin
+    path('get-save', SavedListing.as_view()),
+    # Account creation by admin
+    path('signup', SignUpWithEmail.as_view()),
+    # Fetch all business
+    path('business', FetchBusinesses.as_view()),
+    # Update User
+    path('user/update', UpdateProfile.as_view()),
+    # Action taken by admin, and get method for getting all reports
+    path('report/action', ReportedUsers.as_view()),
+    # Read notifications
+    path('notificatons', AllNotifications.as_view()),
+    # Update a business
+    path('business/update', UpdateBusiness.as_view()),
+    # Deactivate a user
+    path('user/deactivate', DeactivateUser.as_view()),
+    # Fetch Business Listings for admin
+    path('business/fetch/listings', FetchListings.as_view()),
+    # Delete a business
+    path('business/deactivate', DeactivateBusiness.as_view()),
+    # Send Admin notification
+    path('notification/send', SendAdminNotification.as_view()),
 ]
