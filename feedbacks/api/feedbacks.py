@@ -11,12 +11,31 @@ User Feedbacks/review Endpoints.
 '''
 
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
 from helpers import handle_exceptions, response
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 
+from feedbacks.models import Requests, Feedbacks
 from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
-from feedbacks.models import Requests
+
+
+class Pagination(PageNumberPagination):
+    '''
+    Pagination to show feedback for admin_panel.
+    '''
+
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
+    def get_paginated_response(self, data):
+        paginated_data = super().get_paginated_response(data).data
+        return response(
+            status=status.HTTP_200_OK,
+            message='Records fetched Successfully',
+            data=paginated_data,
+        )
 
 
 class SupportRequest(generics.RetrieveUpdateDestroyAPIView):
@@ -93,13 +112,14 @@ class SupportRequest(generics.RetrieveUpdateDestroyAPIView):
         )
 
 
-class Feedback(generics.CreateAPIView):
+class Feedback(generics.ListCreateAPIView):
     '''
     User feedback endpoint.
     '''
 
     permission_classes = [IsAuthenticated]
     serializer_class = FeedbacksSerializer
+    pagination_class = Pagination
 
     @handle_exceptions
     def post(self, request, **kwargs):
@@ -113,3 +133,15 @@ class Feedback(generics.CreateAPIView):
             message='Feedback submitted successfully',
             data=serializer.data,
         )
+
+    def get_queryset(self):
+        if self.request.GET.get('feedback') is not None:
+            feedback = self.request.GET.get('feedback')
+            required_fields = ['Hate', 'Dislike', 'Neutral', 'Like', 'Love']
+            if feedback not in required_fields:
+                raise ValidationError(
+                    {'review': f'feedback must be {required_fields}'}
+                )
+            return Feedbacks.objects.filter(feedback=feedback)
+
+        return Feedbacks.objects.all()

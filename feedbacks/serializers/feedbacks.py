@@ -57,6 +57,7 @@ class FeedbacksSerializer(serializers.DocumentSerializer):
                 {'review': f'feedback must be {required_fields}'}
             )
         data['user_id'] = user.id
+        data['user_name'] = user.name
         data['created_at'] = timezone.now()
 
         return data

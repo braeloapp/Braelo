@@ -20,6 +20,7 @@ from mongoengine.fields import (
 
 class Feedbacks(Document):
     user_id = IntField()
+    user_name = StringField()
     feedback = StringField(required=True)
     created_at = DateTimeField()
 

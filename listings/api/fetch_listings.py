@@ -31,7 +31,7 @@ from listings.serializers import (
 )
 
 
-def get_user_listings(collection, user_id, offset, limit, sort):
+def get_user_listings(collection, user_id, offset, limit, sort, is_active=None):
     '''
     Retrieves listings from given collection.
     :param collection: CMongo db collection name. (Dict)
@@ -40,12 +40,19 @@ def get_user_listings(collection, user_id, offset, limit, sort):
     :param limit: records to fetch from db. (int)
     :return:
     '''
-    queryset = (
-        collection.objects.filter(user_id=user_id)
-        .order_by(sort)
-        .skip(offset)
-        .limit(limit)
-    )
+    queryset = collection.objects.filter(user_id=user_id)
+
+    if is_active is not None:
+        value = is_active.lower()
+        if value not in ['true', 'false']:
+            raise ValidationError(
+                {'error': 'Invalid value for is_active. Use true or false.'}
+            )
+        is_active = value == 'true'
+        queryset = queryset.filter(is_active=is_active)
+
+    queryset = queryset.order_by(sort).skip(offset).limit(limit)
+
     return list(queryset)
 
 
@@ -134,8 +141,10 @@ class UserListing(generics.CreateAPIView):
     def get(self, request):
         # Get the logged-in user's ID
         admin_path = '/admin-panel/'
+        is_active = None
         if request.path.startswith(admin_path) and request.user.is_superuser:
             user_id = request.GET.get('user_id')
+            is_active = request.query_params.get('is_active')
             if not user_id:
                 raise ValidationError({'Error': 'Admin Must Provide user_id'})
         else:
@@ -146,7 +155,9 @@ class UserListing(generics.CreateAPIView):
         # Fetch all listings for the user across all categories
         limit = int(request.query_params.get('limit', 10))
         offset = int(request.query_params.get('offset', 0))
-        listings = get_user_listings(ListSync, user_id, offset, limit, sort)
+        listings = get_user_listings(
+            ListSync, user_id, offset, limit, sort, is_active
+        )
         serializer = ListsyncSerializer(listings, many=True)
         user_listings = {item['id']: item for item in serializer.data}
 
