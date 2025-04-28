@@ -29,6 +29,7 @@ from users.api import (
     LoginWithEmail,
     UpdateProfile,
     FetchListings,
+    BusinessBanner,
 )
 
 from listings.api import (
@@ -87,6 +88,10 @@ urlpatterns = [
     path('business/update', UpdateBusiness.as_view()),
     # Deactivate a user
     path('user/deactivate', DeactivateUser.as_view()),
+    # Deleting business banner
+    path('business/banner/delete', BusinessBanner.as_view()),
+    # Update banner
+    path('business/banner/update', BusinessBanner.as_view()),
     # Fetch Business Listings for admin
     path('business/fetch/listings', FetchListings.as_view()),
     # Delete a business

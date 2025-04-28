@@ -67,6 +67,11 @@ class ChatroomConsumer(WebsocketConsumer):
                     participants__all=[self.user_id, self.second_user_id],
                     participants__size=2,
                 )
+                if self.chatroom.is_blocked:
+                    self.accept()
+                    # Custom close code (4003 = “forbidden”)
+                    return self.close(code=4003)
+
             except Chat.DoesNotExist:
                 raise DenyConnection('Chat matching query does not exist.')
 

@@ -54,11 +54,11 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             raise ValidationError({'error': error_msg})
 
     def update_media(
-        self, instance, business_type, business_media, user, image_type
+        self, instance_images, business_type, new_images, user_id, image_type
     ):
 
         # Delete already existed ones
-        for picture_url in instance:
+        for picture_url in instance_images:
             # Extract the blob name from the URL
             blob_name = picture_url.split(f'/{AZURE_CONTAINER_NAME}/')[-1]
             blob_client = blob_service_client.get_blob_client(
@@ -67,9 +67,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             blob_client.delete_blob()
             # Upload New ones
         s3_urls = upload_pictures(
-            business_media,
+            new_images,
             business_type,
-            user.id,
+            user_id,
             image_type,
         )
         return s3_urls
@@ -133,21 +133,21 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             instance.business_logo,
             instance.business_category,
             business_logo,
-            user,
+            user.id,
             image_type='business_logo',
         )
         validated_data['business_images'] = self.update_media(
             instance.business_images,
             instance.business_category,
             business_images,
-            user,
+            user.id,
             image_type='business_images',
         )
         validated_data['business_banner'] = self.update_media(
             instance.business_banner,
             instance.business_category,
             business_banner,
-            user,
+            user.id,
             image_type='business_banner',
         )
 
@@ -300,9 +300,41 @@ class BannerSearilizer(SQL_serializer.Serializer):
     Responsible for validating and serializing data related to business banners.
     '''
 
-    user_id = SQL_serializer.IntegerField(required=True)
+    user_id = SQL_serializer.IntegerField(required=False)
     business_email = SQL_serializer.CharField(required=True)
     business_name = SQL_serializer.CharField(required=True)
     business_banner = SQL_serializer.ListField(required=True)
     business_category = SQL_serializer.CharField(required=True)
     business_subcategory = SQL_serializer.CharField(required=True)
+
+    def update(self, instance, validated_data):
+        '''
+        Handle the update of listings and related fields.
+        '''
+        validated_data.pop(
+            'user_id', None
+        )  # poped so it isnt updated in the process
+        business_banner = validated_data.pop('business_banner', None)
+        update_media = BusinessSerailizer()
+        validated_data['business_banner'] = update_media.update_media(
+            instance.business_banner,
+            instance.business_category,
+            business_banner,
+            instance.user_id,
+            image_type='business_banner',
+        )
+
+        # Update other fields
+        for attr, value in validated_data.items():
+            current_value = getattr(instance, attr, None)
+            if current_value != value:
+                if attr != 'business_banner':
+                    raise ValidationError(
+                        {'error': 'Only allowed to update business banner'}
+                    )
+                setattr(instance, attr, value)
+
+        # Update timestamps
+        instance.updated_at = timezone.now()
+        instance.save()
+        return instance

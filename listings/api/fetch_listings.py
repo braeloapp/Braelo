@@ -19,7 +19,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 
 from helpers import ListSync
-from listings.api import MODEL_MAP
+from helpers.model_map import MODEL_MAP
 from listings.api.paginate_listing import Pagination
 from listings.models import SavedItem
 from helpers import handle_exceptions, response

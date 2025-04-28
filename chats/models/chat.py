@@ -35,6 +35,7 @@ class Chat(Document):
     sender = DictField(required=True)
     pair_key = StringField(required=True)
     is_active = BooleanField(default=True)
+    is_blocked = BooleanField(default=False)
     created_at = DateTimeField()
     updated_at = DateTimeField()
 

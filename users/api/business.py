@@ -281,7 +281,7 @@ class Activate_Business(generics.UpdateAPIView):
         )
 
 
-class BusinessBanner(generics.ListAPIView):
+class BusinessBanner(generics.ListCreateAPIView):
     '''
     Paginates business banners filtered by category or user interest.
     '''
@@ -296,17 +296,90 @@ class BusinessBanner(generics.ListAPIView):
         try:
             if category and category in CATEGORIES:
                 return AdminBusinessBanner.objects.filter(
-                    business_category=category
+                    business_category=category, is_active=True
                 )
             interests = get_user_recommendations(user_id)
             if not interests:
-                return AdminBusinessBanner.objects.all()
+                return AdminBusinessBanner.objects.filter(is_active=True)
             queryset = AdminBusinessBanner.objects.filter(
-                business_category=interests
+                business_category=interests, is_active=True
             )
         except Exception as exc:
             raise ValidationError({'Business': str(exc)})
         return queryset
+
+    @handle_exceptions
+    def delete(self, request):
+        admin_path = '/admin-panel/'
+        if (
+            self.request.path.startswith(admin_path)
+            and self.request.user.is_superuser
+        ):
+            banner_id = request.data.get('banner_id')
+            if not banner_id:
+                raise ValidationError({'error': 'id is required'})
+
+            deleted_count = AdminBusinessBanner.objects.filter(
+                id=banner_id
+            ).update(is_active=False)
+            if deleted_count == 0:
+                raise ValidationError(
+                    {'error': 'Banner with the given id not found'}
+                )
+            return response(
+                status=status.HTTP_204_NO_CONTENT,
+                message='Banner Deleted Successfully',
+                data={},
+            )
+        else:
+            raise ValidationError(
+                {
+                    'error': 'Only admins are allowed to access this functionality.'
+                }
+            )
+
+    @handle_exceptions
+    def put(self, request, *args, **kwargs):
+        '''
+        PUT method to update a listing.
+        :param request: request object. (dict)
+        :return: updated listing status. (json)
+        '''
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+            context={'request': request},
+        )
+        # Validate and update the business if valid
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return response(
+            status=status.HTTP_200_OK,
+            message='Business updated successfully',
+            data=serializer.data,
+        )
+
+    def get_object(self):
+        '''
+        Override to fetch an object using a MongoDB ObjectId.
+        '''
+        admin_path = '/admin-panel/business/banner/update'
+        if (
+            self.request.path.startswith(admin_path)
+            and self.request.user.is_superuser
+        ):
+            banner_id = self.request.data.get('banner_id')
+            if not banner_id:
+                raise ValidationError({'Admin': 'Must provide banner_id'})
+        else:
+            raise ValidationError({'error': 'Only Admin is Allowed'})
+        try:
+            return AdminBusinessBanner.objects.get(id=banner_id, is_active=True)
+        except DoesNotExist:
+            raise ValidationError({'detail': 'Banner not found.'})
 
 
 class BusinessDashboard(generics.CreateAPIView):

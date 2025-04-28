@@ -18,7 +18,7 @@ from rest_framework.exceptions import ValidationError
 
 from helpers import response
 from helpers import CATEGORIES
-from listings.api import MODEL_MAP
+from helpers.model_map import MODEL_MAP
 from listings.models import (
     VehicleListing,
     RealEstateListing,

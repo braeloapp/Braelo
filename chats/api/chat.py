@@ -65,7 +65,7 @@ class ChatroomPagination(PageNumberPagination):
                 ).first()
 
             messages_count = messages.count()
-            last_message = messages.filter().first()
+            last_message = Message.objects.filter(chat=record.get('id')).first()
 
             if user_type == 'user':
                 record['user_picture'] = second_user.profile_picture
@@ -113,6 +113,13 @@ class CreateChatroomApi(generics.CreateAPIView):
             raise ValidationError(
                 {'detail': 'Invalid user_type. Must be "true" or "false".'}
             )
+        if user_type == 'true':
+            if not Business.objects.filter(user_id=user_id, is_active=True):
+                raise ValidationError(
+                    {
+                        'error': f'Cannot create room, No Business exists for user_id: {user_id}'
+                    }
+                )
 
         return {
             'user_id': user_id,
@@ -273,3 +280,45 @@ class ChatroomDetailApi(generics.ListAPIView):
             message='Chatroom Fetched Successfully',
             data=chat_data.data,
         )
+
+
+class BlockChatRoom(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user_id = str(request.user.id)
+        room_id = request.data.get('room_id')
+        is_block = request.data.get('block')
+
+        if is_block is None:
+            raise ValidationError({'error': 'Must provide block status.'})
+        if room_id is None:
+            raise ValidationError({'error': 'Must provide _id of chatroom.'})
+
+        room = Chat.objects.filter(id=room_id).first()
+        if not room:
+            raise ValidationError({'error': 'Chatroom not found.'})
+
+        if user_id not in room.participants:
+            raise ValidationError(
+                {'error': 'You are not a participant of this chat.'}
+            )
+
+        if is_block.lower() == 'true':
+            if room.is_blocked:
+                raise ValidationError({'error': 'Room is already blocked.'})
+            room.update(set__is_blocked=True)
+            return response(
+                status=status.HTTP_200_OK, message='Room Blocked', data={}
+            )
+        elif is_block.lower() == 'false':
+            if not room.is_blocked:
+                raise ValidationError({'error': 'Room is already unblocked.'})
+            room.update(set__is_blocked=False)
+            return response(
+                status=status.HTTP_200_OK, message='Room Unblocked', data={}
+            )
+        else:
+            raise ValidationError(
+                {'error': 'Invalid block status, must be "true" or "false".'}
+            )

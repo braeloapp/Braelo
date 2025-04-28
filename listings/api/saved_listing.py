@@ -19,7 +19,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_mongoengine import generics
 
 
-from listings.api import MODEL_MAP
+from helpers.model_map import MODEL_MAP
 from listings.models import SavedItem
 from helpers.models import ListSync
 from helpers.notifications import SAVED_EVENT_DATA

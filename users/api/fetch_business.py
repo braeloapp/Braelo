@@ -97,11 +97,14 @@ class FetchListings(generics.ListAPIView):
 
     def get_queryset(self):
         admin_path = '/admin-panel/'
+        is_active = None
         if (
             self.request.path.startswith(admin_path)
             and self.request.user.is_superuser
         ):
             user_id = self.request.query_params.get('user_id')
+            is_active = self.request.query_params.get('is_active')
+
             if not user_id:
                 raise ValidationError({'Error': 'Admin Must Provide user_id'})
         else:
@@ -111,9 +114,18 @@ class FetchListings(generics.ListAPIView):
             user_id = user.id
 
         try:
+
             queryset = ListSync.objects.filter(
                 user_id=user_id, from_business=True
             )
+            if is_active:
+                if is_active not in ('true', 'false'):
+                    raise ValidationError(
+                        {'is_active': 'Must be [true or false]'}
+                    )
+
+                is_active = is_active == 'true'
+                queryset = queryset.filter(is_active=is_active)
             return queryset
         except Exception as exc:
             raise ValidationError(

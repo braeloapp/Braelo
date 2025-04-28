@@ -13,6 +13,7 @@ End points registry file.
 from django.urls import path
 
 from chats.api.chat import (
+    BlockChatRoom,
     ChatroomListApi,
     ChatroomDetailApi,
     CreateChatroomApi,
@@ -23,7 +24,6 @@ from chats.api.message import (
     MarkMessagesReadApi,
     DeleteMessageApi,
     SendChatNotification,
-
 )
 
 Base_url = 'chats/'
@@ -33,6 +33,8 @@ urlpatterns = [
     path('create', CreateChatroomApi.as_view()),
     # Lists all chatrooms for the authenticated user
     path('paginate', ChatroomListApi.as_view()),
+    # Block user chatroom
+    path('block/user', BlockChatRoom.as_view()),
     # Delete chat
     path('delete/<str:chat_id>', DeleteChatroomApi.as_view()),
     # Get details of a specific chatroom
@@ -50,7 +52,6 @@ urlpatterns = [
         'notification/<str:chat_id>/<str:message_id>',
         SendChatNotification.as_view(),
     ),
-   
 ]
 
 # 3. Search Messages

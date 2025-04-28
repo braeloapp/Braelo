@@ -21,7 +21,7 @@ from rest_framework.exceptions import ValidationError
 from django.core.exceptions import ObjectDoesNotExist
 
 
-from listings.api import MODEL_MAP
+from helpers.model_map import MODEL_MAP
 
 
 class SavedItemSerializer(serializers.DocumentSerializer):
