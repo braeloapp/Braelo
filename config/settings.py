@@ -96,11 +96,11 @@ ALLOWED_HOSTS = [
     '192.168.18.4',
     'localhost',
     '127.0.0.1',
-    'braelo-fug5gcb6c0hpbpdn.canadacentral-01.azurewebsites.net',
+    'braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net'
 ]
 CORS_ORIGIN_ALLOW_ALL = True
 CSRF_TRUSTED_ORIGINS = [
-    'https://braelo-fug5gcb6c0hpbpdn.canadacentral-01.azurewebsites.net',
+    'https://braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net',
     'http://localhost',
     'http://127.0.0.1',
     'http://192.168.18.4',
