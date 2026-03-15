@@ -245,10 +245,10 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-username = 'braelofl'
-password = '83PsPZiwdBsgEJNT'
+username = 'braelo'
+password = 'Br@3lO2023'
 db_name = 'braelo'
-connection_string = f"mongodb+srv://{username}:{password}@braelo.karg4.mongodb.net/{db_name}?retryWrites=true&w=majority"
+connection_string = f"mongodb+srv://{username}:{password}@cluster0.7j4rnkk.mongodb.net/{db_name}?retryWrites=true&w=majority"
 
 connect(
     db='braelo',  # Name of your MongoDB database
