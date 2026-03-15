@@ -1,3 +1,4 @@
+# Docs: https://aka.ms/python-webapps-actions
 name: Build and deploy Django app to Azure Web App - braelo
 
 on:
@@ -10,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: read  # Required for actions/checkout
 
     steps:
       - name: Checkout repository
@@ -25,7 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install gunicorn  # needed for Azure
+          pip install gunicorn daphne  # Azure needs gunicorn/daphne for ASGI apps
 
       - name: Collect static files
         run: python manage.py collectstatic --noinput
@@ -36,7 +37,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: django-app
+          name: python-app
           path: release.zip
 
   deploy:
@@ -44,20 +45,31 @@ jobs:
     needs: build
     environment:
       name: Production
-      url: https://Braelo-V1.azurewebsites.net
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: django-app
+          name: python-app
 
       - name: Unzip artifact
         run: unzip release.zip
 
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_9CC1E23C4B08447F9D815807E254CE11 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8AD10A3ACDF34232BC61B48A1B1D589F }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_CE3F2DFA18CB4A1EA9DAC4AE83CF4A06 }}
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
         with:
-          app-name: Braelo-V1
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          app-name: 'Braelo-V1'
+          slot-name: 'Production'
           package: .
