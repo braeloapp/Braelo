@@ -76,6 +76,6 @@ jobs:
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'braelo'
+          app-name: 'Braelo-V1'
           slot-name: 'Production'
           
