@@ -16,6 +16,7 @@ import os
 import base64
 import binascii
 import json
+import urllib
 from pathlib import Path
 from dotenv import load_dotenv
 from firebase_admin import initialize_app, credentials
@@ -248,6 +249,9 @@ DATABASES = {
 username = 'braelo'
 password = 'Br@3lO2023'
 db_name = 'braelo'
+# URL-encode username & password
+username = urllib.parse.quote_plus(username)
+password = urllib.parse.quote_plus(password)
 connection_string = f"mongodb+srv://{username}:{password}@cluster0.7j4rnkk.mongodb.net/{db_name}?retryWrites=true&w=majority" 
 
 connect(
