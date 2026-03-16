@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Braelo Chatbot</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+</head>
+<body>
+    <div class="row">
+        <div class="col-md-10 mr-auto ml-auto">
+            <h1>Braelo Chatbot</h1>
+            <form>
+                {% csrf_token %}
+                <div id="chatbox">
+                    <div class="col-md-8 ml-auto mr-auto">
+                        <p class="botText"><span>Hi! I'm Braelo. Ask me about living in the USA or finding local businesses.</span></p>
+                    </div>
+                </div>
+                <div id="userInput" class="row">
+                    <div class="col-md-10">
+                        <input id="text" type="text" name="msg" placeholder="Message" class="form-control">
+                        <button type="submit" id="send" class="btn btn-warning">Send</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+    <script>
+        $(document).ready(function() {
+            $("form").on("submit", function(event) {
+                event.preventDefault();
+                var rawText = $("#text").val();
+                var userHtml = '<p class="userText"><span>' + rawText + "</span></p>";
+                $("#text").val("");
+                $("#chatbox").append(userHtml);
+                document.getElementById("userInput").scrollIntoView({ block: "start", behavior: "smooth" });
+                $.ajax({
+                    data: JSON.stringify({ message: rawText }),
+                    contentType: "application/json",
+                    type: "POST",
+                    url: "/chatbot/api/chat",
+                }).done(function(data) {
+                    var botHtml = '<p class="botText"><span>' + (data.response || data.error || "") + "</span></p>";
+                    $("#chatbox").append($.parseHTML(botHtml));
+                }).fail(function() {
+                    $("#chatbox").append('<p class="botText"><span>Sorry, something went wrong.</span></p>');
+                });
+            });
+        });
+    </script>
+</body>
+</html>

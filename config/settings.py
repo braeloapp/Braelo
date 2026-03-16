@@ -143,6 +143,7 @@ INSTALLED_APPS = [
     'notifications',
     'fcm_django',
     "admin_panel",
+    "chatbot",
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -304,3 +305,26 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# Chatbot app (RAG, business matching, OpenAI). Uses same .env as Braelo.
+# ---------------------------------------------------------------------------
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017')
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'BraeloDB')
+GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
+KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
+RAG_TOP_K = int(os.getenv('RAG_TOP_K', '5'))
+RAG_SIMILARITY_THRESHOLD = float(os.getenv('RAG_SIMILARITY_THRESHOLD', '0.7'))
+RAG_SIMILARITY_FALLBACK = float(os.getenv('RAG_SIMILARITY_FALLBACK', '0.38'))
+# DOCX knowledge base: set DOCX_DATA_DIR in .env to your folder (can be outside braelo). Default: parent folder / documents
+DOCX_DATA_DIR = Path(os.getenv('DOCX_DATA_DIR', str(BASE_DIR.parent / 'documents')))
+MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '5'))
+BUSINESS_RADIUS_MILES = float(os.getenv('BUSINESS_RADIUS_MILES', '25'))
+BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES', '50'))
+MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
+SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
+LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
+BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', '')  # optional: for sync_braelo_mongo

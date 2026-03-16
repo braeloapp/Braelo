@@ -22,4 +22,5 @@ urlpatterns = [
     path('report/', include('feedbacks.urls')),
     path('admin-panel/', include('admin_panel.urls')),
     path('notifications/', include('notifications.urls')),
+    path('chatbot/', include('chatbot.urls')),
 ]
