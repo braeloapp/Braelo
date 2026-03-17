@@ -315,7 +315,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ---------------------------------------------------------------------------
 # Chatbot app (RAG, business matching, OpenAI). Uses same .env as Braelo.
 # ---------------------------------------------------------------------------
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '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')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017')
 MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'BraeloDB')
