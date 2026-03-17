@@ -26,6 +26,7 @@ from mongoengine import connect
 # Load environment variables
 try:
     load_dotenv()
+    print("🔑 OPENAI_API_KEY from env:", os.getenv("OPENAI_API_KEY"))
 except ImportError:
     pass
 
