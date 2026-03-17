@@ -20,7 +20,7 @@ def home(request):
     return HttpResponse("Braelo is running.")
 
 def test_env(request):
-    return JsonResponse({
+    return HttpResponse({
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         "USE_MONGO": os.getenv("USE_MONGO"),
         "BRAELO_MONGO_URI": os.getenv("BRAELO_MONGO_URI")
