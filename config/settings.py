@@ -100,6 +100,7 @@ ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
     '169.254.129.4',
+    '169.254.129.2',
     'braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net',
     '.azurewebsites.net',
 ]
