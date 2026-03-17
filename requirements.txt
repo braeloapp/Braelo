@@ -61,6 +61,7 @@ grpcio==1.68.1
 grpcio-status==1.68.1
 gunicorn>=23.0.0
 httplib2==0.22.0
+httpx==0.26.1
 hyperlink==21.0.0
 idna==3.8
 incremental==24.7.2
@@ -127,7 +128,6 @@ uritemplate==4.1.1
 urllib3==1.26.20
 versioneer==0.29
 yarl==1.15.2
-qrcode==7.3.1
 zope.interface==7.2
 setuptools>=65.5.0
 wheel>=0.40.0
