@@ -14,11 +14,21 @@ https://docs.djangoproject.com/en/4.2/topics/http/urls/
 from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import path, include
+import os
 
 def home(request):
     return HttpResponse("Braelo is running.")
 
+def test_env(request):
+    return JsonResponse({
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+        "USE_MONGO": os.getenv("USE_MONGO"),
+        "BRAELO_MONGO_URI": os.getenv("BRAELO_MONGO_URI")
+    })
+
 urlpatterns = [
+    path("home/", home),
+    path("test-env/", test_env),
     path('admin/', admin.site.urls),
     path('auth/', include('users.urls')),
     path('chats/', include('chats.urls')),
