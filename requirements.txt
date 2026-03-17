@@ -61,7 +61,6 @@ grpcio==1.68.1
 grpcio-status==1.68.1
 gunicorn>=23.0.0
 httplib2==0.22.0
-httpx==0.26.1
 hyperlink==21.0.0
 idna==3.8
 incremental==24.7.2
