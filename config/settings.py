@@ -24,7 +24,10 @@ from mongoengine import connect
 
 
 # Load environment variables
-load_dotenv()
+try:
+    load_dotenv()
+except ImportError:
+    pass
 
 # current_dir = os.getcwd()
 # firebase_credentials = os.path.join(current_dir, 'config', 'credentials.json')
