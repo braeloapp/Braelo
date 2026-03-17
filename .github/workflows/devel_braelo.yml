@@ -1,4 +1,4 @@
-# Docs: https://aka.ms/python-webapps-actions
+#Docs: https://aka.ms/python-webapps-actions
 name: Build and deploy Django app to Azure Web App - braelo
 
 on:
