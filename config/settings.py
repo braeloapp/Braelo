@@ -279,20 +279,20 @@ DATABASES = {
 # MongoDB (mongoengine + chatbot pymongo share these env vars)
 # ---------------------------------------------------------------------------
 MONGO_DB_NAME = (os.getenv("MONGO_DB_NAME", "braelo") or "braelo").strip()
-MONGO_URI = os.getenv("MONGO_URI", os.getenv("MONGO_DB_URI", "")).strip()
+MONGO_DB_URI = os.getenv("MONGO_DB_URI", os.getenv("MONGO_DB_URI", "")).strip()
 _mongo_username = os.getenv("MONGO_USERNAME", "").strip()
 _mongo_password_raw = os.getenv("MONGO_PASSWORD", "").strip()
 
 # Build Atlas URI only when username+password are present (avoid invalid mongodb+srv://:@...)
-if not MONGO_URI and _mongo_username and _mongo_password_raw:
+if not MONGO_DB_URI and _mongo_username and _mongo_password_raw:
     _enc_pw = urllib.parse.quote_plus(_mongo_password_raw)
-    MONGO_URI = (
+    MONGO_DB_URI = (
         f"mongodb+srv://{_mongo_username}:{_enc_pw}"
         f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
     )
 
 
-def _mongo_uri_valid(uri: str) -> bool:
+def _MONGO_DB_URI_valid(uri: str) -> bool:
     """Return False when URI would make pymongo raise InvalidURI (e.g. empty username)."""
     if not uri or not uri.strip():
         return False
@@ -313,12 +313,12 @@ def _mongo_uri_valid(uri: str) -> bool:
     return True
 
 
-if _mongo_uri_valid(MONGO_URI):
+if _MONGO_DB_URI_valid(MONGO_DB_URI):
     try:
-        # Credentials should live in MONGO_URI; avoid duplicate user/pass with SRV strings.
+        # Credentials should live in MONGO_DB_URI; avoid duplicate user/pass with SRV strings.
         connect(
             db=MONGO_DB_NAME,
-            host=MONGO_URI,
+            host=MONGO_DB_URI,
             authentication_source="admin",
         )
         _settings_log.info("MongoEngine connected (db=%s)", MONGO_DB_NAME)
@@ -326,7 +326,7 @@ if _mongo_uri_valid(MONGO_URI):
         _settings_log.warning("MongoEngine connect failed: %s", exc)
 else:
     _settings_log.warning(
-        "MongoEngine connect skipped: set MONGO_URI or MONGO_USERNAME+MONGO_PASSWORD "
+        "MongoEngine connect skipped: set MONGO_DB_URI or MONGO_USERNAME+MONGO_PASSWORD "
         "(CI/deploy without Mongo is OK)."
     )
 
@@ -376,7 +376,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
-# MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
+# MONGO_DB_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
@@ -391,4 +391,4 @@ BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
-BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo
+BRAELO_MONGO_DB_URI = os.getenv('BRAELO_MONGO_DB_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo
