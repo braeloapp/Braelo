@@ -279,27 +279,142 @@ DATABASES = {
 # ---------------------------------------------------------------------------
 # MongoDB (mongoengine + chatbot pymongo share these env vars)
 # ---------------------------------------------------------------------------
-mongo_username = os.getenv('MONGO_USERNAME', '')
-mongo_password_raw = os.getenv('MONGO_PASSWORD', '')
-mongo_db_name = os.getenv('MONGO_DB_NAME', '')
-# Prefer full URI from env; otherwise build Atlas URI from username/password/db
-connection_string = os.getenv('MONGO_URI', '').strip()
-if not connection_string:
-    mongo_password = urllib.parse.quote_plus(mongo_password_raw)
-    connection_string = (
-        f"mongodb+srv://{mongo_username}:{mongo_password}"
-        f"@cluster0.7j4rnkk.mongodb.net/{mongo_db_name}?retryWrites=true&w=majority"
+MONGO_DB_NAME = (os.getenv("MONGO_DB_NAME", "braelo") or "braelo").strip()
+
+
+def _resolve_mongo_uri() -> str:
+    for key in (
+        "MONGO_URI",
+        "CUSTOMCONNSTR_MONGO_URI",
+        "CUSTOMCONNSTR_mongodb",
+        "MONGODB_URI",
+        "MONGO_URL",
+    ):
+        v = os.getenv(key, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _normalize_mongo_uri_credentials(uri: str) -> str:
+    """Encode userinfo in mongodb:// URIs so PyMongo 4+ accepts special characters."""
+    uri = (uri or "").strip()
+    if not uri or "://" not in uri:
+        return uri
+    try:
+        scheme, rest = uri.split("://", 1)
+        if scheme not in ("mongodb", "mongodb+srv"):
+            return uri
+        if "@" not in rest:
+            return uri
+        authority, hostpath = rest.split("@", 1)
+        if ":" not in authority:
+            return uri
+        colon = authority.index(":")
+        user_part = authority[:colon]
+        pass_part = authority[colon + 1 :]
+        if not user_part:
+            return uri
+        user_raw = urllib.parse.unquote(user_part)
+        pass_raw = urllib.parse.unquote(pass_part)
+        user_enc = urllib.parse.quote_plus(user_raw, safe="")
+        pass_enc = urllib.parse.quote_plus(pass_raw, safe="")
+        return f"{scheme}://{user_enc}:{pass_enc}@{hostpath}"
+    except Exception:
+        return uri
+
+
+MONGO_URI = _resolve_mongo_uri()
+_mongo_username = os.getenv("MONGO_USERNAME", "").strip()
+_mongo_password_raw = os.getenv("MONGO_PASSWORD", "").strip()
+DJANGO_SKIP_MONGOENGINE = os.getenv("DJANGO_SKIP_MONGOENGINE", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Build Atlas URI only when username+password are set (avoid mongodb+srv://:@...)
+if not MONGO_URI and _mongo_username and _mongo_password_raw:
+    _enc_user = urllib.parse.quote_plus(_mongo_username, safe="")
+    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw, safe="")
+    MONGO_URI = (
+        f"mongodb+srv://{_enc_user}:{_enc_pw}"
+        f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
     )
 
-connect(
-    db=mongo_db_name,  # Name of your MongoDB database
-    host=connection_string,
-    port=27017,  # Default MongoDB port
-    username=mongo_username,  # MongoDB username if authentication is enabled
-    password=mongo_password_raw,  # MongoDB password
-    authentication_source='admin',  # Authentication source, usually 'admin'
-    # authentication_mechanism='SCRAM-SHA-1',  # Authentication mechanism
-)
+if MONGO_URI:
+    MONGO_URI = _normalize_mongo_uri_credentials(MONGO_URI)
+
+
+def _mongo_uri_valid(uri: str) -> bool:
+    if not uri or not uri.strip():
+        return False
+    u = uri.strip()
+    if u.startswith(("mongodb://localhost", "mongodb://127.0.0.1")):
+        return True
+    if "://" not in u or "@" not in u:
+        return False
+    try:
+        _, rest = u.split("://", 1)
+        userinfo, _, _ = rest.partition("@")
+    except (ValueError, IndexError):
+        return False
+    userinfo = userinfo.strip()
+    if not userinfo or userinfo.startswith(":"):
+        return False
+    return True
+
+
+# GitHub Actions / other CI often has no Mongo secrets — don't crash manage.py
+_auto_skip_mongo_ci = (
+    os.getenv("CI", "").lower() in ("true", "1", "yes")
+    or os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+) and not _mongo_uri_valid(MONGO_URI)
+
+
+if DJANGO_SKIP_MONGOENGINE or _auto_skip_mongo_ci:
+    _settings_log.warning(
+        "MongoEngine not initialized (%s). Set MONGO_URI or DJANGO_SKIP_MONGOENGINE=false with valid credentials.",
+        "DJANGO_SKIP_MONGOENGINE"
+        if DJANGO_SKIP_MONGOENGINE
+        else "CI without MONGO_URI",
+    )
+elif _mongo_uri_valid(MONGO_URI):
+    try:
+        connect(
+            alias="default",
+            db=MONGO_DB_NAME,
+            host=MONGO_URI,
+            authentication_source="admin",
+        )
+        _settings_log.info("MongoEngine default connection registered (db=%s)", MONGO_DB_NAME)
+    except Exception as exc:
+        _settings_log.exception("MongoEngine connect failed: %s", exc)
+        raise ImproperlyConfigured(
+            "Could not connect MongoEngine to MongoDB. Check MONGO_URI / Atlas network access. "
+            f"Original error: {exc}"
+        ) from exc
+elif DEBUG:
+    try:
+        connect(
+            alias="default",
+            db=MONGO_DB_NAME,
+            host="mongodb://127.0.0.1:27017",
+            authentication_source="admin",
+        )
+        _settings_log.warning(
+            "MONGO_URI missing/invalid; MongoEngine using DEBUG fallback mongodb://127.0.0.1:27017"
+        )
+    except Exception as exc:
+        _settings_log.warning(
+            "MongoEngine DEBUG localhost connect failed (%s). Use MONGO_URI or set DJANGO_SKIP_MONGOENGINE=1 in CI.",
+            exc,
+        )
+else:
+    raise ImproperlyConfigured(
+        "MongoDB is required but MONGO_URI is missing or invalid. "
+        "Set MONGO_URI (or MONGO_USERNAME + MONGO_PASSWORD) and MONGO_DB_NAME."
+    )
 
 
 # Password validation
@@ -349,9 +464,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
-# Prefer MONGO_URI; fallback to legacy MONGO_DB_URI for compatibility.
-MONGO_URI = os.getenv('MONGO_URI', os.getenv('MONGO_URI', ''))
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'braelo')
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
