@@ -113,6 +113,20 @@ CSRF_TRUSTED_ORIGINS = [
     'http://192.168.18.4',
 ]
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+}
+
 # Email backend
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
