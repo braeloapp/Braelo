@@ -1,6 +1,6 @@
 """
 MongoDB connection and collection access for chatbot (uses config.settings).
-Database: CHATBOT_MONGO_DB_NAME @ CHATBOT_MONGO_DB_URI (or shared Braelo MongoDB).
+Database: MONGO_DB_NAME @ MONGO_URI (or shared Braelo MongoDB).
 """
 import logging
 from django.conf import settings
@@ -17,11 +17,11 @@ def get_client():
             from pymongo import MongoClient
             logger.info(
                 "mongo_db.connect.start uri_set=%s db=%s",
-                bool(getattr(settings, "MONGO_DB_URI", None)),
+                bool(getattr(settings, "MONGO_URI", None)),
                 getattr(settings, "MONGO_DB_NAME", "BraeloDB"),
             )
             _client = MongoClient(
-                getattr(settings, "MONGO_DB_URI", "mongodb://localhost:27017"),
+                getattr(settings, "MONGO_URI", "mongodb://localhost:27017"),
                 serverSelectionTimeoutMS=5000,
             )
             _client.admin.command("ping")
@@ -33,7 +33,7 @@ def get_client():
 
 
 def get_db():
-    """Return chatbot MongoDB database (uses MONGO_DB_URI / MONGO_DB_NAME from config.settings)."""
+    """Return chatbot MongoDB database (uses MONGO_URI / MONGO_DB_NAME from config.settings)."""
     db_name = getattr(settings, "MONGO_DB_NAME", "BraeloDB")
     return get_client()[db_name]
 

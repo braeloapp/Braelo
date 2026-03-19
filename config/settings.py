@@ -267,20 +267,24 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-username = 'braelo'
-password = 'Br@3lO2023'
-db_name = 'braelo'
-# URL-encode username & password
-username = urllib.parse.quote_plus(username)
-password = urllib.parse.quote_plus(password)
-connection_string = f"mongodb+srv://{username}:{password}@cluster0.7j4rnkk.mongodb.net/{db_name}?retryWrites=true&w=majority" 
+mongo_username = os.getenv('MONGO_USERNAME', '')
+mongo_password_raw = os.getenv('MONGO_PASSWORD', '')
+mongo_db_name = os.getenv('MONGO_DB_NAME', '')
+# Prefer full URI from env; otherwise build Atlas URI from username/password/db
+connection_string = os.getenv('MONGO_URI', '').strip()
+if not connection_string:
+    mongo_password = urllib.parse.quote_plus(mongo_password_raw)
+    connection_string = (
+        f"mongodb+srv://{mongo_username}:{mongo_password}"
+        f"@cluster0.7j4rnkk.mongodb.net/{mongo_db_name}?retryWrites=true&w=majority"
+    )
 
 connect(
-    db='braelo',  # Name of your MongoDB database
+    db=mongo_db_name,  # Name of your MongoDB database
     host=connection_string,
     port=27017,  # Default MongoDB port
-    username=username,  # MongoDB username if authentication is enabled
-    password=password,  # MongoDB password
+    username=mongo_username,  # MongoDB username if authentication is enabled
+    password=mongo_password_raw,  # MongoDB password
     authentication_source='admin',  # Authentication source, usually 'admin'
     # authentication_mechanism='SCRAM-SHA-1',  # Authentication mechanism
 )
@@ -331,7 +335,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
-MONGO_DB_URI = os.getenv('MONGO_DB_URI', 'mongodb+srv://braelo:Br%403lO2023@cluster0.7j4rnkk.mongodb.net/braelo?retryWrites=true&w=majority')
+# Prefer MONGO_URI; fallback to legacy MONGO_DB_URI for compatibility.
+MONGO_URI = os.getenv('MONGO_URI', os.getenv('MONGO_DB_URI', ''))
 MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'braelo')
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
@@ -347,4 +352,4 @@ BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
-BRAELO_MONGO_DB_URI = os.getenv('BRAELO_MONGO_DB_URI', '')  # optional: for sync_braelo_mongo
+BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo

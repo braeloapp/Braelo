@@ -204,7 +204,7 @@ class Command(BaseCommand):
             from chatbot.mongo_db import get_db, ensure_indexes
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"MongoDB connection failed: {e}"))
-            self.stderr.write("Ensure MongoDB is running and MONGO_DB_URI/MONGO_DB_NAME are set in braelo .env.")
+            self.stderr.write("Ensure MongoDB is running and MONGO_URI/MONGO_DB_NAME are set in braelo .env.")
             return
 
         db = get_db()

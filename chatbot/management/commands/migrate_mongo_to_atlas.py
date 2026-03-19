@@ -39,7 +39,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--source-uri",
-            default="mongodb+srv://braelo:Br%403lO2023@cluster0.7j4rnkk.mongodb.net/?retryWrites=true&w=majority",
+            default="mongodb://localhost:27017",
             help="Source Mongo URI (default: mongodb://localhost:27017).",
         )
         parser.add_argument(
@@ -49,8 +49,8 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--target-uri",
-            default=getattr(settings, "MONGO_DB_URI", ""),
-            help="Target Mongo URI (default: settings.MONGO_DB_URI).",
+            default=getattr(settings, "MONGO_URI", ""),
+            help="Target Mongo URI (default: settings.MONGO_URI).",
         )
         parser.add_argument(
             "--target-db",
@@ -91,7 +91,7 @@ class Command(BaseCommand):
         batch_size = options["batch_size"]
 
         if not target_uri:
-            self.stderr.write(self.style.ERROR("Target URI is empty. Set --target-uri or MONGO_DB_URI in .env."))
+            self.stderr.write(self.style.ERROR("Target URI is empty. Set --target-uri or MONGO_URI in .env."))
             return
 
         if "@3lO" in target_uri:
@@ -196,4 +196,4 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.SUCCESS(f"Migration complete. Processed collections docs: {grand_total}"))
             self.stdout.write(self.style.SUCCESS(f"Bulk operations (matched/modified/upserted aggregate): {grand_written}"))
-            self.stdout.write("Next step: set MONGO_DB_URI on Azure App Settings to your Atlas URI and restart the app.")
+            self.stdout.write("Next step: set MONGO_URI on Azure App Settings to your Atlas URI and restart the app.")
