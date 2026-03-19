@@ -1,7 +1,7 @@
 """
 Sync Braelo MongoDB (Atlas) data into the chatbot's local MongoDB. Uses config.settings.
 Usage: python manage.py sync_braelo_mongo [--dry-run]
-Set BRAELO_MONGO_URI in .env for Braelo Atlas connection string.
+Set BRAELO_MONGO_DB_URI in .env for Braelo Atlas connection string.
 """
 from django.core.management.base import BaseCommand
 from django.conf import settings
@@ -55,10 +55,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         dry_run = options.get("dry_run", False)
-        braelo_uri = getattr(settings, "BRAELO_MONGO_URI", "")
+        braelo_uri = getattr(settings, "BRAELO_MONGO_DB_URI", "")
 
         if not braelo_uri:
-            self.stderr.write(self.style.ERROR("BRAELO_MONGO_URI is not set. Add it to braelo .env (Braelo Atlas connection string)."))
+            self.stderr.write(self.style.ERROR("BRAELO_MONGO_DB_URI is not set. Add it to braelo .env (Braelo Atlas connection string)."))
             return
 
         try:

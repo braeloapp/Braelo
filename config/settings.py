@@ -331,8 +331,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017')
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'BraeloDB')
+MONGO_DB_URI = os.getenv('MONGO_DB_URI', 'mongodb+srv://braelo:Br%403lO2023@cluster0.7j4rnkk.mongodb.net/braelo?retryWrites=true&w=majority')
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'braelo')
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
@@ -347,4 +347,4 @@ BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
-BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', '')  # optional: for sync_braelo_mongo
+BRAELO_MONGO_DB_URI = os.getenv('BRAELO_MONGO_DB_URI', '')  # optional: for sync_braelo_mongo

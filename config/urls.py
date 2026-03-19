@@ -23,7 +23,7 @@ def test_env(request):
     return HttpResponse({
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         "USE_MONGO": os.getenv("USE_MONGO"),
-        "BRAELO_MONGO_URI": os.getenv("BRAELO_MONGO_URI")
+        "BRAELO_MONGO_DB_URI": os.getenv("BRAELO_MONGO_DB_URI")
     })
 
 urlpatterns = [
