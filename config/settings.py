@@ -16,17 +16,24 @@ import os
 import base64
 import binascii
 import json
+import logging
 import urllib
 from pathlib import Path
 from dotenv import load_dotenv
 from firebase_admin import initialize_app, credentials
 from mongoengine import connect
 
+_settings_log = logging.getLogger(__name__)
+
 
 # Load environment variables
 try:
     load_dotenv()
-    print("🔑 OPENAI_API_KEY from env:", os.getenv("OPENAI_API_KEY"))
+    # Never log secret values (CI/deploy often has no .env)
+    _settings_log.info(
+        "OPENAI_API_KEY configured=%s",
+        bool(os.getenv("OPENAI_API_KEY")),
+    )
 except ImportError:
     pass
 
@@ -267,27 +274,61 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-mongo_username = os.getenv('MONGO_USERNAME', '')
-mongo_password_raw = os.getenv('MONGO_PASSWORD', '')
-mongo_db_name = os.getenv('MONGO_DB_NAME', '')
-# Prefer full URI from env; otherwise build Atlas URI from username/password/db
-connection_string = os.getenv('MONGO_URI', '').strip()
-if not connection_string:
-    mongo_password = urllib.parse.quote_plus(mongo_password_raw)
-    connection_string = (
-        f"mongodb+srv://{mongo_username}:{mongo_password}"
-        f"@cluster0.7j4rnkk.mongodb.net/{mongo_db_name}?retryWrites=true&w=majority"
+
+# ---------------------------------------------------------------------------
+# MongoDB (mongoengine + chatbot pymongo share these env vars)
+# ---------------------------------------------------------------------------
+MONGO_DB_NAME = (os.getenv("MONGO_DB_NAME", "braelo") or "braelo").strip()
+MONGO_URI = os.getenv("MONGO_URI", os.getenv("MONGO_DB_URI", "")).strip()
+_mongo_username = os.getenv("MONGO_USERNAME", "").strip()
+_mongo_password_raw = os.getenv("MONGO_PASSWORD", "").strip()
+
+# Build Atlas URI only when username+password are present (avoid invalid mongodb+srv://:@...)
+if not MONGO_URI and _mongo_username and _mongo_password_raw:
+    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw)
+    MONGO_URI = (
+        f"mongodb+srv://{_mongo_username}:{_enc_pw}"
+        f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
     )
 
-connect(
-    db=mongo_db_name,  # Name of your MongoDB database
-    host=connection_string,
-    port=27017,  # Default MongoDB port
-    username=mongo_username,  # MongoDB username if authentication is enabled
-    password=mongo_password_raw,  # MongoDB password
-    authentication_source='admin',  # Authentication source, usually 'admin'
-    # authentication_mechanism='SCRAM-SHA-1',  # Authentication mechanism
-)
+
+def _mongo_uri_valid(uri: str) -> bool:
+    """Return False when URI would make pymongo raise InvalidURI (e.g. empty username)."""
+    if not uri or not uri.strip():
+        return False
+    u = uri.strip()
+    # Local dev without auth in URI
+    if u.startswith(("mongodb://localhost", "mongodb://127.0.0.1")):
+        return True
+    if "://" not in u or "@" not in u:
+        return False
+    try:
+        _, rest = u.split("://", 1)
+        userinfo, _, _ = rest.partition("@")
+    except (ValueError, IndexError):
+        return False
+    userinfo = userinfo.strip()
+    if not userinfo or userinfo.startswith(":"):
+        return False
+    return True
+
+
+if _mongo_uri_valid(MONGO_URI):
+    try:
+        # Credentials should live in MONGO_URI; avoid duplicate user/pass with SRV strings.
+        connect(
+            db=MONGO_DB_NAME,
+            host=MONGO_URI,
+            authentication_source="admin",
+        )
+        _settings_log.info("MongoEngine connected (db=%s)", MONGO_DB_NAME)
+    except Exception as exc:
+        _settings_log.warning("MongoEngine connect failed: %s", exc)
+else:
+    _settings_log.warning(
+        "MongoEngine connect skipped: set MONGO_URI or MONGO_USERNAME+MONGO_PASSWORD "
+        "(CI/deploy without Mongo is OK)."
+    )
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
@@ -335,9 +376,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
-# Prefer MONGO_URI; fallback to legacy MONGO_DB_URI for compatibility.
-MONGO_URI = os.getenv('MONGO_URI', os.getenv('MONGO_DB_URI', ''))
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'braelo')
+# MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
