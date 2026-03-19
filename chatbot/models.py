@@ -9,6 +9,9 @@ from django.utils import timezone
 class User(models.Model):
     """Chat user; account required for history and location-based analysis."""
     external_id = models.CharField(max_length=128, unique=True, db_index=True)
+    display_name = models.CharField(max_length=128, null=True, blank=True)
+    email = models.EmailField(max_length=254, null=True, blank=True)
+    phone = models.CharField(max_length=32, null=True, blank=True)
     language_preference = models.CharField(max_length=8, default="en")
     state = models.CharField(max_length=64, null=True, blank=True)
     city = models.CharField(max_length=128, null=True, blank=True)
@@ -30,6 +33,10 @@ class User(models.Model):
     @property
     def has_complete_location(self):
         return bool(self.state and self.county and self.zip_code)
+
+    @property
+    def has_contact_details(self):
+        return bool(self.email and self.phone)
 
 
 class ChatHistory(models.Model):

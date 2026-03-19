@@ -72,6 +72,22 @@ def _parse_user_location(data: dict) -> dict:
     return loc
 
 
+def _parse_user_profile(data: dict) -> dict:
+    """Extract name, email, phone for profile (no email/phone required upfront)."""
+    profile = {}
+    if data.get("name"):
+        profile["name"] = str(data["name"]).strip()[:128]
+    if data.get("display_name"):
+        profile["display_name"] = str(data["display_name"]).strip()[:128]
+    if not profile.get("display_name") and profile.get("name"):
+        profile["display_name"] = profile["name"]
+    if data.get("email"):
+        profile["email"] = str(data["email"]).strip()[:254]
+    if data.get("phone"):
+        profile["phone"] = str(data["phone"]).strip()[:32]
+    return profile
+
+
 @csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
 def api_chat(request):
@@ -85,6 +101,7 @@ def api_chat(request):
         user_id = data.get("user_id") or data.get("session_id") or _get_client_ip(request)
         session_id = data.get("session_id") or user_id
         user_location = _parse_user_location(data)
+        user_profile = _parse_user_profile(data)
     except Exception:
         return JsonResponse({"error": "Bad request", "response": ""}, status=400)
     try:
@@ -94,8 +111,9 @@ def api_chat(request):
             user_id=user_id,
             session_id=session_id,
             user_location=user_location,
+            user_profile=user_profile,
         )
-        return JsonResponse({
+        payload = {
             "response": out["response"],
             "detected_language": out.get("detected_language", "en"),
             "businesses": out.get("businesses", []),
@@ -103,7 +121,13 @@ def api_chat(request):
             "see_more": out.get("see_more", False),
             "location_note": out.get("location_note"),
             "question_analysis": out.get("question_analysis"),
-        })
+        }
+        if out.get("user_name") is not None:
+            payload["user_name"] = out["user_name"]
+        if out.get("require_contact_details"):
+            payload["require_contact_details"] = True
+            payload["contact_details_message"] = out.get("contact_details_message", "")
+        return JsonResponse(payload)
     except Exception as e:
         logger.exception("chatbot api_chat error")
         hint = ""

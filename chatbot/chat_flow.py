@@ -40,6 +40,9 @@ class _UserLike:
     """In-memory user object — used when DB or Mongo is unavailable."""
     def __init__(self, d: dict):
         self.external_id = d.get("external_id", "")
+        self.display_name = d.get("display_name") or d.get("name")
+        self.email = d.get("email")
+        self.phone = d.get("phone")
         self.language_preference = d.get("language_preference", "en")
         self.state = d.get("state")
         self.city = d.get("city")
@@ -54,12 +57,31 @@ class _UserLike:
     def has_complete_location(self):
         return bool(self.state and self.county and self.zip_code)
 
+    @property
+    def has_contact_details(self):
+        return bool(self.email and self.phone)
+
 
 def _user_from_mongo(doc: dict) -> _UserLike:
     return _UserLike(doc)
 
 
-def get_or_create_user(external_id: str, location: dict = None) -> _UserLike:
+def get_or_create_user(external_id: str, location: dict = None, profile: dict = None) -> _UserLike:
+    """Get or create user; location and profile (display_name, email, phone) are merged and persisted."""
+    profile = profile or {}
+    loc = location or {}
+    merge = {
+        "state": loc.get("state"),
+        "county": loc.get("county"),
+        "zip_code": loc.get("zip_code"),
+        "latitude": loc.get("latitude"),
+        "longitude": loc.get("longitude"),
+        "location_enabled": loc.get("location_enabled", True) if "location_enabled" in loc else None,
+        "display_name": profile.get("display_name") or profile.get("name"),
+        "email": profile.get("email"),
+        "phone": profile.get("phone"),
+    }
+
     if getattr(django_settings, "USE_MONGO", False):
         try:
             from chatbot.mongo_db import get_db
@@ -71,6 +93,7 @@ def get_or_create_user(external_id: str, location: dict = None) -> _UserLike:
             if doc is None:
                 doc = {
                     "external_id": external_id,
+                    "display_name": None, "email": None, "phone": None,
                     "language_preference": "en",
                     "state": None, "city": None, "county": None, "zip_code": None,
                     "location_enabled": True,
@@ -78,41 +101,57 @@ def get_or_create_user(external_id: str, location: dict = None) -> _UserLike:
                     "created_at": now, "updated_at": now,
                     "is_banned": False,
                 }
-                if location:
-                    doc.update({k: location.get(k) for k in ("state", "county", "zip_code", "latitude", "longitude")})
-                    doc["location_enabled"] = bool(location.get("location_enabled", True))
+                for k, v in merge.items():
+                    if v is not None or k in ("display_name", "email", "phone"):
+                        doc[k] = v
+                if "location_enabled" in loc:
+                    doc["location_enabled"] = bool(loc["location_enabled"])
                 col.insert_one(doc)
-            elif location:
+            else:
                 update = {"updated_at": now}
-                for k in ("state", "county", "zip_code", "latitude", "longitude"):
-                    if location.get(k) is not None:
-                        update[k] = location[k]
-                if "location_enabled" in location:
-                    update["location_enabled"] = bool(location["location_enabled"])
-                col.update_one({"external_id": external_id}, {"$set": update})
-                doc = col.find_one({"external_id": external_id})
+                for k in ("state", "county", "zip_code", "latitude", "longitude", "display_name", "email", "phone"):
+                    if merge.get(k) is not None:
+                        update[k] = merge[k]
+                    elif k in profile and profile[k] is not None:
+                        update[k] = profile[k]
+                if "location_enabled" in loc:
+                    update["location_enabled"] = bool(loc["location_enabled"])
+                if update:
+                    col.update_one({"external_id": external_id}, {"$set": update})
+                    doc = col.find_one({"external_id": external_id})
             return _user_from_mongo(doc)
         except Exception:
             pass
 
     try:
         user, _ = User.objects.get_or_create(external_id=external_id)
-        if location:
-            for k in ("state", "county", "zip_code"):
-                if location.get(k):
-                    setattr(user, k, location[k])
-            if "location_enabled" in location:
-                user.location_enabled = bool(location["location_enabled"])
-            for k in ("latitude", "longitude"):
-                if location.get(k) is not None:
-                    setattr(user, k, location[k])
+        updated = False
+        for k in ("state", "county", "zip_code"):
+            if merge.get(k):
+                setattr(user, k, merge[k])
+                updated = True
+        if "location_enabled" in loc:
+            user.location_enabled = bool(loc["location_enabled"])
+            updated = True
+        for k in ("latitude", "longitude"):
+            if merge.get(k) is not None:
+                setattr(user, k, merge[k])
+                updated = True
+        for k in ("display_name", "email", "phone"):
+            if merge.get(k) is not None:
+                setattr(user, k, merge[k])
+                updated = True
+        if updated:
             user.save(update_fields=["state", "county", "zip_code", "location_enabled",
-                                     "latitude", "longitude", "updated_at"])
+                                     "latitude", "longitude", "display_name", "email", "phone", "updated_at"])
         return user
     except Exception:
         return _UserLike({
             "external_id": external_id,
-            **(location or {}),
+            **loc,
+            "display_name": merge.get("display_name"),
+            "email": merge.get("email"),
+            "phone": merge.get("phone"),
         })
 
 
@@ -291,15 +330,18 @@ def process_message(
     user_id: str = None,
     session_id: str = None,
     user_location: dict = None,
+    user_profile: dict = None,
 ) -> dict:
     user_id = user_id or session_id or "anonymous"
     user_location = user_location or {}
-    user = get_or_create_user(user_id, user_location)
+    user_profile = user_profile or {}
+    user = get_or_create_user(user_id, user_location, profile=user_profile)
 
-    state = user_location.get("state") or user.state
-    county = user_location.get("county") or user.county
-    zip_code = user_location.get("zip_code") or user.zip_code
+    state = user_location.get("state") or getattr(user, "state", None)
+    county = user_location.get("county") or getattr(user, "county", None)
+    zip_code = user_location.get("zip_code") or getattr(user, "zip_code", None)
     location_enabled = user_location.get("location_enabled", getattr(user, "location_enabled", True))
+    user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
 
@@ -315,7 +357,7 @@ def process_message(
             else casual_text
         )
         _save_history(user_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
-        return _build_response(reply, detected_lang, "casual")
+        return _build_response(reply, detected_lang, "casual", user_name=user_name)
 
     # ------------------------------------------------------------------
     # Language detection + hard off-topic filter
@@ -325,7 +367,7 @@ def process_message(
     if _looks_off_topic(message):
         reply = _off_topic_message(detected_lang)
         _save_history(user_id, message, reply, "off_topic", {"intent": "off_topic"})
-        return _build_response(reply, detected_lang, "off_topic")
+        return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
 
     # ------------------------------------------------------------------
     # TIER 1 — Knowledge base search  (ALWAYS runs first, before intent)
@@ -364,7 +406,7 @@ def process_message(
     if intent == "off_topic" and not matches:
         reply = _off_topic_message(detected_lang)
         _save_history(user_id, message, reply, "off_topic", structured)
-        return _build_response(reply, detected_lang, "off_topic")
+        return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
 
     # If intent is off_topic but KB actually found something, override intent so we use the KB
     if intent == "off_topic" and matches:
@@ -406,7 +448,7 @@ def process_message(
             reply = reply.rstrip() + loc_hint.get(detected_lang, loc_hint["en"])
 
         _save_history(user_id, message, reply, intent, structured)
-        return _build_response(reply, detected_lang, intent, question_analysis=structured)
+        return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
     # TIER 3 — Business search  (only when KB has no match)
@@ -417,12 +459,12 @@ def process_message(
             if has_api_key and detected_lang != "en":
                 reply = translate_verified_answer(reply, detected_lang)
             _save_history(user_id, message, reply, "location_required", structured)
-            return _build_response(reply, detected_lang, "location_required")
+            return _build_response(reply, detected_lang, "location_required", user_name=user_name)
 
         if not state or not county or not zip_code:
             reply = generate_clarifying_questions(message, detected_lang, missing_location=True)
             _save_history(user_id, message, reply, "location_incomplete", structured)
-            return _build_response(reply, detected_lang, "location_incomplete")
+            return _build_response(reply, detected_lang, "location_incomplete", user_name=user_name)
 
         limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
         user_lat = user_location.get("latitude") or getattr(user, "latitude", None)
@@ -455,10 +497,28 @@ def process_message(
             }
             reply = no_biz.get(detected_lang, no_biz["en"])
 
+        # When we show business results (connecting user with providers), ask for email/phone if missing
+        require_contact = False
+        contact_msg = None
+        if businesses and not getattr(user, "has_contact_details", True):
+            require_contact = True
+            contact_msg = {
+                "en": "I'll save this and your chat history. Please add your details so I can continue:",
+                "es": "Guardaré esto y tu historial. Por favor agrega tus datos para continuar:",
+                "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
+            }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
+
         _save_history(user_id, message, reply, intent, structured)
-        return _build_response(reply, detected_lang, intent, businesses=businesses,
-                               see_more=see_more, location_note=location_note,
-                               question_analysis=structured)
+        return _build_response(
+            reply, detected_lang, intent,
+            businesses=businesses,
+            see_more=see_more,
+            location_note=location_note,
+            question_analysis=structured,
+            user_name=user_name,
+            require_contact_details=require_contact,
+            contact_details_message=contact_msg,
+        )
 
     # ------------------------------------------------------------------
     # TIER 3b — Business comparison
@@ -467,14 +527,14 @@ def process_message(
         biz_ctx = _fetch_business_context(structured, state)
         reply = generate_business_comparison(message, biz_ctx or "No business data available.", detected_lang)
         _save_history(user_id, message, reply, intent, structured)
-        return _build_response(reply, detected_lang, intent, question_analysis=structured)
+        return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
     # TIER 4 — No KB match, not a known intent → helpful off-topic message
     # ------------------------------------------------------------------
     reply = _off_topic_message(detected_lang)
     _save_history(user_id, message, reply, "off_topic", structured)
-    return _build_response(reply, detected_lang, "off_topic", question_analysis=structured)
+    return _build_response(reply, detected_lang, "off_topic", question_analysis=structured, user_name=user_name)
 
 
 # ---------------------------------------------------------------------------
@@ -489,8 +549,11 @@ def _build_response(
     see_more: bool = False,
     location_note: str = None,
     question_analysis: dict = None,
+    user_name: str = None,
+    require_contact_details: bool = False,
+    contact_details_message: str = None,
 ) -> dict:
-    return {
+    out = {
         "response": response,
         "detected_language": detected_language,
         "businesses": businesses or [],
@@ -499,3 +562,9 @@ def _build_response(
         "location_note": location_note,
         "question_analysis": question_analysis or {"intent": intent, "detected_language": detected_language},
     }
+    if user_name is not None:
+        out["user_name"] = user_name
+    if require_contact_details:
+        out["require_contact_details"] = True
+        out["contact_details_message"] = contact_details_message or "Please add your email and phone so we can continue."
+    return out
