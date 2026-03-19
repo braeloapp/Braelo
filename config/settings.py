@@ -299,6 +299,38 @@ def _resolve_mongo_uri() -> str:
     return ""
 
 
+def _normalize_mongo_uri_credentials(uri: str) -> str:
+    """
+    PyMongo 4+ requires userinfo to be RFC 3986–escaped (quote_plus).
+    Azure often stores raw passwords (e.g. with @). Decode any %-seqs first, then re-encode
+    so we never double-encode an already-correct URI.
+    """
+    if not uri or not uri.strip():
+        return uri
+    u = uri.strip()
+    if "@" not in u or "://" not in u:
+        return u
+    try:
+        scheme, _, rest = u.partition("://")
+        if not scheme or not rest:
+            return uri
+        userinfo, sep, hostpath = rest.partition("@")
+        if not sep or ":" not in userinfo:
+            return uri
+        colon = userinfo.index(":")
+        user_part = userinfo[:colon]
+        pass_part = userinfo[colon + 1 :]
+        if not user_part:
+            return uri
+        user_raw = urllib.parse.unquote(user_part)
+        pass_raw = urllib.parse.unquote(pass_part)
+        user_enc = urllib.parse.quote_plus(user_raw, safe="")
+        pass_enc = urllib.parse.quote_plus(pass_raw, safe="")
+        return f"{scheme}://{user_enc}:{pass_enc}@{hostpath}"
+    except Exception:
+        return uri
+
+
 MONGO_URI = _resolve_mongo_uri()
 _mongo_username = os.getenv("MONGO_USERNAME", "").strip()
 _mongo_password_raw = os.getenv("MONGO_PASSWORD", "").strip()
@@ -306,11 +338,15 @@ DJANGO_SKIP_MONGOENGINE = os.getenv("DJANGO_SKIP_MONGOENGINE", "").lower() in ("
 
 # Build Atlas URI only when username+password are present (avoid invalid mongodb+srv://:@...)
 if not MONGO_URI and _mongo_username and _mongo_password_raw:
-    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw)
+    _enc_user = urllib.parse.quote_plus(_mongo_username, safe="")
+    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw, safe="")
     MONGO_URI = (
-        f"mongodb+srv://{_mongo_username}:{_enc_pw}"
+        f"mongodb+srv://{_enc_user}:{_enc_pw}"
         f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
     )
+
+if MONGO_URI:
+    MONGO_URI = _normalize_mongo_uri_credentials(MONGO_URI)
 
 
 def _mongo_uri_valid(uri: str) -> bool:
@@ -351,14 +387,14 @@ elif _mongo_uri_valid(MONGO_URI):
         _settings_log.info("MongoEngine default connection registered (db=%s)", MONGO_DB_NAME)
     except Exception as exc:
         _settings_log.exception("MongoEngine connect failed: %s", exc)
-        if not DEBUG:
-            raise ImproperlyConfigured(
-                "Could not connect MongoEngine to MongoDB. Set MONGO_URI (and MONGO_DB_NAME) in Azure "
-                "Application Settings, allow your App Service IP in Atlas Network Access, and ensure the "
-                "password is URL-encoded in the URI (@ → %40). "
-                f"Underlying error: {exc}"
-            ) from exc
-        _settings_log.warning("DEBUG=True: continuing without a working MongoEngine connection.")
+        # Never continue without a connection — views import MongoEngine documents at startup and
+        # class-level querysets would fail with "You have not defined a default connection".
+        raise ImproperlyConfigured(
+            "Could not connect MongoEngine to MongoDB. Set MONGO_URI (and MONGO_DB_NAME) in Azure "
+            "Application Settings, allow your App Service outbound IPs in Atlas Network Access, "
+            "and ensure credentials in the URI are RFC 3986–safe (app normalizes user/password; raw @ in password is OK). "
+            f"Underlying error: {exc}"
+        ) from exc
 elif DEBUG:
     # Local dev fallback when .env has no Atlas URI yet
     try:
