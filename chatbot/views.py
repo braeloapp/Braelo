@@ -102,6 +102,14 @@ def api_chat(request):
         session_id = data.get("session_id") or user_id
         user_location = _parse_user_location(data)
         user_profile = _parse_user_profile(data)
+        logger.info(
+            "chatbot.api_chat.request user_id=%s session_id=%s message_len=%s has_location=%s has_profile=%s",
+            user_id,
+            session_id,
+            len(message),
+            bool(user_location),
+            bool(user_profile),
+        )
     except Exception:
         return JsonResponse({"error": "Bad request", "response": ""}, status=400)
     try:
@@ -127,6 +135,14 @@ def api_chat(request):
         if out.get("require_contact_details"):
             payload["require_contact_details"] = True
             payload["contact_details_message"] = out.get("contact_details_message", "")
+        logger.info(
+            "chatbot.api_chat.response user_id=%s intent=%s lang=%s response_len=%s businesses=%s",
+            user_id,
+            payload.get("intent"),
+            payload.get("detected_language"),
+            len(payload.get("response") or ""),
+            len(payload.get("businesses") or []),
+        )
         return JsonResponse(payload)
     except Exception as e:
         logger.exception("chatbot api_chat error")
@@ -160,6 +176,7 @@ def legacy_get(request):
     msg = msg.strip()
     if not msg:
         return HttpResponse("Please send a message.", status=400)
+    logger.info("chatbot.legacy_get.request ip=%s message_len=%s", _get_client_ip(request), len(msg))
     if django_settings.OPENAI_API_KEY:
         try:
             from chatbot.chat_flow import process_message
@@ -177,6 +194,11 @@ def legacy_get(request):
             except Exception:
                 pass
             out = process_message(msg, user_id=client_id, session_id=client_id, user_location=loc or None)
+            logger.info(
+                "chatbot.legacy_get.response user_id=%s response_len=%s",
+                client_id,
+                len(out.get("response") or ""),
+            )
             return HttpResponse(out["response"])
         except Exception:
             return HttpResponse("Sorry, something went wrong. Please try again.")
@@ -227,11 +249,13 @@ def legacy_get(request):
 
 @require_http_methods(["GET"])
 def health(request):
+    logger.info("chatbot.health.check llm=%s", bool(getattr(django_settings, "OPENAI_API_KEY", None)))
     return JsonResponse({"status": "ok", "llm": bool(getattr(django_settings, "OPENAI_API_KEY", None))})
 
 
 @require_http_methods(["GET"])
 def debug_knowledge(request):
+    logger.info("chatbot.debug_knowledge.request use_mongo=%s", bool(getattr(django_settings, "USE_MONGO", False)))
     if getattr(django_settings, "USE_MONGO", False):
         try:
             from chatbot.mongo_db import get_db
@@ -280,6 +304,13 @@ def track_contact(request):
         if not business_id:
             return JsonResponse({"error": "business_id required"}, status=400)
         user_id = data.get("user_id") or request.META.get("REMOTE_ADDR")
+        logger.info(
+            "chatbot.track_contact.request user_id=%s business_id=%s contact_type=%s use_mongo=%s",
+            user_id,
+            business_id,
+            contact_type,
+            bool(getattr(django_settings, "USE_MONGO", False)),
+        )
         if getattr(django_settings, "USE_MONGO", False):
             try:
                 from chatbot.mongo_db import get_db

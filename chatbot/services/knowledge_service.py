@@ -4,7 +4,10 @@ Knowledge base: embeddings and semantic search over client DOCX Q&A. Uses config
 import json
 import math
 import unicodedata
+import logging
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     from openai import OpenAI
@@ -143,6 +146,7 @@ def _search_knowledge_mongo(
                 mongo_filter = c_filter
         rows = list(kb.find(mongo_filter)) if mongo_filter else list(kb.find({}))
     except Exception:
+        logger.exception("knowledge_service.mongo.query_failed")
         return []
 
     results = []
@@ -227,8 +231,16 @@ def _search_knowledge_mongo(
                 })
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         results = scored[:limit]
-
-    return results[:limit]
+    final = results[:limit]
+    logger.info(
+        "knowledge_service.mongo.search query_len=%s lang=%s rows=%s results=%s top_similarity=%s",
+        len(query or ""),
+        user_language or "unknown",
+        len(rows),
+        len(final),
+        (final[0].get("similarity") if final else None),
+    )
+    return final
 
 
 def search_knowledge(
@@ -387,4 +399,13 @@ def _search_knowledge_django(
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         results = scored[:limit]
 
-    return results[:limit]
+    final = results[:limit]
+    logger.info(
+        "knowledge_service.django.search query_len=%s lang=%s rows=%s results=%s top_similarity=%s",
+        len(query or ""),
+        user_language or "unknown",
+        len(rows),
+        len(final),
+        (final[0].get("similarity") if final else None),
+    )
+    return final

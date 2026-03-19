@@ -335,6 +335,12 @@ def process_message(
     user_id = user_id or session_id or "anonymous"
     user_location = user_location or {}
     user_profile = user_profile or {}
+    logger.info(
+        "chat_flow.process_message.start user_id=%s session_id=%s message_len=%s",
+        user_id,
+        session_id or user_id,
+        len(message or ""),
+    )
     user = get_or_create_user(user_id, user_location, profile=user_profile)
 
     state = user_location.get("state") or getattr(user, "state", None)
@@ -357,6 +363,7 @@ def process_message(
             else casual_text
         )
         _save_history(user_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
+        logger.info("chat_flow.tier0.casual user_id=%s lang=%s tag=%s", user_id, detected_lang, casual_tag)
         return _build_response(reply, detected_lang, "casual", user_name=user_name)
 
     # ------------------------------------------------------------------
@@ -367,6 +374,7 @@ def process_message(
     if _looks_off_topic(message):
         reply = _off_topic_message(detected_lang)
         _save_history(user_id, message, reply, "off_topic", {"intent": "off_topic"})
+        logger.info("chat_flow.off_topic.hard_filter user_id=%s lang=%s", user_id, detected_lang)
         return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
 
     # ------------------------------------------------------------------
@@ -377,6 +385,15 @@ def process_message(
     # Broaden to global KB if no state-specific match
     if not matches and state:
         matches = search_knowledge(message, state=None, county=None, user_language=detected_lang)
+    logger.info(
+        "chat_flow.kb_search user_id=%s lang=%s state=%s county=%s matches=%s top_similarity=%s",
+        user_id,
+        detected_lang,
+        state,
+        county,
+        len(matches or []),
+        (matches[0].get("similarity") if matches else None),
+    )
 
     # ------------------------------------------------------------------
     # Structured intent extraction  (happens in parallel with KB search)
@@ -397,6 +414,13 @@ def process_message(
 
     intent = structured.get("intent") or "information_request"
     confidence = float(structured.get("confidence") or 0.5)
+    logger.info(
+        "chat_flow.intent user_id=%s intent=%s confidence=%.2f detected_lang=%s",
+        user_id,
+        intent,
+        confidence,
+        detected_lang,
+    )
 
     # If GPT says "unclear" but KB has something useful, treat as information_request
     if intent == "unclear" and matches:
@@ -427,6 +451,11 @@ def process_message(
                 kb_entry=matches[0],
                 language=detected_lang,
             )
+            logger.info(
+                "chat_flow.kb_response user_id=%s mode=exact_kb top_similarity=%.4f",
+                user_id,
+                top_sim,
+            )
         else:
             # Partial / fallback match — RAG: OpenAI uses KB as context
             reply = generate_rag_response(
@@ -436,6 +465,12 @@ def process_message(
                 county=county or "",
                 zip_code=zip_code or "",
                 language=detected_lang,
+            )
+            logger.info(
+                "chat_flow.kb_response user_id=%s mode=rag top_similarity=%.4f context_items=%s",
+                user_id,
+                top_sim,
+                len(matches),
             )
 
         # Append subtle location hint if location is missing (don't block the answer)
@@ -486,6 +521,13 @@ def process_message(
         businesses = result.get("businesses") or []
         see_more = result.get("see_more", False)
         location_note = result.get("location_note")
+        logger.info(
+            "chat_flow.business_search user_id=%s businesses=%s see_more=%s has_location_note=%s",
+            user_id,
+            len(businesses),
+            see_more,
+            bool(location_note),
+        )
 
         if businesses:
             reply = _format_businesses(businesses, detected_lang, location_note=location_note, see_more=see_more)
@@ -525,6 +567,11 @@ def process_message(
     # ------------------------------------------------------------------
     if intent == "business_comparison":
         biz_ctx = _fetch_business_context(structured, state)
+        logger.info(
+            "chat_flow.business_comparison user_id=%s context_len=%s",
+            user_id,
+            len(biz_ctx or ""),
+        )
         reply = generate_business_comparison(message, biz_ctx or "No business data available.", detected_lang)
         _save_history(user_id, message, reply, intent, structured)
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)

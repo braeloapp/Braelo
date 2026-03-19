@@ -54,6 +54,7 @@ Use null for any field not clearly stated."""
         user += f"\n(Recent context: {conversation_summary})"
 
     try:
+        logger.info("gpt_service.structured.request message_len=%s", len(message or ""))
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=[
@@ -73,6 +74,12 @@ Use null for any field not clearly stated."""
             data["detected_language"] = "en"
         if data.get("intent") not in ("casual", "information_request", "business_search", "business_comparison", "unclear", "off_topic"):
             data["intent"] = "information_request"
+        logger.info(
+            "gpt_service.structured.response intent=%s confidence=%s lang=%s",
+            data.get("intent"),
+            data.get("confidence"),
+            data.get("detected_language"),
+        )
         return data
     except Exception:
         return _fallback_structured(message)
@@ -96,6 +103,7 @@ def translate_query_to_portuguese_for_search(query: str) -> str:
     if not client or not query or not query.strip():
         return query or ""
     try:
+        logger.info("gpt_service.translate_query.request query_len=%s", len(query or ""))
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=[
@@ -108,6 +116,7 @@ def translate_query_to_portuguese_for_search(query: str) -> str:
             temperature=0,
         )
         out = (resp.choices[0].message.content or "").strip()
+        logger.info("gpt_service.translate_query.response translated_len=%s", len(out or ""))
         return out if out else query
     except Exception as e:
         logger.warning("translate_query_to_portuguese_for_search failed: %s", e)
@@ -165,6 +174,11 @@ User Question: {user_message}
 {lang_instruction} Write in flowing paragraphs, no bullets or dashes. Do not end with a closing phrase. Keep the conversation open."""
 
     try:
+        logger.info(
+            "gpt_service.rag.request language=%s context_len=%s",
+            language,
+            len(retrieved_context or ""),
+        )
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=[
@@ -174,6 +188,7 @@ User Question: {user_message}
             temperature=0.3,
         )
         out = (resp.choices[0].message.content or "").strip()
+        logger.info("gpt_service.rag.response output_len=%s", len(out or ""))
         return out if out else "I don't have specific information about that in my knowledge base. Could you rephrase or provide your state, county, and ZIP code?"
     except Exception as e:
         logger.warning("GPT generate_rag_response failed: %s", e)
