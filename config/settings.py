@@ -279,145 +279,28 @@ DATABASES = {
 # ---------------------------------------------------------------------------
 # MongoDB (mongoengine + chatbot pymongo share these env vars)
 # ---------------------------------------------------------------------------
-MONGO_DB_NAME = (os.getenv("MONGO_DB_NAME", "braelo") or "braelo").strip()
-
-
-def _resolve_mongo_uri() -> str:
-    """Pick first non-empty Mongo URI from common env names (Azure / CI / local)."""
-    for key in (
-        "MONGO_URI",
-        "MONGO_DB_URI",
-        "MONGODB_URI",
-        "MONGODB_URL",
-        "CUSTOMCONNSTR_MONGO_URI",
-        "CUSTOMCONNSTR_MONGODB_URI",
-        "CUSTOMCONNSTR_MONGODB",
-    ):
-        val = os.getenv(key, "").strip()
-        if val:
-            return val
-    return ""
-
-
-def _normalize_mongo_uri_credentials(uri: str) -> str:
-    """
-    PyMongo 4+ requires userinfo to be RFC 3986–escaped (quote_plus).
-    Azure often stores raw passwords (e.g. with @). Decode any %-seqs first, then re-encode
-    so we never double-encode an already-correct URI.
-    """
-    if not uri or not uri.strip():
-        return uri
-    u = uri.strip()
-    if "@" not in u or "://" not in u:
-        return u
-    try:
-        scheme, _, rest = u.partition("://")
-        if not scheme or not rest:
-            return uri
-        userinfo, sep, hostpath = rest.partition("@")
-        if not sep or ":" not in userinfo:
-            return uri
-        colon = userinfo.index(":")
-        user_part = userinfo[:colon]
-        pass_part = userinfo[colon + 1 :]
-        if not user_part:
-            return uri
-        user_raw = urllib.parse.unquote(user_part)
-        pass_raw = urllib.parse.unquote(pass_part)
-        user_enc = urllib.parse.quote_plus(user_raw, safe="")
-        pass_enc = urllib.parse.quote_plus(pass_raw, safe="")
-        return f"{scheme}://{user_enc}:{pass_enc}@{hostpath}"
-    except Exception:
-        return uri
-
-
-MONGO_URI = _resolve_mongo_uri()
-_mongo_username = os.getenv("MONGO_USERNAME", "").strip()
-_mongo_password_raw = os.getenv("MONGO_PASSWORD", "").strip()
-DJANGO_SKIP_MONGOENGINE = os.getenv("DJANGO_SKIP_MONGOENGINE", "").lower() in ("1", "true", "yes")
-
-# Build Atlas URI only when username+password are present (avoid invalid mongodb+srv://:@...)
-if not MONGO_URI and _mongo_username and _mongo_password_raw:
-    _enc_user = urllib.parse.quote_plus(_mongo_username, safe="")
-    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw, safe="")
-    MONGO_URI = (
-        f"mongodb+srv://{_enc_user}:{_enc_pw}"
-        f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
+mongo_username = os.getenv('MONGO_USERNAME', '')
+mongo_password_raw = os.getenv('MONGO_PASSWORD', '')
+mongo_db_name = os.getenv('MONGO_DB_NAME', '')
+# Prefer full URI from env; otherwise build Atlas URI from username/password/db
+connection_string = os.getenv('MONGO_URI', '').strip()
+if not connection_string:
+    mongo_password = urllib.parse.quote_plus(mongo_password_raw)
+    connection_string = (
+        f"mongodb+srv://{mongo_username}:{mongo_password}"
+        f"@cluster0.7j4rnkk.mongodb.net/{mongo_db_name}?retryWrites=true&w=majority"
     )
 
-if MONGO_URI:
-    MONGO_URI = _normalize_mongo_uri_credentials(MONGO_URI)
+connect(
+    db=mongo_db_name,  # Name of your MongoDB database
+    host=connection_string,
+    port=27017,  # Default MongoDB port
+    username=mongo_username,  # MongoDB username if authentication is enabled
+    password=mongo_password_raw,  # MongoDB password
+    authentication_source='admin',  # Authentication source, usually 'admin'
+    # authentication_mechanism='SCRAM-SHA-1',  # Authentication mechanism
+)
 
-
-def _mongo_uri_valid(uri: str) -> bool:
-    """Return False when URI would make pymongo raise InvalidURI (e.g. empty username)."""
-    if not uri or not uri.strip():
-        return False
-    u = uri.strip()
-    # Local dev without auth in URI
-    if u.startswith(("mongodb://localhost", "mongodb://127.0.0.1")):
-        return True
-    if "://" not in u or "@" not in u:
-        return False
-    try:
-        _, rest = u.split("://", 1)
-        userinfo, _, _ = rest.partition("@")
-    except (ValueError, IndexError):
-        return False
-    userinfo = userinfo.strip()
-    if not userinfo or userinfo.startswith(":"):
-        return False
-    return True
-
-
-if DJANGO_SKIP_MONGOENGINE:
-    _settings_log.warning(
-        "MongoEngine not initialized (DJANGO_SKIP_MONGOENGINE=true). "
-        "Any MongoEngine Document access will fail."
-    )
-elif _mongo_uri_valid(MONGO_URI):
-    try:
-        # Credentials should live in MONGO_URI; register default alias explicitly.
-        connect(
-            alias="default",
-            db=MONGO_DB_NAME,
-            host=MONGO_URI,
-            authentication_source="admin",
-        )
-        _settings_log.info("MongoEngine default connection registered (db=%s)", MONGO_DB_NAME)
-    except Exception as exc:
-        _settings_log.exception("MongoEngine connect failed: %s", exc)
-        # Never continue without a connection — views import MongoEngine documents at startup and
-        # class-level querysets would fail with "You have not defined a default connection".
-        raise ImproperlyConfigured(
-            "Could not connect MongoEngine to MongoDB. Set MONGO_URI (and MONGO_DB_NAME) in Azure "
-            "Application Settings, allow your App Service outbound IPs in Atlas Network Access, "
-            "and ensure credentials in the URI are RFC 3986–safe (app normalizes user/password; raw @ in password is OK). "
-            f"Underlying error: {exc}"
-        ) from exc
-elif DEBUG:
-    # Local dev fallback when .env has no Atlas URI yet
-    try:
-        connect(
-            alias="default",
-            db=MONGO_DB_NAME,
-            host="mongodb://127.0.0.1:27017",
-            authentication_source="admin",
-        )
-        _settings_log.warning(
-            "MONGO_URI missing/invalid; MongoEngine using DEBUG fallback mongodb://127.0.0.1:27017"
-        )
-    except Exception as exc:
-        _settings_log.warning(
-            "MongoEngine DEBUG fallback to localhost failed (%s). Set MONGO_URI for real data.", exc
-        )
-else:
-    raise ImproperlyConfigured(
-        "MongoDB is required but MONGO_URI is missing or invalid. "
-        "In Azure: add Application Setting MONGO_URI=mongodb+srv://user:PASSWORD@host/db?params "
-        "(encode special chars in PASSWORD) and MONGO_DB_NAME=braelo. "
-        "Optional: set MONGO_USERNAME + MONGO_PASSWORD instead of a full URI."
-    )
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
@@ -466,6 +349,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
+# Prefer MONGO_URI; fallback to legacy MONGO_DB_URI for compatibility.
+MONGO_URI = os.getenv('MONGO_URI', os.getenv('MONGO_URI', ''))
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'braelo')
+
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
