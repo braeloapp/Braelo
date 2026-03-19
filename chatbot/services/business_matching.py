@@ -2,9 +2,11 @@
 Business matching: geographic (ZIP/county/radius), sponsored first, rotation, 3–5 results.
 Uses MongoDB when USE_MONGO is True. Reads from Braelo-format collection business_listings.
 """
+import logging
 from django.db import transaction
 from django.db.models import F
 
+logger = logging.getLogger(__name__)
 
 def _distance_miles(lat1, lon1, lat2, lon2):
     if None in (lat1, lon1, lat2, lon2):
@@ -79,6 +81,7 @@ def _get_top_businesses_mongo(
             q["business_subcategory"] = {"$regex": subcategory, "$options": "i"}
         all_rows = list(db.business_listings.find(q))
     except Exception:
+        logger.exception("business_matching.mongo.query_failed")
         return {"businesses": [], "see_more": False, "location_note": None}
 
     def priority_and_distance(b):
@@ -146,8 +149,15 @@ def _get_top_businesses_mongo(
                 "created_at": __import__("datetime").datetime.utcnow(),
             })
         except Exception:
-            pass
+            logger.exception("business_matching.mongo.impression_log_failed business_id=%s", bid)
 
+    logger.info(
+        "business_matching.mongo.result category=%s subcategory=%s results=%s see_more=%s",
+        category,
+        subcategory,
+        len(out_list),
+        see_more,
+    )
     return {"businesses": out_list, "see_more": see_more, "location_note": location_note}
 
 
@@ -280,4 +290,5 @@ def get_top_businesses(
             "location_note": location_note,
         }
     except Exception:
+        logger.exception("business_matching.django.query_failed")
         return {"businesses": [], "see_more": False, "location_note": None}

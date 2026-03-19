@@ -111,6 +111,7 @@ def api_chat(request):
             bool(user_profile),
         )
     except Exception:
+        logger.exception("chatbot.api_chat.bad_request")
         return JsonResponse({"error": "Bad request", "response": ""}, status=400)
     try:
         from chatbot.chat_flow import process_message
@@ -172,6 +173,7 @@ def legacy_get(request):
             data = json.loads(request.body) if request.body else {}
             msg = data.get("msg") or ""
         except Exception:
+            logger.exception("chatbot.legacy_get.body_parse_failed")
             msg = ""
     msg = msg.strip()
     if not msg:
@@ -201,6 +203,7 @@ def legacy_get(request):
             )
             return HttpResponse(out["response"])
         except Exception:
+            logger.exception("chatbot.legacy_get.process_message_failed")
             return HttpResponse("Sorry, something went wrong. Please try again.")
     if _load_legacy():
         import random
@@ -274,6 +277,7 @@ def debug_knowledge(request):
                 "openai_key_set": bool(getattr(django_settings, "OPENAI_API_KEY", None)),
             })
         except Exception as e:
+            logger.exception("chatbot.debug_knowledge.error")
             return JsonResponse({"error": str(e), "knowledge_base_total": 0, "source": "mongodb"}, status=500)
     from chatbot.models import KnowledgeBase
     total = KnowledgeBase.objects.count()
@@ -323,6 +327,7 @@ def track_contact(request):
                 })
                 return JsonResponse({"status": "ok"})
             except Exception as e:
+                logger.exception("chatbot.track_contact.mongo_error")
                 return JsonResponse({"error": str(e)}, status=500)
         from chatbot.models import Business, ContactTracking
         from django.shortcuts import get_object_or_404
@@ -334,6 +339,7 @@ def track_contact(request):
         )
         return JsonResponse({"status": "ok"})
     except Exception as e:
+        logger.exception("chatbot.track_contact.error")
         return JsonResponse({"error": str(e)}, status=500)
 
 

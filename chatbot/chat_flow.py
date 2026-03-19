@@ -121,6 +121,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
                     doc = col.find_one({"external_id": external_id})
             return _user_from_mongo(doc)
         except Exception:
+            logger.exception("chat_flow.user.mongo_get_or_create_failed external_id=%s", external_id)
             pass
 
     try:
@@ -146,6 +147,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
                                      "latitude", "longitude", "display_name", "email", "phone", "updated_at"])
         return user
     except Exception:
+        logger.exception("chat_flow.user.django_get_or_create_failed external_id=%s", external_id)
         return _UserLike({
             "external_id": external_id,
             **loc,
@@ -283,7 +285,7 @@ def _save_history(user_id: str, message: str, reply: str, intent: str, structure
                         entities_json=json.dumps(structured) if structured else None,
                     )
     except Exception:
-        pass
+        logger.exception("chat_flow.save_history_failed user_id=%s intent=%s", user_id, intent)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +319,7 @@ def _fetch_business_context(structured: dict, state: str) -> str:
             for b in qs[:5]:
                 context += f"{b.name}: {b.category or ''} {b.subcategory or ''}, {b.city or ''} {b.state or ''}. {b.contact_info or ''}\n"
     except Exception:
-        pass
+        logger.exception("chat_flow.fetch_business_context_failed state=%s", state)
     return context.strip()
 
 
@@ -350,6 +352,7 @@ def process_message(
     user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
+    logger.info("chat_flow.openai_key_configured=%s", has_api_key)
 
     # ------------------------------------------------------------------
     # TIER 0 — Casual intents  (intents.json, no OpenAI call needed)

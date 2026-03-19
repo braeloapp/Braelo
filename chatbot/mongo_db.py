@@ -2,9 +2,11 @@
 MongoDB connection and collection access for chatbot (uses config.settings).
 Database: CHATBOT_MONGO_DB_NAME @ CHATBOT_MONGO_URI (or shared Braelo MongoDB).
 """
+import logging
 from django.conf import settings
 
 _client = None
+logger = logging.getLogger(__name__)
 
 
 def get_client():
@@ -13,12 +15,19 @@ def get_client():
     if _client is None:
         try:
             from pymongo import MongoClient
+            logger.info(
+                "mongo_db.connect.start uri_set=%s db=%s",
+                bool(getattr(settings, "MONGO_URI", None)),
+                getattr(settings, "MONGO_DB_NAME", "BraeloDB"),
+            )
             _client = MongoClient(
                 getattr(settings, "MONGO_URI", "mongodb://localhost:27017"),
                 serverSelectionTimeoutMS=5000,
             )
             _client.admin.command("ping")
+            logger.info("mongo_db.connect.success")
         except Exception as e:
+            logger.exception("mongo_db.connect.failed")
             raise RuntimeError(f"MongoDB connection failed: {e}") from e
     return _client
 
@@ -43,15 +52,15 @@ def ensure_indexes():
         db.knowledge_base.create_index("region")
         db.knowledge_base.create_index("document_source")
     except Exception:
-        pass
+        logger.exception("mongo_db.ensure_indexes.knowledge_base_failed")
     try:
         db.business_listings.create_index("business_category")
         db.business_listings.create_index("business_subcategory")
         db.business_listings.create_index([("business_category", 1), ("business_subcategory", 1)])
         db.business_listings.create_index("is_active")
     except Exception:
-        pass
+        logger.exception("mongo_db.ensure_indexes.business_listings_failed")
     try:
         db.users.create_index("external_id", unique=True)
     except Exception:
-        pass
+        logger.exception("mongo_db.ensure_indexes.users_failed")

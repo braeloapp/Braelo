@@ -11,8 +11,15 @@ if getattr(settings, "OPENAI_API_KEY", None):
     try:
         from openai import OpenAI
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        logger.info(
+            "gpt_service.init openai_client_ready=True model=%s",
+            getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+        )
     except Exception:
         client = None
+        logger.exception("gpt_service.init openai_client_init_failed")
+else:
+    logger.info("gpt_service.init openai_client_ready=False reason=missing_openai_api_key")
 
 STRUCTURED_SCHEMA = {
     "intent": "casual | information_request | business_search | business_comparison | unclear",
@@ -29,6 +36,7 @@ STRUCTURED_SCHEMA = {
 
 def get_structured_output(message: str, conversation_summary: str = "") -> dict:
     if not client:
+        logger.info("gpt_service.structured.skip reason=no_openai_client")
         return _fallback_structured(message)
     system = """You are an assistant for immigrant communities in the USA (Hispanic and Brazilian).
 Classify the user message and extract structured data. Respond with a JSON object only, no markdown.
@@ -82,6 +90,7 @@ Use null for any field not clearly stated."""
         )
         return data
     except Exception:
+        logger.exception("gpt_service.structured.error")
         return _fallback_structured(message)
 
 
@@ -101,6 +110,8 @@ def _fallback_structured(message: str) -> dict:
 
 def translate_query_to_portuguese_for_search(query: str) -> str:
     if not client or not query or not query.strip():
+        if not client:
+            logger.info("gpt_service.translate_query.skip reason=no_openai_client")
         return query or ""
     try:
         logger.info("gpt_service.translate_query.request query_len=%s", len(query or ""))
@@ -120,6 +131,7 @@ def translate_query_to_portuguese_for_search(query: str) -> str:
         return out if out else query
     except Exception as e:
         logger.warning("translate_query_to_portuguese_for_search failed: %s", e)
+        logger.exception("gpt_service.translate_query.error")
         return query
 
 
@@ -149,6 +161,7 @@ def generate_rag_response(
     language: str,
 ) -> str:
     if not client:
+        logger.info("gpt_service.rag.skip reason=no_openai_client")
         return "I don't have enough information to answer that right now. Please try again or share your state, county, and ZIP code."
 
     location_line = f"Location: {state or 'not provided'}, {county or 'not provided'}, ZIP: {zip_code or 'not provided'}"
@@ -192,11 +205,13 @@ User Question: {user_message}
         return out if out else "I don't have specific information about that in my knowledge base. Could you rephrase or provide your state, county, and ZIP code?"
     except Exception as e:
         logger.warning("GPT generate_rag_response failed: %s", e)
+        logger.exception("gpt_service.rag.error")
         return "Something went wrong. Please try again."
 
 
 def generate_clarifying_questions(message: str, language: str, missing_location: bool = False) -> str:
     if not client:
+        logger.info("gpt_service.clarifying.skip reason=no_openai_client")
         if missing_location:
             return "To give you the best answer, I need your state, county, and ZIP code. Could you share those?"
         return "Could you tell me a bit more about what you're looking for? For example, which state or topic?"
@@ -224,6 +239,7 @@ Do not answer the question yourself. Do not add a closing phrase. Keep the conve
         return out if out else "Could you share your state, county, and ZIP code, and tell me a bit more about what you need?"
     except Exception as e:
         logger.warning("GPT generate_clarifying_questions failed: %s", e)
+        logger.exception("gpt_service.clarifying.error")
         return "To help you better, I need your state, county, and ZIP code. What would you like to know?"
 
 
@@ -233,6 +249,8 @@ def generate_business_comparison(
     language: str,
 ) -> str:
     if not client or not businesses_context:
+        if not client:
+            logger.info("gpt_service.business_comparison.skip reason=no_openai_client")
         return "I couldn't find enough information to compare those businesses. Try naming them again or ask for businesses in your area."
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
@@ -253,11 +271,14 @@ Do NOT use bullet points or dashes. Use flowing paragraphs. Be direct and object
         return (resp.choices[0].message.content or "").strip() or "I couldn't generate a comparison. Please try again."
     except Exception as e:
         logger.warning("GPT generate_business_comparison failed: %s", e)
+        logger.exception("gpt_service.business_comparison.error")
         return "Something went wrong. Please try again."
 
 
 def translate_verified_answer(text: str, target_language: str, preserve_structure: bool = False) -> str:
     if not client or not text or not text.strip():
+        if not client:
+            logger.info("gpt_service.translate_answer.skip reason=no_openai_client")
         return text or ""
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(target_language, "English")
     if preserve_structure:
@@ -280,6 +301,7 @@ def translate_verified_answer(text: str, target_language: str, preserve_structur
         return out if out else text
     except Exception as e:
         logger.warning("GPT translate_verified_answer failed: %s", e)
+        logger.exception("gpt_service.translate_answer.error")
         return text
 
 
@@ -292,6 +314,7 @@ def generate_response(
     translate_answer: bool = True,
 ) -> str:
     if not client:
+        logger.info("gpt_service.generate_response.skip reason=no_openai_client")
         return _fallback_response(language, knowledge_answer, businesses_text)
 
     if knowledge_answer:
@@ -324,6 +347,7 @@ Be concise. Do not use bullet points or dashes. Do not end with a closing phrase
         return reply
     except Exception as e:
         logger.warning("GPT generate_response failed: %s", e)
+        logger.exception("gpt_service.generate_response.error")
         return _fallback_response(language, knowledge_answer, businesses_text)
 
 
@@ -343,6 +367,7 @@ def generate_exact_kb_answer(
 
     if not client:
         # No OpenAI — return the raw KB answer, translated inline if needed
+        logger.info("gpt_service.generate_exact_kb.skip reason=no_openai_client")
         return kb_answer or "I don't have a specific answer for that right now."
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
@@ -379,6 +404,7 @@ Deliver the knowledge base answer naturally in {lang_name}:"""
         return out if out else kb_answer
     except Exception as e:
         logger.warning("GPT generate_exact_kb_answer failed: %s", e)
+        logger.exception("gpt_service.generate_exact_kb.error")
         return kb_answer or "I don't have a specific answer for that right now."
 
 

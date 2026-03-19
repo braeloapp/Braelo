@@ -18,6 +18,8 @@ except Exception:
 
 def get_embedding(text: str) -> list:
     if not text or not _client:
+        if not _client:
+            logger.info("knowledge_service.embedding.skip reason=no_openai_client")
         return []
     try:
         r = _client.embeddings.create(
@@ -26,6 +28,7 @@ def get_embedding(text: str) -> list:
         )
         return r.data[0].embedding
     except Exception:
+        logger.exception("knowledge_service.embedding.error text_len=%s", len(text or ""))
         return []
 
 
@@ -122,7 +125,7 @@ def _search_knowledge_mongo(
                     query_pt_for_emb = f"{query_pt_for_emb} {state}".strip()
                 query_pt_emb = get_embedding(query_pt_for_emb)
         except Exception:
-            pass
+            logger.exception("knowledge_service.query_translation_for_embedding_failed")
     try:
         from chatbot.mongo_db import get_db
         db = get_db()
@@ -261,6 +264,7 @@ def search_knowledge(
         from django.db.utils import OperationalError, ProgrammingError
         if isinstance(e, (OperationalError, ProgrammingError)):
             return []
+        logger.exception("knowledge_service.django.search_unexpected_error")
         raise
 
 
@@ -296,7 +300,7 @@ def _search_knowledge_django(
                     query_pt_for_emb = f"{query_pt_for_emb} {state}".strip()
                 query_pt_emb = get_embedding(query_pt_for_emb)
         except Exception:
-            pass
+            logger.exception("knowledge_service.query_translation_for_embedding_failed_django")
 
     qs = KnowledgeBase.objects.filter(embedding_json__isnull=False)
     if state:

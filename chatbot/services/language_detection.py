@@ -1,7 +1,10 @@
 """
 Language detection: Portuguese, Spanish, English. Uses django.conf.settings.
 """
+import logging
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     from langdetect import detect, LangDetectException
@@ -15,6 +18,7 @@ def detect_language(text: str) -> str:
         return "en"
     text = text.strip()[:500]
     if detect is None:
+        logger.info("language_detection.fallback reason=langdetect_not_installed")
         return _fallback_detect(text)
     try:
         code = detect(text)
@@ -24,6 +28,7 @@ def detect_language(text: str) -> str:
             return "es"
         return "en"
     except LangDetectException:
+        logger.info("language_detection.fallback reason=langdetect_exception")
         return _fallback_detect(text)
 
 
