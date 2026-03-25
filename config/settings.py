@@ -475,10 +475,21 @@ USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
-KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.62'))
-RAG_TOP_K = int(os.getenv('RAG_TOP_K', '5'))
-RAG_SIMILARITY_THRESHOLD = float(os.getenv('RAG_SIMILARITY_THRESHOLD', '0.7'))
-RAG_SIMILARITY_FALLBACK = float(os.getenv('RAG_SIMILARITY_FALLBACK', '0.38'))
+KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.55'))
+RAG_TOP_K = int(os.getenv('RAG_TOP_K', '8'))
+# Hybrid retrieval: cosine on embeddings + lexical overlap on precomputed KB tokens.
+# RAG_SIMILARITY_THRESHOLD / FALLBACK apply to the combined hybrid score (not raw cosine).
+RAG_HYBRID_EMBEDDING_WEIGHT = float(os.getenv('RAG_HYBRID_EMBEDDING_WEIGHT', '0.58'))
+RAG_SIMILARITY_THRESHOLD = float(os.getenv('RAG_SIMILARITY_THRESHOLD', '0.32'))
+RAG_SIMILARITY_FALLBACK = float(os.getenv('RAG_SIMILARITY_FALLBACK', '0.20'))
+# LLM paraphrase → Portuguese-ish search line to align with PT-heavy KB (retrieval only; no new facts).
+RAG_QUERY_REWRITE = os.getenv('RAG_QUERY_REWRITE', 'true').lower() in ('true', '1', 'yes')
+# Strong match → short-circuit to KB-style answer. (Second “min confident” gate in chat_flow was removed:
+# hybrid scores often land ~0.35–0.45 for good matches; retrieval thresholds below are enough.)
+RAG_STRONG_MATCH_HYBRID = float(os.getenv('RAG_STRONG_MATCH_HYBRID', '0.68'))
+RAG_MIN_CONFIDENT_HYBRID = float(os.getenv('RAG_MIN_CONFIDENT_HYBRID', '0.46'))  # unused; kept for .env compatibility
+# Raw cosine floor (optional second gate): hybrid can be boosted by lex; keep cosine from garbage-matching.
+RAG_EMBEDDING_MIN_FOR_MATCH = float(os.getenv('RAG_EMBEDDING_MIN_FOR_MATCH', '0.18'))
 # DOCX knowledge base: set DOCX_DATA_DIR in .env to your folder (can be outside braelo). Default: parent folder / documents
 DOCX_DATA_DIR = Path(os.getenv('DOCX_DATA_DIR', str(BASE_DIR.parent / 'documents')))
 MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '5'))

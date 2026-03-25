@@ -63,6 +63,8 @@ class KnowledgeBase(models.Model):
     question = models.TextField()
     answer = models.TextField()
     embedding_json = models.TextField(null=True, blank=True)  # JSON array of floats
+    # Normalized tokens from Q+A for hybrid retrieval (mirrors Mongo knowledge_base.search_tokens)
+    search_tokens = models.JSONField(null=True, blank=True)
     document_source = models.CharField(max_length=256, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 

@@ -13,10 +13,7 @@ from chatbot.management.commands.load_docx import (
     RESPOSTAS_PREFIX,
     get_paragraphs,
     get_questions,
-    parse_qa_pairs,
-    parse_qa_q_first,
-    parse_question_answer_multiparagraph,
-    parse_question_answer_paragraphs,
+    _choose_best_parser,
     translate_to_english,
 )
 
@@ -68,25 +65,11 @@ def seed_static_data(db, dry_run: bool):
 def _parse_qa_for_doc(paras: list, questions: list, filename: str):
     if not paras:
         return []
-    pairs = parse_qa_q_first(paras)
-    if pairs:
-        return pairs
-    if questions and len(paras) == len(questions):
-        return list(zip(questions, paras))
-    pairs = parse_qa_pairs(paras)
-    if pairs:
-        return pairs
-    pairs = parse_question_answer_multiparagraph(paras)
-    if pairs:
-        return pairs
-    pairs = parse_question_answer_paragraphs(paras)
-    if pairs:
-        return pairs
-    return [(p, p) for p in paras]
+    return _choose_best_parser(paras, questions)
 
 
 def load_docx_into_mongo(db, translate: bool, dry_run: bool, command_stdout):
-    from chatbot.services.knowledge_service import get_embedding
+    from chatbot.services.knowledge_service import get_embedding, build_kb_search_fields
 
     _backend_dir = Path(settings.BASE_DIR)
     _parent = _backend_dir.parent
@@ -169,7 +152,13 @@ def load_docx_into_mongo(db, translate: bool, dry_run: bool, command_stdout):
             if added <= 3:
                 command_stdout.write(f"  [dry-run] region={state}, doc={document_source}, q={question[:50]}...")
             continue
-        emb = get_embedding(question)
+        # Embed question + first 300 chars of answer so keywords inside the answer
+        # (e.g. "score recomendado", "650", "guarantor") are included in the
+        # semantic index and searchable even when the user asks about answer content.
+        answer_snippet = (answer or "")[:300].replace("\n", " ").strip()
+        embed_text = question if not answer_snippet else f"{question} {answer_snippet}"
+        emb = get_embedding(embed_text)
+        idx = build_kb_search_fields(question, answer)
         doc = {
             "state": state if state != "keywords" else None,
             "region": state,
@@ -177,6 +166,8 @@ def load_docx_into_mongo(db, translate: bool, dry_run: bool, command_stdout):
             "question": question,
             "answer": answer,
             "embedding": emb if emb else None,
+            "search_text_normalized": idx.get("search_text_normalized"),
+            "search_tokens": idx.get("search_tokens"),
             "document_source": document_source,
             "created_at": datetime.utcnow(),
         }

@@ -1,15 +1,16 @@
 """
 RAG chat flow — 3-tier pipeline:
-  Tier 0  : Casual talk  → intents.json  (no API call)
+  Tier 0  : Casual talk  → intents.json  (no API call); skipped for long / FAQ-style messages
   Tier 1  : Hard off-topic filter
   Tier 2  : Knowledge base search (always runs before intent routing)
-             - Strong match  (similarity >= HIGH_THRESHOLD) → OpenAI returns exact KB answer
-             - Partial match (similarity >= FALLBACK_THRESHOLD) → OpenAI generates RAG response
+             - Hybrid score >= RAG_STRONG_MATCH_HYBRID → exact KB answer (OpenAI)
+             - Any non-empty retrieval → RAG from retrieved Q&A (thresholds applied in knowledge_service)
   Tier 3  : Business search  (location-gated)
-  Tier 4  : No KB match, not a business search → friendly off-topic message
+  Tier 4  : No KB match → OpenAI general US-life answer when API key available; else KB clarification; off-topic otherwise
 """
 import json
 import logging
+import re
 from django.conf import settings as django_settings
 from chatbot.models import ChatHistory, User
 from chatbot.services.language_detection import detect_language
@@ -20,16 +21,21 @@ from chatbot.services.gpt_service import (
     generate_clarifying_questions,
     generate_business_comparison,
     translate_verified_answer,
+    generate_kb_clarification_reply,
+    generate_local_office_response,
+    generate_local_dining_response,
+    generate_general_braelo_response,
+    response_looks_like_rag_refusal,
 )
 from chatbot.services.knowledge_service import search_knowledge
 from chatbot.services.business_matching import get_top_businesses
 from chatbot.services.casual_intents import get_casual_response
+from chatbot.services.local_search import find_nearby_places, find_nearby_pois
 
 logger = logging.getLogger(__name__)
 
-# Similarity thresholds for the 3-tier KB response
-_KB_HIGH_THRESHOLD = 0.72   # strong / exact match → give the defined KB answer
-_KB_FALLBACK_THRESHOLD = 0.38  # partial match → RAG context response
+# Strong hybrid score → prefer exact KB answer path vs RAG (retrieval already filtered candidates)
+_KB_HIGH_THRESHOLD = float(getattr(django_settings, "RAG_STRONG_MATCH_HYBRID", 0.68))
 
 
 # ---------------------------------------------------------------------------
@@ -161,22 +167,199 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
 # Off-topic helpers
 # ---------------------------------------------------------------------------
 
-_OFF_TOPIC_HARD_PATTERNS = (
-    "code", "program", "c++", "c#", "python script", "javascript", "java ",
-    "for loop", "while loop", "algorithm", "script", "coding", "programming",
-    "write me a", "create a program", "debug", "syntax", "compile", "variable",
-    "weather", "recipe", "tell me a joke", "sport score", "movie review", "video game",
+# Do NOT use bare substrings like "code" or "script" — they match "ZIP code", "description", etc.
+_OFF_TOPIC_SUBSTRINGS = (
+    "c++", "c#", "leetcode", "hackerrank",
+    "python script", "javascript", "typescript", "node.js",
+    "for loop", "while loop", "syntax error", "unit test",
+    "programming", "coding", "tensorflow", "kubernetes",
+    "weather forecast", "recipe for", "tell me a joke",
+    "sport score", "movie review", "video game",
+)
+
+_OFF_TOPIC_PROGRAMMING_RE = re.compile(
+    r"\b(write|fix|debug|review)\s+(my\s+)?(code|script|program)\b|"
+    r"\bsource\s+code\b|"
+    r"\bcode\s+review\b|"
+    r"\bdebug(ging)?\s+(this|my|the)\s+(code|script|error)\b|"
+    r"\bcreate\s+a\s+program\b|"
+    r"\bjava\s+class\b|"
+    r"\bimport\s+pandas\b|"
+    r"\bimport\s+numpy\b",
+    re.IGNORECASE,
 )
 
 
 def _looks_off_topic(message: str) -> bool:
-    if not message or len(message) > 600:
+    if not message or len(message) > 800:
         return False
     lower = message.lower().strip()
-    for p in _OFF_TOPIC_HARD_PATTERNS:
+    if _OFF_TOPIC_PROGRAMMING_RE.search(lower):
+        return True
+    for p in _OFF_TOPIC_SUBSTRINGS:
         if p in lower:
             return True
     return False
+
+
+_US_STATE_NAMES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD", "massachusetts": "MA",
+    "michigan": "MI", "minnesota": "MN", "mississippi": "MS", "missouri": "MO", "montana": "MT",
+    "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+    "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
+    "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "district of columbia": "DC",
+}
+_US_STATE_ABBR = frozenset(_US_STATE_NAMES.values())
+_US_STATE_FULL_RE = "|".join(
+    re.escape(n) for n in sorted(_US_STATE_NAMES.keys(), key=len, reverse=True)
+)
+_LOCATION_PREFIX_RE = r"(?:\b(?:in|near|around|at)\s+|cerca\s+de\s+)"
+_RX_CITY_COMMA_ST = re.compile(
+    _LOCATION_PREFIX_RE + r"([A-Za-z][A-Za-z\s'.-]{1,50}?)\s*,\s*([A-Za-z]{2})\b",
+    re.I,
+)
+_RX_CITY_SPACE_ST = re.compile(
+    _LOCATION_PREFIX_RE + r"([A-Za-z][A-Za-z\s'.-]{1,50}?)\s+([A-Za-z]{2})\b(?=\s|[?.!,]|$)",
+    re.I,
+)
+_RX_CITY_FULL_STATE = re.compile(
+    _LOCATION_PREFIX_RE + rf"([A-Za-z][A-Za-z\s'.-]{{1,50}}?)\s+({_US_STATE_FULL_RE})\b",
+    re.I,
+)
+_RX_INLINE_CITY_ST = re.compile(
+    r"\b([A-Za-z][A-Za-z\s'.-]{1,45}?)\s*,\s*([A-Za-z]{2})\b(?=\s|$|[?.!,])",
+    re.I,
+)
+
+_LOCATION_CITY_BLOCKLIST = frozenset({
+    "brazilian", "mexican", "italian", "japanese", "chinese", "thai", "indian", "peruvian",
+    "colombian", "korean", "vietnamese", "french", "greek", "ethiopian", "mediterranean",
+    "seafood", "steakhouse", "bbq", "barbecue", "vegan", "vegetarian",
+    "my", "the", "this", "your", "our", "downtown", "area", "city", "town", "here", "usa",
+    "restaurant", "restaurants", "food", "places", "place", "eating", "dining", "best", "top",
+    "good", "great", "popular", "some", "any", "local", "nearby",
+})
+
+
+def _normalize_hint_city(raw: str) -> str:
+    if not raw:
+        return ""
+    city = " ".join(raw.split()).strip(" ,.;:")
+    if len(city) < 2:
+        return ""
+    low = city.lower()
+    if low in _LOCATION_CITY_BLOCKLIST:
+        return ""
+    if low.startswith("my ") or low.startswith("the "):
+        return ""
+    return city
+
+
+def _extract_location_hints_from_message(message: str) -> dict:
+    """
+    Pull ZIP / city / state from the user's text so map search targets what they typed,
+    not only the saved profile (e.g. Phoenix, AZ vs a broad Arizona profile).
+    """
+    out = {}
+    if not message:
+        return out
+    text = message.strip()
+
+    z = re.search(r"\b(\d{5})(?:-(\d{4}))?\b", text)
+    if z:
+        out["zip_code"] = z.group(1) + (("-" + z.group(2)) if z.group(2) else "")
+
+    city_val = None
+    state_val = None
+
+    m = _RX_CITY_COMMA_ST.search(text)
+    if m:
+        cn = _normalize_hint_city(m.group(1))
+        ab = m.group(2).upper()
+        if cn and len(ab) == 2 and ab in _US_STATE_ABBR:
+            city_val, state_val = cn, ab
+
+    if not city_val:
+        m = _RX_CITY_SPACE_ST.search(text)
+        if m:
+            cn = _normalize_hint_city(m.group(1))
+            ab = m.group(2).upper()
+            if cn and len(ab) == 2 and ab in _US_STATE_ABBR:
+                city_val, state_val = cn, ab
+
+    if not city_val:
+        m = _RX_INLINE_CITY_ST.search(text)
+        if m:
+            cn = _normalize_hint_city(m.group(1))
+            ab = m.group(2).upper()
+            if cn and len(ab) == 2 and ab in _US_STATE_ABBR:
+                city_val, state_val = cn, ab
+
+    if not city_val:
+        m = _RX_CITY_FULL_STATE.search(text)
+        if m:
+            cn = _normalize_hint_city(m.group(1))
+            sk = m.group(2).lower()
+            if cn and sk in _US_STATE_NAMES:
+                city_val, state_val = cn, _US_STATE_NAMES[sk]
+
+    if city_val:
+        out["city"] = city_val
+    if state_val:
+        out["state"] = state_val
+
+    return out
+
+
+def _apply_message_location_for_map(
+    message: str,
+    state: str,
+    city: str,
+    county: str,
+    zip_code: str,
+) -> tuple:
+    """
+    Override profile/structured location with any explicit place in the user message.
+    When only a ZIP appears in the message, drop city/county from profile to avoid mixing areas.
+    """
+    hints = _extract_location_hints_from_message(message)
+    if not hints:
+        return state, city, county, zip_code
+
+    z, c, co, st = zip_code, city, county, state
+
+    if hints.get("zip_code"):
+        z = hints["zip_code"]
+    if hints.get("city"):
+        c = hints["city"]
+        if not hints.get("county"):
+            co = None
+    if hints.get("state"):
+        st = hints["state"]
+    if hints.get("county"):
+        co = hints["county"]
+
+    if hints.get("zip_code") and not hints.get("city"):
+        c = None
+        co = None
+
+    out = (st, c, co, z)
+    if out != (state, city, county, zip_code):
+        logger.info(
+            "chat_flow.map_location_from_message zip=%s city=%s county=%s state=%s parsed=%s",
+            z,
+            c,
+            co,
+            st,
+            {k: hints[k] for k in ("zip_code", "city", "state", "county") if k in hints},
+        )
+    return out
 
 
 def _off_topic_message(language: str) -> str:
@@ -198,6 +381,168 @@ def _off_topic_message(language: str) -> str:
         ),
     }
     return msgs.get(language, msgs["en"])
+
+
+def _extract_local_place_query(message: str) -> str:
+    """Return a place query for local office lookup, or empty string."""
+    t = (message or "").lower().strip()
+    if not t:
+        return ""
+    local_markers = (
+        "near", "nearest", "close", "closest", "around me", "in my area", "nearby", "local",
+        "where is", "where can i", "where do i", "how do i find", "find the", "find a",
+        "locate", "location of", "address of",
+    )
+    if not any(m in t for m in local_markers):
+        return ""
+
+    # Common office/provider intents we can search on maps.
+    if (
+        "dmv" in t
+        or "mvd" in t
+        or "motor vehicle" in t
+        or ("driver" in t and "license" in t)
+        or "driver license" in t
+        or "drivers license" in t
+    ):
+        return "Department of Motor Vehicles"
+    if "uscis" in t or "immigration office" in t:
+        return "USCIS field office"
+    if "social security" in t or "ssa office" in t:
+        return "Social Security Administration office"
+    if "post office" in t or "usps" in t:
+        return "USPS post office"
+    return ""
+
+
+def _extract_restaurant_search_query(message: str) -> str:
+    """Nominatim search phrase for dining POIs, or empty if not a local restaurant discovery ask."""
+    t = (message or "").lower().strip()
+    if not t:
+        return ""
+    if any(
+        x in t
+        for x in (
+            "food stamp",
+            "food stamps",
+            "snap benefit",
+            "snap benefits",
+            " wic ",
+            "wic program",
+            "food bank",
+            "food pantry",
+        )
+    ):
+        if "restaurant" not in t and "dining" not in t and "eat out" not in t:
+            return ""
+
+    dining_keywords = (
+        "restaurant",
+        "restaurants",
+        "restaurante",
+        "restaurantes",
+        "dining",
+        "eatery",
+        "eateries",
+        "place to eat",
+        "places to eat",
+        "where to eat",
+        "somewhere to eat",
+        "go out to eat",
+        "eat out",
+        "food near me",
+        "food truck",
+        "café",
+        "cafe ",
+        " cafe",
+        " brunch",
+        "brunch ",
+        "onde comer",
+        "lugar para comer",
+    )
+    if not any(k in t for k in dining_keywords):
+        return ""
+
+    local_markers = (
+        "near",
+        "nearest",
+        "close",
+        "closest",
+        "around me",
+        "in my area",
+        "nearby",
+        "local",
+        "where is",
+        "where can i",
+        "where do i",
+        "how do i find",
+        "find the",
+        "find a",
+        "locate",
+        "in town",
+        "around here",
+        "my area",
+        "near me",
+        "best ",
+        "top ",
+        "popular ",
+        "recommend",
+        "suggestions",
+        "list of",
+        "in my city",
+        "in my town",
+        "good restaurant",
+        "good restaurants",
+        "good place",
+        "good places",
+        "great restaurant",
+        "cerca de mí",
+        "cerca de mi",
+        "cerca de ti",
+        "en mi zona",
+        "en mi area",
+        "por aquí",
+        "por aqui",
+        "perto",
+        "perto de mim",
+        "na minha região",
+        "na minha regiao",
+        "na minha área",
+        "na minha area",
+    )
+    if not any(m in t for m in local_markers):
+        return ""
+
+    cuisines = (
+        "brazilian",
+        "mexican",
+        "italian",
+        "japanese",
+        "chinese",
+        "thai",
+        "indian",
+        "peruvian",
+        "colombian",
+        "korean",
+        "vietnamese",
+        "french",
+        "greek",
+        "ethiopian",
+        "mediterranean",
+        "seafood",
+        "steakhouse",
+        "bbq",
+        "barbecue",
+        "vegan",
+        "vegetarian",
+    )
+    prefix = ""
+    for c in cuisines:
+        if c in t:
+            prefix = c + " "
+            break
+
+    return (prefix + "restaurant").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -346,16 +691,23 @@ def process_message(
     user = get_or_create_user(user_id, user_location, profile=user_profile)
 
     state = user_location.get("state") or getattr(user, "state", None)
+    city = user_location.get("city") or getattr(user, "city", None)
     county = user_location.get("county") or getattr(user, "county", None)
     zip_code = user_location.get("zip_code") or getattr(user, "zip_code", None)
     location_enabled = user_location.get("location_enabled", getattr(user, "location_enabled", True))
     user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
+
+    # Prefer city/state/ZIP named in this message for retrieval (before KB + structured merge).
+    state, city, county, zip_code = _apply_message_location_for_map(
+        message, state, city, county, zip_code
+    )
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
     logger.info("chat_flow.openai_key_configured=%s", has_api_key)
 
     # ------------------------------------------------------------------
     # TIER 0 — Casual intents  (intents.json, no OpenAI call needed)
+    # get_casual_response() only fires for short, non-FAQ messages; see casual_intents.
     # ------------------------------------------------------------------
     casual_text, casual_tag = get_casual_response(message)
     if casual_text:
@@ -439,16 +791,128 @@ def process_message(
     if intent == "off_topic" and matches:
         intent = "information_request"
 
+    # Merge structured extraction into location (message may mention state/ZIP not on profile)
+    state = structured.get("state") or state
+    city = structured.get("city") or city
+    county = structured.get("county") or county
+    zip_code = structured.get("zip_code") or zip_code
+
+    state, city, county, zip_code = _apply_message_location_for_map(
+        message, state, city, county, zip_code
+    )
+
     # ------------------------------------------------------------------
-    # TIER 2 — KB-based response  (strongest tier, fires whenever KB has hits)
+    # TIER 2a — Nearest office / restaurants (map lookup) BEFORE generic KB+RAG
+    # (KB often has prose but not live listings; RAG was giving generic "use apps" answers.)
+    # ------------------------------------------------------------------
+    place_query = _extract_local_place_query(message)
+    restaurant_query = _extract_restaurant_search_query(message)
+    needs_map_lookup = bool(place_query or restaurant_query)
+    local_places = []
+    restaurant_places = []
+
+    if needs_map_lookup:
+        if not location_enabled:
+            reply = {
+                "en": "To find nearby offices or restaurants on the map, I need your location access or your state/city/ZIP code.",
+                "es": "Para buscar oficinas o restaurantes cercanos en el mapa, necesito acceso a tu ubicación o tu estado/ciudad/código postal.",
+                "pt": "Para buscar escritórios ou restaurantes próximos no mapa, preciso do acesso à sua localização ou do seu estado/cidade/CEP.",
+            }.get(detected_lang, "To find nearby places on the map, I need your state/city/ZIP code.")
+            _save_history(user_id, message, reply, "location_required", structured)
+            return _build_response(reply, detected_lang, "location_required", question_analysis=structured, user_name=user_name)
+
+        if not any([zip_code, city, county, state]):
+            reply = {
+                "en": "I can search the map for you. Please share at least your ZIP code or your city/state.",
+                "es": "Puedo buscar en el mapa. Comparte al menos tu código postal o tu ciudad/estado.",
+                "pt": "Posso buscar no mapa. Compartilhe pelo menos seu CEP ou sua cidade/estado.",
+            }.get(detected_lang, "Please share your ZIP code or city/state so I can search the map.")
+            _save_history(user_id, message, reply, "location_incomplete", structured)
+            return _build_response(reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name)
+
+        if place_query:
+            local_places = find_nearby_places(
+                place_query, state=state, county=county, city=city, zip_code=zip_code, limit=5
+            )
+        if restaurant_query:
+            restaurant_places = find_nearby_pois(
+                restaurant_query, state=state, county=county, city=city, zip_code=zip_code, limit=8
+            )
+
+    if place_query and local_places:
+        kb_context = ""
+        if matches:
+            kb_context = "\n\n".join(
+                f"Q: {m.get('question', '')}\nA: {m.get('answer', '')}" for m in matches[:4]
+            )
+        reply = generate_local_office_response(
+            user_message=message,
+            places=local_places,
+            kb_context=kb_context,
+            state=state or "",
+            county=county or "",
+            zip_code=zip_code or "",
+            language=detected_lang,
+            place_label=place_query,
+        )
+        _save_history(user_id, message, reply, "local_search", structured)
+        logger.info(
+            "chat_flow.local_search user_id=%s place=%s places=%s kb_snippets=%s",
+            user_id,
+            place_query,
+            len(local_places),
+            bool(matches),
+        )
+        return _build_response(reply, detected_lang, "local_search", question_analysis=structured, user_name=user_name)
+
+    if restaurant_query and restaurant_places:
+        kb_context = ""
+        if matches:
+            kb_context = "\n\n".join(
+                f"Q: {m.get('question', '')}\nA: {m.get('answer', '')}" for m in matches[:4]
+            )
+        reply = generate_local_dining_response(
+            user_message=message,
+            places=restaurant_places,
+            kb_context=kb_context,
+            state=state or "",
+            county=county or "",
+            zip_code=zip_code or "",
+            language=detected_lang,
+            search_label=restaurant_query,
+        )
+        _save_history(user_id, message, reply, "local_search", structured)
+        logger.info(
+            "chat_flow.local_dining user_id=%s query=%s places=%s kb_snippets=%s",
+            user_id,
+            restaurant_query,
+            len(restaurant_places),
+            bool(matches),
+        )
+        return _build_response(reply, detected_lang, "local_search", question_analysis=structured, user_name=user_name)
+
+    if place_query and not local_places and location_enabled and any([zip_code, city, county, state]):
+        logger.info(
+            "chat_flow.local_search.skip_no_results user_id=%s place=%s (falling_through_to_kb)",
+            user_id,
+            place_query,
+        )
+    if restaurant_query and not restaurant_places and location_enabled and any([zip_code, city, county, state]):
+        logger.info(
+            "chat_flow.local_dining.skip_no_results user_id=%s query=%s (falling_through_to_kb)",
+            user_id,
+            restaurant_query,
+        )
+
+    # ------------------------------------------------------------------
+    # TIER 2 — KB-based response (non-empty matches already passed retrieval thresholds)
     # ------------------------------------------------------------------
     if matches:
-        top_sim = matches[0].get("similarity", 0.0)
+        top_sim = float(matches[0].get("similarity") or 0.0)
         context_parts = [f"Q: {m.get('question', '')}\nA: {m.get('answer', '')}" for m in matches]
         retrieved_context = "\n\n".join(context_parts)
 
         if top_sim >= _KB_HIGH_THRESHOLD:
-            # Strong / exact match — give the pre-defined KB answer, enhanced naturally
             reply = generate_exact_kb_answer(
                 user_message=message,
                 kb_entry=matches[0],
@@ -460,7 +924,6 @@ def process_message(
                 top_sim,
             )
         else:
-            # Partial / fallback match — RAG: OpenAI uses KB as context
             reply = generate_rag_response(
                 user_message=message,
                 retrieved_context=retrieved_context,
@@ -475,9 +938,27 @@ def process_message(
                 top_sim,
                 len(matches),
             )
+            if has_api_key and response_looks_like_rag_refusal(reply):
+                reply = generate_general_braelo_response(
+                    message,
+                    state or "",
+                    county or "",
+                    city or "",
+                    zip_code or "",
+                    detected_lang,
+                )
+                structured = dict(structured or {})
+                structured["answer_source"] = "openai_general"
+                logger.info(
+                    "chat_flow.kb_response user_id=%s mode=openai_general_after_rag_refusal top_similarity=%.4f",
+                    user_id,
+                    top_sim,
+                )
 
-        # Append subtle location hint if location is missing (don't block the answer)
-        if not state or not county or not zip_code:
+        if (
+            structured.get("answer_source") != "openai_general"
+            and (not state or not county or not zip_code)
+        ):
             loc_hint = {
                 "en": " For location-specific results or to find businesses near you, share your state, county, and ZIP code.",
                 "es": " Para información específica de tu zona o para encontrar negocios cerca, comparte tu estado, condado y código postal.",
@@ -580,8 +1061,38 @@ def process_message(
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
-    # TIER 4 — No KB match, not a known intent → helpful off-topic message
+    # TIER 4 — No KB match: OpenAI general answer (in-scope) vs clarification / off-topic
     # ------------------------------------------------------------------
+    if intent in ("information_request", "unclear"):
+        structured = dict(structured or {})
+        structured["retrieval_confidence"] = "none"
+        if has_api_key:
+            reply = generate_general_braelo_response(
+                message,
+                state or "",
+                county or "",
+                city or "",
+                zip_code or "",
+                detected_lang,
+            )
+            structured["answer_source"] = "openai_general"
+            out_intent = "information_request"
+            _save_history(user_id, message, reply, out_intent, structured)
+            logger.info(
+                "chat_flow.general_knowledge user_id=%s reason=no_kb_matches prior_intent=%s",
+                user_id,
+                intent,
+            )
+            return _build_response(
+                reply, detected_lang, out_intent, question_analysis=structured, user_name=user_name
+            )
+        reply = generate_kb_clarification_reply(message, detected_lang)
+        _save_history(user_id, message, reply, "kb_clarification", structured)
+        logger.info("chat_flow.kb_clarification user_id=%s reason=no_matches_no_openai intent=%s", user_id, intent)
+        return _build_response(
+            reply, detected_lang, "kb_clarification", question_analysis=structured, user_name=user_name
+        )
+
     reply = _off_topic_message(detected_lang)
     _save_history(user_id, message, reply, "off_topic", structured)
     return _build_response(reply, detected_lang, "off_topic", question_analysis=structured, user_name=user_name)

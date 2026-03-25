@@ -41,19 +41,24 @@ def get_structured_output(message: str, conversation_summary: str = "") -> dict:
     system = """You are an assistant for immigrant communities in the USA (Hispanic and Brazilian).
 Classify the user message and extract structured data. Respond with a JSON object only, no markdown.
 
-SCOPE: This chatbot ONLY helps with (1) information about living in the USA (immigration, housing, taxes, jobs, education, health, etc. from the knowledge base), (2) finding local businesses (lawyer, tax preparer, doctor, real estate, etc.), (3) comparing businesses, (4) casual conversation (greetings, thanks, goodbye).
-If the user asks for anything OUTSIDE this scope, set intent to "off_topic". Examples of off_topic: writing or explaining code (any language), programming, math problems, weather, jokes, general knowledge questions, recipes, sports, entertainment, or any request unrelated to immigration/living in USA or finding local businesses.
+SCOPE: This chatbot helps with (1) practical life in the USA from the knowledge base: immigration paperwork, housing and renting, taxes and ITIN, jobs and work authorization, health and insurance, education, banking, driver's license and DMV/MVD processes (including converting or transferring a foreign license), vehicle registration, state ID, and similar day-to-day topics, (2) finding local businesses (lawyer, tax preparer, doctor, real estate, etc.), (3) comparing businesses, (4) casual conversation (greetings, thanks, goodbye).
+
+Set intent to "information_request" for questions about driver's licenses, permits, DMV visits, tests, documents for driving, or any state-specific procedure that immigrants commonly need — these are IN SCOPE.
+
+If the user asks for anything OUTSIDE this scope, set intent to "off_topic". Examples of off_topic: writing or debugging software code, programming tutorials, pure math homework, weather, jokes, unrelated trivia, recipes, sports scores, movies, games, or topics with no connection to living in the USA or local services.
 
 Keys:
 - intent: One of "casual", "information_request", "business_search", "business_comparison", "unclear", "off_topic".
 - category: legal, tax, housing, immigration, health, job, education, other (or null).
 - subcategory: lawyer, tax_preparer, real_estate_agent, doctor, etc. (or null).
-- state: US state name if mentioned or null.
+- state: US state name or 2-letter code if mentioned or null.
 - city: city if mentioned or null.
 - county: county if mentioned or null.
 - zip_code: ZIP code if mentioned or null.
 - detected_language: "en", "es", or "pt".
 - confidence: number from 0.0 to 1.0. Use low for unclear; use off_topic for out-of-scope requests.
+
+If the user names a specific place for a local question (e.g. "restaurants in Phoenix, AZ", "DMV near ZIP 85004", "Mesa Arizona"), extract city, state, county, and zip_code exactly from their words so map search uses that location, not a vague region.
 
 Use null for any field not clearly stated."""
 
@@ -135,21 +140,186 @@ def translate_query_to_portuguese_for_search(query: str) -> str:
         return query
 
 
+def rewrite_query_for_kb_retrieval(query: str, user_language: str = "en") -> str:
+    """
+    Produce a compact Portuguese-oriented search line for retrieval against a PT-structured FAQ.
+    No facts or answers — paraphrase and key entities only (for embeddings + token overlap).
+    """
+    if not client or not query or not query.strip():
+        return ""
+    lang = (user_language or "en").lower()
+    lang_note = {
+        "en": "The user wrote in English.",
+        "es": "The user wrote in Spanish.",
+        "pt": "The user wrote in Portuguese (Brazil).",
+    }.get(lang, "The user may write in English, Spanish, or Portuguese.")
+    try:
+        logger.info("gpt_service.rewrite_query_for_kb.request lang=%s len=%s", lang, len(query))
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You help retrieve FAQ rows from a knowledge base about living in the USA "
+                        "(immigration, housing, driver's license, taxes, health, work, etc.). "
+                        f"{lang_note} "
+                        "Output exactly ONE line in Portuguese (Brazil): a short search query that could appear "
+                        "in a FAQ title or answer — synonyms and key nouns only. "
+                        "Do NOT answer the question. Do NOT add facts. No quotes, bullets, or JSON."
+                    ),
+                },
+                {"role": "user", "content": query.strip()[:2000]},
+            ],
+            temperature=0,
+        )
+        out = (resp.choices[0].message.content or "").strip().split("\n")[0].strip()
+        out = out.strip('"').strip("'")[:500]
+        logger.info("gpt_service.rewrite_query_for_kb.response len=%s", len(out or ""))
+        return out
+    except Exception:
+        logger.exception("gpt_service.rewrite_query_for_kb.error")
+        return ""
+
+
+def generate_kb_clarification_reply(user_message: str, language: str) -> str:
+    """
+    When retrieval is uncertain or empty: ask the user to rephrase or give location.
+    Must not use external knowledge; stay within Braelo's scope (USA life / local help).
+    """
+    if not client or not (user_message or "").strip():
+        return _kb_clarification_fallback(language)
+
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    system = f"""You are Braelo, helping immigrants in the USA. The user's message did not match any FAQ entry clearly enough to answer safely.
+
+Write 1–2 short sentences in {lang_name} that:
+- Ask them to rephrase using different words, or name the topic (housing, driver's license, taxes, etc.).
+- Optionally ask for their US state and ZIP code if that would help find region-specific answers.
+- Do NOT answer their substantive question. Do NOT use outside facts. Do NOT use bullet points or dashes.
+- Sound warm and helpful. No closing fluff like "Let me know if you need anything else."
+"""
+
+    user = f"User message:\n{user_message.strip()[:2000]}"
+
+    try:
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.35,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out else _kb_clarification_fallback(language)
+    except Exception:
+        logger.exception("gpt_service.kb_clarification.error")
+        return _kb_clarification_fallback(language)
+
+
+def _kb_clarification_fallback(language: str) -> str:
+    msgs = {
+        "en": "I don't have a close match in my knowledge base for that yet. Could you rephrase your question or tell me your US state and ZIP code so I can look for the right information?",
+        "es": "No tengo una coincidencia clara en mi base de conocimiento. ¿Podrías reformular tu pregunta o indicarme tu estado y código postal en EE. UU.?",
+        "pt": "Ainda não encontrei uma correspondência clara na minha base de conhecimento. Pode reformular a pergunta ou informar seu estado e CEP nos EUA?",
+    }
+    return msgs.get(language, msgs["en"])
+
+
+def response_looks_like_rag_refusal(text: str) -> bool:
+    """True when the model answered with the KB-only refusal instead of useful content."""
+    if not (text or "").strip():
+        return True
+    t = text.lower()
+    needles = (
+        "don't have specific information",
+        "do not have specific information",
+        "i don't have specific information",
+        "no tengo información específica",
+        "no tengo informacion especifica",
+        "não tenho informações específicas",
+        "nao tenho informacoes especificas",
+        "tell me your state, county, and zip code",
+        "tu estado, condado y código postal",
+        "seu estado, condado e cep",
+        "could you rephrase your question or tell me your state",
+    )
+    return any(n in t for n in needles)
+
+
+GENERAL_BRAELO_SYSTEM = """You are Braelo, a warm assistant for immigrants and newcomers in the United States.
+
+The user's question did not match a verified FAQ article closely enough, or no article covered their situation. Answer using general, widely known information about life in the USA.
+
+Rules:
+1. Use the user's wording: if they name a US state, city, or region (e.g. Alaska, Phoenix), tailor your answer to that place. Do NOT ask them to repeat state or ZIP if they already gave a location in the question.
+2. Give practical, actionable guidance (where to look, what steps exist, what to watch for). Prefer well-known resource categories: official state websites, federal agencies, workforce or state job boards, USAJOBS for federal jobs, CareerOneStop, local government and library pages, community organizations, networking, training or volunteer programs — as appropriate to their question.
+3. When the topic is work or a job search, briefly remind them that work authorization depends on their immigration status and they should confirm with a qualified professional or official USCIS information; do not assert that someone is or is not allowed to work.
+4. Do not invent private phone numbers, office addresses, or legal citations. If details vary by location or year, say they should check current official sources.
+5. Focus on the United States (any state or territory). If they ask about another country, answer briefly only if helpful and steer back to US-focused guidance when relevant.
+6. Write in the user's language. Short paragraphs or a few bullet points are fine when listing options. No closing fluff like "Let me know if you need anything else."
+
+TONE: Supportive, clear, and honest."""
+
+
+def generate_general_braelo_response(
+    user_message: str,
+    state: str,
+    county: str,
+    city: str,
+    zip_code: str,
+    language: str,
+) -> str:
+    """
+    OpenAI answer when KB retrieval is empty or RAG refuses — use any US location the user names.
+    """
+    if not client:
+        logger.info("gpt_service.general_braelo.skip reason=no_openai_client")
+        return _kb_clarification_fallback(language)
+
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    loc_parts = [p for p in [city, county, state, zip_code] if p]
+    location_hint = ", ".join(loc_parts) if loc_parts else "(none—rely on the question text)"
+
+    user = f"""User question:
+{user_message.strip()[:2000]}
+
+Optional profile hints: {location_hint}
+
+Respond in {lang_name}."""
+
+    try:
+        logger.info("gpt_service.general_braelo.request lang=%s msg_len=%s", language, len(user_message or ""))
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": GENERAL_BRAELO_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.45,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out else _kb_clarification_fallback(language)
+    except Exception:
+        logger.exception("gpt_service.general_braelo.error")
+        return _kb_clarification_fallback(language)
+
+
 BRAELO_RAG_SYSTEM = """You are Braelo, a warm, empathetic, and professional assistant helping immigrants navigate life in the United States. You provide accurate, helpful information based ONLY on the provided knowledge base.
 
 CORE RULES (NEVER VIOLATE):
 1. ONLY use information from the provided context. NEVER use external knowledge or guess.
-2. When the context CONTAINS relevant information that addresses the user's question (even partially or in different words), you MUST use it to give a full, helpful answer. Do NOT say "I don't have specific information" if the context clearly relates to the question (e.g. context about ITIN when the user asks about "ITIN approval process", or context about a topic when the user rephrases it).
-3. ONLY when the context is empty ("No matching content found") or clearly does NOT address the user's question at all, say: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?"
-4. NEVER use bullet points (•), dashes (-), or numbered lists. Write in natural, flowing paragraphs.
-5. NEVER guess or make assumptions beyond the context. If the context is relevant, use it; if not, ask one or two specific clarifying questions.
-6. NEVER add closing statements like "Let me know if you need help" or "Is there anything else?" Keep the conversation open.
-7. Acknowledge the user's location naturally when relevant.
-8. Use simple language. Avoid legal jargon or overly technical terms.
-9. Be professional for legal/official matters; warm and welcoming for daily life.
-10. When the user asks in English, your response MUST be in clear, natural English. If the context is in Portuguese or Spanish, translate it into proper English so it reads naturally, not as a literal translation.
+2. When the context CONTAINS information about the SAME topic as the user's question (driver's license, DMV, documents, tests, housing, taxes, immigration steps, etc.) — even if phrased differently or partially — you MUST synthesize a helpful answer from that context. Treat synonyms and related phrases as a match (e.g. "transfer Brazilian license" and "carteira de motorista brasileira para americana"; "step by step" and bullet lists in the context).
+3. Do NOT say "I don't have specific information" when the context mentions the same process, agency (DMV/MVD), documents, or requirements the user is asking about. Use what is there; if something is missing in the context, say only that part is not in your materials — do not refuse the whole answer.
+4. ONLY when the context is empty or is clearly about a completely different subject than the question, say: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?"
+5. Prefer natural flowing paragraphs. If the user explicitly asks for steps or a procedure AND the context lists steps or requirements, you MAY present them as a short numbered list (1, 2, 3) so it is easy to follow — only using steps that appear in the context.
+6. NEVER guess or invent facts beyond the context. If the context is relevant, use it; if only partly relevant, answer the part you can and note what is not covered.
+7. NEVER add closing statements like "Let me know if you need help" or "Is there anything else?" Keep the conversation open.
+8. Acknowledge the user's state or ZIP when they provided it.
+9. Use simple language. When the user asks in English, respond in clear English; translate Portuguese or Spanish context naturally.
 
-TONE: Emotional and welcoming by default; professional and formal when the situation calls for it. Concise but complete. No unnecessary explanations."""
+TONE: Warm and clear. Concise but complete."""
 
 
 def generate_rag_response(
@@ -184,7 +354,7 @@ Response language: {language}
 
 User Question: {user_message}
 
-{lang_instruction} Write in flowing paragraphs, no bullets or dashes. Do not end with a closing phrase. Keep the conversation open."""
+{lang_instruction} Prefer flowing prose; use a short numbered list only if the user asked for steps and the context lists steps. Do not end with a closing phrase. Keep the conversation open."""
 
     try:
         logger.info(
@@ -207,6 +377,182 @@ User Question: {user_message}
         logger.warning("GPT generate_rag_response failed: %s", e)
         logger.exception("gpt_service.rag.error")
         return "Something went wrong. Please try again."
+
+
+def _format_map_places_bullets(places: list, max_items: int, name_fallback: str) -> str:
+    """Build a markdown bullet list for map POIs (one `- ` per place; sub-line for map URL)."""
+    lines = []
+    for p in (places or [])[:max_items]:
+        disp = (p or {}).get("display_name") or (p or {}).get("name") or name_fallback
+        mu = (p or {}).get("map_url")
+        if mu:
+            lines.append(f"- {disp}\n  - Map: {mu}")
+        else:
+            lines.append(f"- {disp}")
+    return "\n".join(lines)
+
+
+def generate_local_office_response(
+    user_message: str,
+    places: list,
+    kb_context: str,
+    state: str,
+    county: str,
+    zip_code: str,
+    language: str,
+    place_label: str,
+) -> str:
+    """
+    Combine OpenStreetMap/Nominatim results with optional KB snippets.
+    Must not claim missing office info when places is non-empty.
+    """
+    if not places:
+        return ""
+
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    places_block = _format_map_places_bullets(places, 5, place_label)
+
+    if not client:
+        header = {
+            "en": f"Here are nearby {place_label} options for your area:",
+            "es": f"Aquí hay opciones cercanas de {place_label} en tu zona:",
+            "pt": f"Aqui estão opções próximas de {place_label} na sua região:",
+        }.get(language, f"Here are nearby {place_label} options:")
+        return header + "\n\n" + places_block
+
+    system = f"""You are Braelo, helping immigrants in the USA.
+
+The user asked for nearby offices or locations (e.g. DMV). Below are REAL map search results with addresses and map links. You MUST use them.
+
+Rules:
+1. Write in {lang_name}. Start with one short friendly intro sentence (no bullets in the intro).
+2. After the intro, list EVERY map result as markdown bullet points: each main item MUST start with "- " (hyphen + space). For each place, use the exact text from the data (name/address); keep the nested "- Map: …" line under that bullet when a link is provided. Do not use numbered lists (1. 2.) for the locations.
+3. Do NOT add offices or addresses that are not in the Map results block.
+4. Do NOT say you lack information about office locations when the map results are present.
+5. If "Knowledge base context" below is non-empty, add one short paragraph of tips (documents, tests, appointments) using ONLY that context — no invented facts.
+6. If knowledge base context is empty, omit procedural detail beyond confirming they should verify hours and required documents on the official state DMV/MVD site.
+7. No closing fluff like "Let me know if you need anything else."
+"""
+
+    user = f"""User question:
+{user_message.strip()[:2000]}
+
+User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}
+
+Map results (use all of these):
+{places_block}
+
+Knowledge base context (may be empty):
+{kb_context.strip()[:6000] if kb_context else '(none)'}
+"""
+
+    try:
+        logger.info(
+            "gpt_service.local_office.request lang=%s places=%s kb_len=%s",
+            language,
+            len(places),
+            len(kb_context or ""),
+        )
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.25,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out else places_block
+    except Exception:
+        logger.exception("gpt_service.local_office.error")
+        header = {
+            "en": f"Here are nearby {place_label} options:",
+            "es": f"Opciones cercanas de {place_label}:",
+            "pt": f"Opções próximas de {place_label}:",
+        }.get(language, f"Here are nearby {place_label} options:")
+        return header + "\n\n" + places_block
+
+
+def generate_local_dining_response(
+    user_message: str,
+    places: list,
+    kb_context: str,
+    state: str,
+    county: str,
+    zip_code: str,
+    language: str,
+    search_label: str,
+) -> str:
+    """
+    Format OpenStreetMap/Nominatim restaurant (or dining) results.
+    Same shape as office lookup; tuned so the model lists real names/links, not generic app advice.
+    """
+    if not places:
+        return ""
+
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    places_block = _format_map_places_bullets(places, 10, search_label)
+
+    if not client:
+        header = {
+            "en": f"Here are map results for {search_label} in your area:",
+            "es": f"Resultados del mapa para {search_label} en tu zona:",
+            "pt": f"Resultados do mapa para {search_label} na sua região:",
+        }.get(language, f"Here are map results for {search_label}:")
+        return header + "\n\n" + places_block
+
+    system = f"""You are Braelo, helping immigrants in the USA.
+
+The user asked for nearby restaurants or places to eat. Below are REAL OpenStreetMap/Nominatim map search results (names, addresses, map links). You MUST use them as the ONLY source for restaurant names and locations.
+
+Rules:
+1. Write in {lang_name}. Start with one short friendly intro sentence (no bullets in the intro).
+2. After the intro, list EVERY map result as markdown bullet points: each main item MUST start with "- " (hyphen + space). Copy the place line from the data exactly; keep the nested "- Map: …" line under that bullet when a link is provided. Do not use numbered lists (1. 2.) for the places.
+3. Add one short sentence (after the list or woven into the intro) that map data can be incomplete or outdated — they should confirm hours and that the place is still open before going.
+4. Do NOT name any restaurant, chain, or neighborhood spot that does NOT appear in the Map results block (no examples like "typically you might try X" — only the given rows).
+5. Do NOT say you have no specific restaurant information when the map results are present. Do NOT replace the bullet list with generic advice like "use Google Maps or Yelp" as the main answer.
+6. If "Knowledge base context" below is non-empty, add one short paragraph of general tips using ONLY that context — no invented facts.
+7. If knowledge base context is empty, do not add procedural filler beyond the accuracy note in rule 3.
+8. No closing fluff like "Let me know if you need anything else."
+"""
+
+    user = f"""User question:
+{user_message.strip()[:2000]}
+
+User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}
+
+Map results (use all of these):
+{places_block}
+
+Knowledge base context (may be empty):
+{kb_context.strip()[:6000] if kb_context else '(none)'}
+"""
+
+    try:
+        logger.info(
+            "gpt_service.local_dining.request lang=%s places=%s kb_len=%s",
+            language,
+            len(places),
+            len(kb_context or ""),
+        )
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out else places_block
+    except Exception:
+        logger.exception("gpt_service.local_dining.error")
+        header = {
+            "en": f"Here are map results for {search_label}:",
+            "es": f"Resultados del mapa para {search_label}:",
+            "pt": f"Resultados do mapa para {search_label}:",
+        }.get(language, f"Here are map results for {search_label}:")
+        return header + "\n\n" + places_block
 
 
 def generate_clarifying_questions(message: str, language: str, missing_location: bool = False) -> str:
@@ -373,13 +719,13 @@ def generate_exact_kb_answer(
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
 
     system = f"""You are Braelo, a warm assistant helping immigrants navigate life in the USA.
-You have found an EXACT answer in your knowledge base for the user's question.
+You have found a strong match in your knowledge base for the user's question.
 Your job: deliver this answer naturally and completely in {lang_name}.
 
 STRICT RULES:
 1. Base your response ONLY on the knowledge base answer provided below. Do NOT add or invent information.
 2. If the KB answer is in a different language than {lang_name}, translate it naturally — not word-for-word.
-3. Do NOT use bullet points, dashes, or numbered lists. Write in flowing paragraphs.
+3. Prefer flowing paragraphs. If the user explicitly asks for step-by-step or numbered steps and the KB answer contains distinct steps or bullet points, you MAY format those as a short numbered list (1, 2, 3) taken only from the KB text.
 4. Do NOT add closing phrases like "Let me know if I can help further."
 5. Be warm, clear, and concise. Keep the conversation open."""
 
