@@ -78,6 +78,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
     loc = location or {}
     merge = {
         "state": loc.get("state"),
+        "city": loc.get("city"),
         "county": loc.get("county"),
         "zip_code": loc.get("zip_code"),
         "latitude": loc.get("latitude"),
@@ -115,7 +116,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
                 col.insert_one(doc)
             else:
                 update = {"updated_at": now}
-                for k in ("state", "county", "zip_code", "latitude", "longitude", "display_name", "email", "phone"):
+                for k in ("state", "city", "county", "zip_code", "latitude", "longitude", "display_name", "email", "phone"):
                     if merge.get(k) is not None:
                         update[k] = merge[k]
                     elif k in profile and profile[k] is not None:
@@ -133,7 +134,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
     try:
         user, _ = User.objects.get_or_create(external_id=external_id)
         updated = False
-        for k in ("state", "county", "zip_code"):
+        for k in ("state", "city", "county", "zip_code"):
             if merge.get(k):
                 setattr(user, k, merge[k])
                 updated = True
@@ -149,7 +150,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
                 setattr(user, k, merge[k])
                 updated = True
         if updated:
-            user.save(update_fields=["state", "county", "zip_code", "location_enabled",
+            user.save(update_fields=["state", "city", "county", "zip_code", "location_enabled",
                                      "latitude", "longitude", "display_name", "email", "phone", "updated_at"])
         return user
     except Exception:

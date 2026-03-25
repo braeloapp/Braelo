@@ -51,6 +51,8 @@ def home(request):
 
 def _parse_user_location(data: dict) -> dict:
     loc = {}
+    if data.get("city"):
+        loc["city"] = str(data["city"]).strip()[:128]
     if data.get("state"):
         loc["state"] = str(data["state"]).strip()
     if data.get("county"):
@@ -101,14 +103,21 @@ def api_chat(request):
         user_id = data.get("user_id") or data.get("session_id") or _get_client_ip(request)
         session_id = data.get("session_id") or user_id
         user_location = _parse_user_location(data)
+        try:
+            from chatbot.services.reverse_geocode import merge_gps_into_location
+
+            user_location = merge_gps_into_location(user_location)
+        except Exception:
+            logger.exception("chatbot.api_chat.reverse_geocode_merge_failed")
         user_profile = _parse_user_profile(data)
         logger.info(
-            "chatbot.api_chat.request user_id=%s session_id=%s message_len=%s has_location=%s has_profile=%s",
+            "chatbot.api_chat.request user_id=%s session_id=%s message_len=%s has_location=%s has_profile=%s geo=%s",
             user_id,
             session_id,
             len(message),
             bool(user_location),
             bool(user_profile),
+            (user_location.get("latitude") is not None and user_location.get("longitude") is not None),
         )
     except Exception:
         logger.exception("chatbot.api_chat.bad_request")
@@ -136,6 +145,16 @@ def api_chat(request):
         if out.get("require_contact_details"):
             payload["require_contact_details"] = True
             payload["contact_details_message"] = out.get("contact_details_message", "")
+        loc_ctx = {}
+        for _k in ("city", "state", "zip_code", "county"):
+            _v = (user_location or {}).get(_k)
+            if _v:
+                loc_ctx[_k] = _v
+        if loc_ctx:
+            loc_ctx["from_device_gps"] = bool(
+                data.get("latitude") is not None and data.get("longitude") is not None
+            )
+            payload["location_context"] = loc_ctx
         logger.info(
             "chatbot.api_chat.response user_id=%s intent=%s lang=%s response_len=%s businesses=%s",
             user_id,
