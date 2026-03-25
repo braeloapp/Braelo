@@ -91,11 +91,13 @@ class PaginateVehicle(QueryFilter):
     Endpoint to retrieve the latest vehicle listings with pagination.
     '''
 
-    queryset = VehicleListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = VehicleSerializer
     category = 'Vehicles'
+
+    def get_queryset(self):
+        return VehicleListing.objects.all()
 
 
 class PaginateRealEstate(QueryFilter):
@@ -103,11 +105,13 @@ class PaginateRealEstate(QueryFilter):
     Endpoint to retrieve the latest real estate listings with pagination.
     '''
 
-    queryset = RealEstateListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = RealEstateSerializer
     category = 'Real Estate'
+
+    def get_queryset(self):
+        return RealEstateListing.objects.all()
 
 
 class PaginateElectronics(QueryFilter):
@@ -115,11 +119,13 @@ class PaginateElectronics(QueryFilter):
     Endpoint to retrieve the latest electronics listings with pagination.
     '''
 
-    queryset = ElectronicsListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = ElectronicsSerializer
     category = 'Electronics'
+
+    def get_queryset(self):
+        return ElectronicsListing.objects.all()
 
 
 class PaginateEvents(QueryFilter):
@@ -127,11 +133,13 @@ class PaginateEvents(QueryFilter):
     Endpoint to retrieve the latest events listings with pagination.
     '''
 
-    queryset = EventsListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = EventsSerializer
     category = 'Events'
+
+    def get_queryset(self):
+        return EventsListing.objects.all()
 
 
 class PaginateFashion(QueryFilter):
@@ -139,11 +147,13 @@ class PaginateFashion(QueryFilter):
     Endpoint to retrieve the latest fashion listings with pagination.
     '''
 
-    queryset = FashionListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = FashionSerializer
     category = 'Fashion'
+
+    def get_queryset(self):
+        return FashionListing.objects.all()
 
 
 class PaginateJobs(QueryFilter):
@@ -151,11 +161,13 @@ class PaginateJobs(QueryFilter):
     Endpoint to retrieve the latest jobs listings with pagination.
     '''
 
-    queryset = JobsListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = JobsSerializer
     category = 'Jobs'
+
+    def get_queryset(self):
+        return JobsListing.objects.all()
 
 
 class PaginateServices(QueryFilter):
@@ -163,11 +175,13 @@ class PaginateServices(QueryFilter):
     Endpoint to retrieve the latest services listings with pagination.
     '''
 
-    queryset = ServicesListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = ServicesSerializer
     category = 'Services'
+
+    def get_queryset(self):
+        return ServicesListing.objects.all()
 
 
 class PaginateSportsHobby(QueryFilter):
@@ -175,11 +189,13 @@ class PaginateSportsHobby(QueryFilter):
     Endpoint to retrieve the latest sports and hobby listings with pagination.
     '''
 
-    queryset = SportsHobbyListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = SportsHobbySerializer
     category = 'Sports & Hobby'
+
+    def get_queryset(self):
+        return SportsHobbyListing.objects.all()
 
 
 class PaginateKids(QueryFilter):
@@ -187,11 +203,13 @@ class PaginateKids(QueryFilter):
     Endpoint to retrieve the latest kids listings with pagination.
     '''
 
-    queryset = KidsListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = KidsSerializer
     category = 'Kids'
+
+    def get_queryset(self):
+        return KidsListing.objects.all()
 
 
 class PaginateFurniture(QueryFilter):
@@ -199,8 +217,10 @@ class PaginateFurniture(QueryFilter):
     Endpoint to retrieve the latest furniture listings with pagination.
     '''
 
-    queryset = FurnitureListing.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = FurnitureSerializer
     category = 'Furniture'
+
+    def get_queryset(self):
+        return FurnitureListing.objects.all()

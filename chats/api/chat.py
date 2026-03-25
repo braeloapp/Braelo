@@ -263,9 +263,11 @@ class ChatroomListApi(generics.ListCreateAPIView):
 
 class ChatroomDetailApi(generics.ListAPIView):
 
-    queryset = Chat.objects.all()
     permission_classes = [IsAuthenticated]
     serializer_class = ChatSerializer
+
+    def get_queryset(self):
+        return Chat.objects.all()
 
     def get(self, request, **kwargs):
         chat_id = self.kwargs['chat_id']

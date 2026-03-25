@@ -110,8 +110,10 @@ class VehicleAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = VehicleListing.objects.all()
     serializer_class = VehicleSerializer
+
+    def get_queryset(self):
+        return VehicleListing.objects.all()
 
 
 class RealEstateAPI(Listing):
@@ -119,8 +121,10 @@ class RealEstateAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = RealEstateListing.objects.all()
     serializer_class = RealEstateSerializer
+
+    def get_queryset(self):
+        return RealEstateListing.objects.all()
 
 
 class ElectronicsAPI(Listing):
@@ -128,8 +132,10 @@ class ElectronicsAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = ElectronicsListing.objects.all()
     serializer_class = ElectronicsSerializer
+
+    def get_queryset(self):
+        return ElectronicsListing.objects.all()
 
 
 class EventsAPI(Listing):
@@ -137,8 +143,10 @@ class EventsAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = EventsListing.objects.all()
     serializer_class = EventsSerializer
+
+    def get_queryset(self):
+        return EventsListing.objects.all()
 
 
 class FashionAPI(Listing):
@@ -146,8 +154,10 @@ class FashionAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = FashionListing.objects.all()
     serializer_class = FashionSerializer
+
+    def get_queryset(self):
+        return FashionListing.objects.all()
 
 
 class JobsAPI(Listing):
@@ -155,8 +165,10 @@ class JobsAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = JobsListing.objects.all()
     serializer_class = JobsSerializer
+
+    def get_queryset(self):
+        return JobsListing.objects.all()
 
 
 class ServicesAPI(Listing):
@@ -164,8 +176,10 @@ class ServicesAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = ServicesListing.objects.all()
     serializer_class = ServicesSerializer
+
+    def get_queryset(self):
+        return ServicesListing.objects.all()
 
 
 class SportsHobbyAPI(Listing):
@@ -173,8 +187,10 @@ class SportsHobbyAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = SportsHobbyListing.objects.all()
     serializer_class = SportsHobbySerializer
+
+    def get_queryset(self):
+        return SportsHobbyListing.objects.all()
 
 
 class KidsAPI(Listing):
@@ -182,8 +198,10 @@ class KidsAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = KidsListing.objects.all()
     serializer_class = KidsSerializer
+
+    def get_queryset(self):
+        return KidsListing.objects.all()
 
 
 class FurnitureAPI(Listing):
@@ -191,5 +209,7 @@ class FurnitureAPI(Listing):
     API endpoint to create a new vehicle listings.
     '''
 
-    queryset = FurnitureListing.objects.all()
     serializer_class = FurnitureSerializer
+
+    def get_queryset(self):
+        return FurnitureListing.objects.all()

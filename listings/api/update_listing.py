@@ -94,7 +94,7 @@ class UpdateListing(generics.UpdateAPIView):
         if not ObjectId.is_valid(pk):
             raise ValidationError({'pk': 'Invalid ObjectId format.'})
         try:
-            return self.queryset.get(id=ObjectId(pk))
+            return self.get_queryset().get(id=ObjectId(pk))
         except DoesNotExist:
             raise ValidationError({'detail': 'Listing not found.'})
 
@@ -104,8 +104,10 @@ class VehicleUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = VehicleListing.objects.all()
     serializer_class = VehicleUpdateSerializer
+
+    def get_queryset(self):
+        return VehicleListing.objects.all()
 
 
 class RealEstateUpdateAPI(UpdateListing):
@@ -113,8 +115,10 @@ class RealEstateUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = RealEstateListing.objects.all()
     serializer_class = RealEstateUpdateSerializer
+
+    def get_queryset(self):
+        return RealEstateListing.objects.all()
 
 
 class ElectronicsUpdateAPI(UpdateListing):
@@ -122,8 +126,10 @@ class ElectronicsUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = ElectronicsListing.objects.all()
     serializer_class = ElectronicsUpdateSerializer
+
+    def get_queryset(self):
+        return ElectronicsListing.objects.all()
 
 
 class EventsUpdateAPI(UpdateListing):
@@ -131,8 +137,10 @@ class EventsUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = EventsListing.objects.all()
     serializer_class = EventsUpdateSerializer
+
+    def get_queryset(self):
+        return EventsListing.objects.all()
 
 
 class FashionUpdateAPI(UpdateListing):
@@ -140,8 +148,10 @@ class FashionUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = FashionListing.objects.all()
     serializer_class = FashionUpdateSerializer
+
+    def get_queryset(self):
+        return FashionListing.objects.all()
 
 
 class JobsUpdateAPI(UpdateListing):
@@ -149,8 +159,10 @@ class JobsUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = JobsListing.objects.all()
     serializer_class = JobsUpdateSerializer
+
+    def get_queryset(self):
+        return JobsListing.objects.all()
 
 
 class ServicesUpdateAPI(UpdateListing):
@@ -158,8 +170,10 @@ class ServicesUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = ServicesListing.objects.all()
     serializer_class = ServicesUpdateSerializer
+
+    def get_queryset(self):
+        return ServicesListing.objects.all()
 
 
 class SportsHobbyUpdateAPI(UpdateListing):
@@ -167,8 +181,10 @@ class SportsHobbyUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = SportsHobbyListing.objects.all()
     serializer_class = SportsHobbyUpdateSerializer
+
+    def get_queryset(self):
+        return SportsHobbyListing.objects.all()
 
 
 class KidsUpdateAPI(UpdateListing):
@@ -176,8 +192,10 @@ class KidsUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = KidsListing.objects.all()
     serializer_class = KidsUpdateSerializer
+
+    def get_queryset(self):
+        return KidsListing.objects.all()
 
 
 class FurnitureUpdateAPI(UpdateListing):
@@ -185,5 +203,7 @@ class FurnitureUpdateAPI(UpdateListing):
     API endpoint to update a new vehicle listings.
     '''
 
-    queryset = FurnitureListing.objects.all()
     serializer_class = FurnitureUpdateSerializer
+
+    def get_queryset(self):
+        return FurnitureListing.objects.all()

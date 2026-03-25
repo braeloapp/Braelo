@@ -36,10 +36,12 @@ class FetchBusinesses(generics.ListAPIView):
     returns data in pagination format
     '''
 
-    queryset = Business.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = BusinessSerailizer
+
+    def get_queryset(self):
+        return Business.objects.all()
 
 
 class ScanBusinessQR(generics.ListAPIView):
@@ -90,7 +92,6 @@ class FetchListings(generics.ListAPIView):
     Fetch user listings created from his business account.
     '''
 
-    queryset = ListSync.objects.all()
     permission_classes = [IsAuthenticated]
     pagination_class = Pagination
     serializer_class = ListsyncSerializer

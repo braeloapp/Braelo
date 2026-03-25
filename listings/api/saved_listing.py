@@ -36,9 +36,11 @@ class SaveListing(generics.CreateAPIView):
     Save user listed listing.
     '''
 
-    queryset = SavedItem.objects.all()
     permission_classes = [IsAuthenticated]
     serializer_class = SavedItemSerializer
+
+    def get_queryset(self):
+        return SavedItem.objects.all()
 
     def send_notification(self, request):
         SAVED_EVENT_DATA['data']['listing_id'] = request.data.get('listing_id')

@@ -83,9 +83,11 @@ class BussinessListing(generics.CreateAPIView):
     API endpoint to handle business creation
     '''
 
-    queryset = Business.objects.all()
     permission_classes = [IsAuthenticated]
     serializer_class = BusinessSerailizer
+
+    def get_queryset(self):
+        return Business.objects.all()
 
     def send_notification(self, serialized_data):
         BUSSINESS_EVENT_DATA['data']['business_id'] = serialized_data['id']

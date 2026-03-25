@@ -3,10 +3,60 @@ MongoDB connection and collection access for chatbot (uses config.settings).
 Database: MONGO_DB_NAME @ MONGO_URI (or shared Braelo MongoDB).
 """
 import logging
+import urllib.parse
 from django.conf import settings
 
 _client = None
 logger = logging.getLogger(__name__)
+
+
+def _normalize_mongo_uri_credentials(uri: str) -> str:
+    """
+    Ensure userinfo is RFC 3986 safe for PyMongo (encode special characters).
+    Accepts already-encoded credentials (we unquote then re-encode).
+    """
+    uri = (uri or "").strip()
+    if not uri or "://" not in uri:
+        return uri
+    try:
+        scheme, rest = uri.split("://", 1)
+        if scheme not in ("mongodb", "mongodb+srv"):
+            return uri
+        if "@" not in rest:
+            return uri
+        authority, hostpath = rest.split("@", 1)
+        if ":" not in authority:
+            return uri
+        colon = authority.index(":")
+        user_part = authority[:colon]
+        pass_part = authority[colon + 1 :]
+        if not user_part:
+            return uri
+        user_raw = urllib.parse.unquote(user_part)
+        pass_raw = urllib.parse.unquote(pass_part)
+        user_enc = urllib.parse.quote_plus(user_raw, safe="")
+        pass_enc = urllib.parse.quote_plus(pass_raw, safe="")
+        return f"{scheme}://{user_enc}:{pass_enc}@{hostpath}"
+    except Exception:
+        return uri
+
+
+def _ensure_auth_source_admin(uri: str) -> str:
+    """Atlas users authenticate against the 'admin' DB; enforce authSource=admin if missing."""
+    uri = (uri or "").strip()
+    if not uri:
+        return uri
+    try:
+        parsed = urllib.parse.urlsplit(uri)
+        q = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if not any(k.lower() == "authsource" for k in q.keys()):
+            q["authSource"] = ["admin"]
+        new_query = urllib.parse.urlencode(q, doseq=True)
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
+        )
+    except Exception:
+        return uri
 
 
 def get_client():
@@ -15,13 +65,15 @@ def get_client():
     if _client is None:
         try:
             from pymongo import MongoClient
+            raw_uri = getattr(settings, "MONGO_URI", "") or "mongodb://localhost:27017"
+            uri = _ensure_auth_source_admin(_normalize_mongo_uri_credentials(raw_uri))
             logger.info(
                 "mongo_db.connect.start uri_set=%s db=%s",
                 bool(getattr(settings, "MONGO_URI", None)),
                 getattr(settings, "MONGO_DB_NAME", "BraeloDB"),
             )
             _client = MongoClient(
-                getattr(settings, "MONGO_URI", "mongodb://localhost:27017"),
+                uri,
                 serverSelectionTimeoutMS=5000,
             )
             _client.admin.command("ping")

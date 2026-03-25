@@ -96,7 +96,6 @@ class AllFeedback(generics.ListAPIView):
     '''
 
     permission_classes = [IsAdminUser]
-    queryset = Requests.objects.all()
     pagination_class = Pagination
     serializer_class = RequestsSerializer
 
@@ -110,9 +109,11 @@ class AllNotifications(generics.ListAPIView):
     '''
 
     permission_classes = [IsAdminUser]
-    queryset = Notification.objects.all()
     pagination_class = Pagination
     serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        return Notification.objects.all()
 
 
 class ReportedUsers(generics.ListCreateAPIView):
@@ -123,7 +124,6 @@ class ReportedUsers(generics.ListCreateAPIView):
     permission_classes = [IsAdminUser]
     pagination_class = PaginateReportedUsers
     serializer_class = ReportMessageSerializer
-    queryset = ReportMessage.objects.all()
 
     def get_queryset(self):
         return ReportMessage.objects.filter(is_active=True)

@@ -21,10 +21,15 @@ import urllib
 from pathlib import Path
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
-from firebase_admin import initialize_app, credentials
 from mongoengine import connect
 
 _settings_log = logging.getLogger(__name__)
+
+try:
+    from firebase_admin import initialize_app, credentials  # type: ignore
+except Exception:
+    initialize_app = None
+    credentials = None
 
 
 # Load environment variables
@@ -65,19 +70,21 @@ try:
     firebase_credentials = json.loads(firebase_credentials_json)
 
     # 🔥 Initialize Firebase
-    cred = credentials.Certificate(firebase_credentials)
-    initialize_app(cred)
-
-    print("🔥 Firebase initialized successfully!")
+    if initialize_app and credentials:
+        cred = credentials.Certificate(firebase_credentials)
+        initialize_app(cred)
+        _settings_log.info("Firebase initialized successfully.")
+    else:
+        _settings_log.warning("firebase_admin not installed; skipping Firebase init.")
 
 except json.JSONDecodeError:
-    print("⚠️ Firebase initialization failed: Invalid JSON format in credentials.")
+    _settings_log.warning("Firebase initialization skipped: invalid JSON credentials.")
 
 except binascii.Error:
-    print("⚠️ Firebase initialization failed: Invalid Base64 encoding.")
+    _settings_log.warning("Firebase initialization skipped: invalid Base64 encoding.")
 
 except Exception as e:
-    print(f"⚠️ Firebase initialization failed: {e}")
+    _settings_log.warning("Firebase initialization skipped: %s", e)
 
 
 GOOGLE_OAUTH_CLIENT_ID = (
@@ -335,8 +342,9 @@ DJANGO_SKIP_MONGOENGINE = os.getenv("DJANGO_SKIP_MONGOENGINE", "").lower() in (
 
 # Build Atlas URI only when username+password are set (avoid mongodb+srv://:@...)
 if not MONGO_URI and _mongo_username and _mongo_password_raw:
-    _enc_user = urllib.parse.quote_plus(_mongo_username, safe="")
-    _enc_pw = urllib.parse.quote_plus(_mongo_password_raw, safe="")
+    # Allow env vars to be either raw or already URL-encoded.
+    _enc_user = urllib.parse.quote_plus(urllib.parse.unquote(_mongo_username), safe="")
+    _enc_pw = urllib.parse.quote_plus(urllib.parse.unquote(_mongo_password_raw), safe="")
     MONGO_URI = (
         f"mongodb+srv://{_enc_user}:{_enc_pw}"
         f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"

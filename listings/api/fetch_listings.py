@@ -238,15 +238,13 @@ class LookupListing(generics.CreateAPIView):
 class Recent(generics.ListAPIView):
 
     pagination_class = Pagination
-    queryset = ListSync.objects.all()
     serializer_class = ListsyncSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
         coordinates = self.request.GET.get('listing_coordinates')
         if not coordinates:
-            queryset = super().get_queryset()
-            return queryset.filter(is_active=True)
+            return ListSync.objects.filter(is_active=True)
 
         try:
             coordinates = json.loads(coordinates)
