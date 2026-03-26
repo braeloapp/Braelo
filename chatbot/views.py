@@ -100,7 +100,9 @@ def api_chat(request):
         message = (data.get("message") or data.get("msg") or "").strip()
         if not message or len(message) > 4000:
             return JsonResponse({"error": "Invalid or missing message", "response": ""}, status=400)
-        user_id = data.get("user_id") or data.get("session_id") or _get_client_ip(request)
+        # user_id is the STABLE identity for location/profile persistence (IP or explicit user_id).
+        # session_id resets on every page-load so language detection re-locks per conversation.
+        user_id = data.get("user_id") or _get_client_ip(request)
         session_id = data.get("session_id") or user_id
         user_location = _parse_user_location(data)
         try:

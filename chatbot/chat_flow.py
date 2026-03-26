@@ -72,6 +72,132 @@ def _user_from_mongo(doc: dict) -> _UserLike:
     return _UserLike(doc)
 
 
+_SUPPORTED_LANGS = tuple(getattr(django_settings, "SUPPORTED_LANGUAGES", ["en", "es", "pt"]))
+_LANG_SWITCH_PATTERNS = (
+    (re.compile(r"\b(reply|respond|answer|speak|write)\s+(in\s+)?(english|en)\b", re.I), "en"),
+    (re.compile(r"\b(reply|respond|answer|speak|write)\s+(in\s+)?(spanish|espanol|español|es)\b", re.I), "es"),
+    (re.compile(r"\b(reply|respond|answer|speak|write)\s+(in\s+)?(portuguese|portugues|português|pt)\b", re.I), "pt"),
+    (re.compile(r"\b(en inglés|en ingles)\b", re.I), "en"),
+    (re.compile(r"\b(en español|en espanol)\b", re.I), "es"),
+    (re.compile(r"\b(em português|em portugues)\b", re.I), "pt"),
+)
+
+
+def _normalize_language_code(value: str, default: str = "en") -> str:
+    v = (value or "").strip().lower()
+    if v in ("pt", "pt-br", "pt_br"):
+        return "pt"
+    if v == "es":
+        return "es"
+    if v == "en":
+        return "en"
+    return default
+
+
+def _extract_requested_language_switch(message: str) -> str:
+    t = (message or "").strip()
+    if not t:
+        return ""
+    for rx, code in _LANG_SWITCH_PATTERNS:
+        if rx.search(t):
+            return code
+    return ""
+
+
+def _user_has_history(user_id: str) -> bool:
+    try:
+        if getattr(django_settings, "USE_MONGO", False):
+            from chatbot.mongo_db import get_db
+            db = get_db()
+            return bool(db.chat_history.find_one({"external_id": user_id, "role": "user"}))
+        return ChatHistory.objects.filter(external_id=user_id, role="user").exists()
+    except Exception:
+        logger.exception("chat_flow.user_history_check_failed user_id=%s", user_id)
+        return False
+
+
+def _persist_user_language_preference(user, user_id: str, language: str) -> None:
+    lang = _normalize_language_code(language)
+    try:
+        if getattr(django_settings, "USE_MONGO", False):
+            from chatbot.mongo_db import get_db
+            from datetime import datetime
+            get_db().users.update_one(
+                {"external_id": user_id},
+                {"$set": {"language_preference": lang, "updated_at": datetime.utcnow()}},
+                upsert=True,
+            )
+        else:
+            if hasattr(user, "language_preference"):
+                user.language_preference = lang
+                if hasattr(user, "save"):
+                    user.save(update_fields=["language_preference", "updated_at"])
+        logger.info("chat_flow.language_preference.saved user_id=%s lang=%s", user_id, lang)
+    except Exception:
+        logger.exception("chat_flow.language_preference.save_failed user_id=%s lang=%s", user_id, lang)
+
+
+def _resolve_conversation_language(
+    user, user_id: str, session_id: str, message: str, message_detected_lang: str
+) -> str:
+    """
+    Language is locked per SESSION (browser tab / page refresh), not per IP.
+
+    Policy:
+    1. Explicit switch command ("reply in Spanish") → always honored immediately.
+    2. No session history yet → this is the FIRST message of a NEW session.
+       Detect language from the message; ignore any previously stored preference.
+       This ensures a page refresh always starts fresh.
+    3. Session already has history → ONGOING session.
+       Use stored PT/ES preference as a hard lock; re-detect for EN (it is also
+       the system default so can't be trusted as a genuine lock).
+    4. Language preference is saved on the IP-based user document so it is
+       available for all subsequent messages in the same session.
+    """
+    msg_lang = _normalize_language_code(message_detected_lang)
+    stored = _normalize_language_code(getattr(user, "language_preference", "") or "")
+    if stored not in _SUPPORTED_LANGS:
+        stored = ""
+
+    # "en" is indistinguishable from the DB default — never treat it as a lock.
+    # Only "pt" or "es" could have been set by a real first-message detection.
+    reliable_stored = stored if stored in ("es", "pt") else ""
+
+    requested = _extract_requested_language_switch(message)
+    if requested in _SUPPORTED_LANGS:
+        chosen = requested
+        reason = "explicit_switch"
+    else:
+        # session_id resets on every page-load; no history → brand-new session.
+        has_session_history = _user_has_history(session_id)
+        if not has_session_history:
+            # New session: detect from the current message, ignore stored preference.
+            chosen = msg_lang or "en"
+            reason = "new_session_first_message"
+        elif reliable_stored:
+            # Ongoing session with a genuine PT/ES lock: honour it.
+            chosen = reliable_stored
+            reason = "session_lock"
+        else:
+            # Ongoing session, no reliable lock (English or unset): re-detect.
+            chosen = msg_lang or "en"
+            reason = "session_redetect"
+
+    # Persist to the IP-based user doc (user_id), NOT the session UUID.
+    if chosen != stored:
+        _persist_user_language_preference(user, user_id, chosen)
+        setattr(user, "language_preference", chosen)
+
+    logger.info(
+        "chat_flow.language_policy user_id=%s session_id=%s chosen=%s stored=%s "
+        "detected=%s requested=%s reason=%s has_history=%s",
+        user_id, session_id, chosen, stored or "none",
+        msg_lang, requested or "none", reason,
+        reason != "new_session_first_message",
+    )
+    return chosen
+
+
 def get_or_create_user(external_id: str, location: dict = None, profile: dict = None) -> _UserLike:
     """Get or create user; location and profile (display_name, email, phone) are merged and persisted."""
     profile = profile or {}
@@ -201,6 +327,72 @@ def _looks_off_topic(message: str) -> bool:
         if p in lower:
             return True
     return False
+
+
+_IN_SCOPE_TOPIC_RE = re.compile(
+    r"\b("
+    r"immigration|visa|uscis|green\s*card|asylum|work\s*permit|"
+    r"housing|rent|lease|landlord|tenant|eviction|"
+    r"tax|itin|irs|w-2|1099|"
+    r"job|jobs|work|employment|resume|interview|"
+    r"health|insurance|clinic|doctor|medicaid|"
+    r"school|education|college|university|"
+    r"bank|banking|credit|loan|"
+    r"driver|drivers|license|dmv|mvd|vehicle|registration|state\s*id|"
+    r"imigra|visto|residencia|residência|moradia|aluguel|arrendamento|imovel|imóvel|"
+    r"credito|crédito|impuesto|impostos|empleo|trabajo|trabalho|salud|saude|"
+    r"educacion|educação|banco|carteira|habilitacao|habilitação|"
+    r"restaurante|restaurant|restaurants|food|comida|nearby|near\s+me"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_in_scope_topic(message: str) -> bool:
+    return bool(_IN_SCOPE_TOPIC_RE.search((message or "").strip()))
+
+
+_ASSISTANT_META_RE = re.compile(
+    r"\b("
+    r"how\s+do\s+you\s+work|how\s+you\s+work|"
+    r"tell\s+me\s+about\s+your\s+work(ing)?|"
+    r"what\s+do\s+you\s+do|what\s+can\s+you\s+do|"
+    r"how\s+can\s+you\s+help|what\s+is\s+your\s+job|"
+    r"como\s+voces?\s+funciona(n)?|como\s+funcionas?|"
+    r"que\s+puedes\s+hacer|como\s+puedes\s+ayudar|"
+    r"como\s+voce\s+funciona|como\s+voces?\s+pode(m)?\s+ajudar|"
+    r"o\s+que\s+voce\s+faz|o\s+que\s+voces?\s+pode(m)?\s+fazer"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_assistant_meta_question(message: str) -> bool:
+    t = (message or "").strip()
+    if not t:
+        return False
+    return bool(_ASSISTANT_META_RE.search(t))
+
+
+def _assistant_capabilities_message(language: str) -> str:
+    msgs = {
+        "en": (
+            "I'm here to help with information about living in the USA and finding local businesses "
+            "in your area. I can't help with that. What would you like to know about immigration, "
+            "housing, taxes, or which type of business are you looking for?"
+        ),
+        "es": (
+            "Estoy aquí para ayudarte con información sobre vivir en EE.UU. y encontrar negocios locales "
+            "en tu zona. No puedo ayudarte con eso. ¿Qué te gustaría saber sobre inmigración, vivienda, "
+            "impuestos, o qué tipo de negocio buscas?"
+        ),
+        "pt": (
+            "Estou aqui para ajudar com informações sobre viver nos EUA e encontrar negócios locais "
+            "na sua região. Não posso ajudar com isso. O que você gostaria de saber sobre imigração, "
+            "moradia, impostos, ou que tipo de negócio você procura?"
+        ),
+    }
+    return msgs.get(language, msgs["en"])
 
 
 _US_STATE_NAMES = {
@@ -680,15 +872,20 @@ def process_message(
     user_location: dict = None,
     user_profile: dict = None,
 ) -> dict:
+    # user_id  = stable identifier (IP or permanent ID) used for location / profile persistence.
+    # session_id = per-tab UUID that resets on every page refresh, used for language locking and
+    #              chat history so each new conversation independently detects its own language.
     user_id = user_id or session_id or "anonymous"
+    session_id = session_id or user_id          # fall back to user_id when not sent by frontend
     user_location = user_location or {}
     user_profile = user_profile or {}
     logger.info(
         "chat_flow.process_message.start user_id=%s session_id=%s message_len=%s",
         user_id,
-        session_id or user_id,
+        session_id,
         len(message or ""),
     )
+    # Profile and location are looked up / persisted against the STABLE user_id (IP).
     user = get_or_create_user(user_id, user_location, profile=user_profile)
 
     state = user_location.get("state") or getattr(user, "state", None)
@@ -706,32 +903,39 @@ def process_message(
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
     logger.info("chat_flow.openai_key_configured=%s", has_api_key)
 
+    message_detected_lang = detect_language(message)
+    # user_id  → stable IP key used to persist the language preference on the user doc
+    # session_id → per-tab UUID used to check whether this is a new session
+    detected_lang = _resolve_conversation_language(
+        user, user_id, session_id, message, message_detected_lang
+    )
+
     # ------------------------------------------------------------------
     # TIER 0 — Casual intents  (intents.json, no OpenAI call needed)
     # get_casual_response() only fires for short, non-FAQ messages; see casual_intents.
     # ------------------------------------------------------------------
     casual_text, casual_tag = get_casual_response(message)
     if casual_text:
-        detected_lang = detect_language(message)
         reply = (
             translate_verified_answer(casual_text, detected_lang)
             if has_api_key and detected_lang != "en"
             else casual_text
         )
-        _save_history(user_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
+        _save_history(session_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
         logger.info("chat_flow.tier0.casual user_id=%s lang=%s tag=%s", user_id, detected_lang, casual_tag)
         return _build_response(reply, detected_lang, "casual", user_name=user_name)
 
-    # ------------------------------------------------------------------
-    # Language detection + hard off-topic filter
-    # ------------------------------------------------------------------
-    detected_lang = detect_language(message)
-
-    if _looks_off_topic(message):
-        reply = _off_topic_message(detected_lang)
-        _save_history(user_id, message, reply, "off_topic", {"intent": "off_topic"})
-        logger.info("chat_flow.off_topic.hard_filter user_id=%s lang=%s", user_id, detected_lang)
-        return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
+    # Meta assistant question (e.g., "how do you work?") should not route to job/work KB content.
+    if _is_assistant_meta_question(message):
+        reply = _assistant_capabilities_message(detected_lang)
+        meta_struct = {
+            "intent": "casual",
+            "detected_language": detected_lang,
+            "meta_question": "assistant_capabilities",
+        }
+        _save_history(session_id, message, reply, "casual", meta_struct)
+        logger.info("chat_flow.meta_capabilities user_id=%s lang=%s", user_id, detected_lang)
+        return _build_response(reply, detected_lang, "casual", question_analysis=meta_struct, user_name=user_name)
 
     # ------------------------------------------------------------------
     # TIER 1 — Knowledge base search  (ALWAYS runs first, before intent)
@@ -765,8 +969,9 @@ def process_message(
             "confidence": 0.5,
         }
 
-    if structured.get("detected_language"):
-        detected_lang = structured["detected_language"]
+    if structured.get("detected_language") and structured.get("detected_language") != detected_lang:
+        structured["model_detected_language"] = structured.get("detected_language")
+        structured["detected_language"] = detected_lang
 
     intent = structured.get("intent") or "information_request"
     confidence = float(structured.get("confidence") or 0.5)
@@ -782,10 +987,23 @@ def process_message(
     if intent == "unclear" and matches:
         intent = "information_request"
 
-    # If GPT says "off_topic" and KB also has nothing → firm off-topic response
-    if intent == "off_topic" and not matches:
+    # Keep domain questions in-scope even if model mislabels intent.
+    if intent == "off_topic" and _looks_in_scope_topic(message):
+        structured["model_intent"] = intent
+        intent = "information_request"
+
+    # Off-topic should be a strict fallback:
+    # only if no KB match and explicit off-topic signal (substring/regex or model intent off_topic).
+    if not matches and (intent == "off_topic" or _looks_off_topic(message)):
         reply = _off_topic_message(detected_lang)
-        _save_history(user_id, message, reply, "off_topic", structured)
+        _save_history(session_id, message, reply, "off_topic", structured)
+        logger.info(
+            "chat_flow.off_topic.fallback user_id=%s lang=%s model_intent=%s hard_filter=%s",
+            user_id,
+            detected_lang,
+            structured.get("intent"),
+            _looks_off_topic(message),
+        )
         return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
 
     # If intent is off_topic but KB actually found something, override intent so we use the KB
@@ -819,7 +1037,7 @@ def process_message(
                 "es": "Para buscar oficinas o restaurantes cercanos en el mapa, necesito acceso a tu ubicación o tu estado/ciudad/código postal.",
                 "pt": "Para buscar escritórios ou restaurantes próximos no mapa, preciso do acesso à sua localização ou do seu estado/cidade/CEP.",
             }.get(detected_lang, "To find nearby places on the map, I need your state/city/ZIP code.")
-            _save_history(user_id, message, reply, "location_required", structured)
+            _save_history(session_id, message, reply, "location_required", structured)
             return _build_response(reply, detected_lang, "location_required", question_analysis=structured, user_name=user_name)
 
         if not any([zip_code, city, county, state]):
@@ -828,7 +1046,7 @@ def process_message(
                 "es": "Puedo buscar en el mapa. Comparte al menos tu código postal o tu ciudad/estado.",
                 "pt": "Posso buscar no mapa. Compartilhe pelo menos seu CEP ou sua cidade/estado.",
             }.get(detected_lang, "Please share your ZIP code or city/state so I can search the map.")
-            _save_history(user_id, message, reply, "location_incomplete", structured)
+            _save_history(session_id, message, reply, "location_incomplete", structured)
             return _build_response(reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name)
 
         if place_query:
@@ -856,7 +1074,7 @@ def process_message(
             language=detected_lang,
             place_label=place_query,
         )
-        _save_history(user_id, message, reply, "local_search", structured)
+        _save_history(session_id, message, reply, "local_search", structured)
         logger.info(
             "chat_flow.local_search user_id=%s place=%s places=%s kb_snippets=%s",
             user_id,
@@ -882,7 +1100,7 @@ def process_message(
             language=detected_lang,
             search_label=restaurant_query,
         )
-        _save_history(user_id, message, reply, "local_search", structured)
+        _save_history(session_id, message, reply, "local_search", structured)
         logger.info(
             "chat_flow.local_dining user_id=%s query=%s places=%s kb_snippets=%s",
             user_id,
@@ -967,7 +1185,7 @@ def process_message(
             }
             reply = reply.rstrip() + loc_hint.get(detected_lang, loc_hint["en"])
 
-        _save_history(user_id, message, reply, intent, structured)
+        _save_history(session_id, message, reply, intent, structured)
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
@@ -978,12 +1196,12 @@ def process_message(
             reply = "To give you the most accurate business recommendations, I need access to your location. Please enable location sharing."
             if has_api_key and detected_lang != "en":
                 reply = translate_verified_answer(reply, detected_lang)
-            _save_history(user_id, message, reply, "location_required", structured)
+            _save_history(session_id, message, reply, "location_required", structured)
             return _build_response(reply, detected_lang, "location_required", user_name=user_name)
 
         if not state or not county or not zip_code:
             reply = generate_clarifying_questions(message, detected_lang, missing_location=True)
-            _save_history(user_id, message, reply, "location_incomplete", structured)
+            _save_history(session_id, message, reply, "location_incomplete", structured)
             return _build_response(reply, detected_lang, "location_incomplete", user_name=user_name)
 
         limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
@@ -1035,7 +1253,7 @@ def process_message(
                 "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
             }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
 
-        _save_history(user_id, message, reply, intent, structured)
+        _save_history(session_id, message, reply, intent, structured)
         return _build_response(
             reply, detected_lang, intent,
             businesses=businesses,
@@ -1058,7 +1276,7 @@ def process_message(
             len(biz_ctx or ""),
         )
         reply = generate_business_comparison(message, biz_ctx or "No business data available.", detected_lang)
-        _save_history(user_id, message, reply, intent, structured)
+        _save_history(session_id, message, reply, intent, structured)
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
@@ -1078,7 +1296,7 @@ def process_message(
             )
             structured["answer_source"] = "openai_general"
             out_intent = "information_request"
-            _save_history(user_id, message, reply, out_intent, structured)
+            _save_history(session_id, message, reply, out_intent, structured)
             logger.info(
                 "chat_flow.general_knowledge user_id=%s reason=no_kb_matches prior_intent=%s",
                 user_id,
@@ -1088,14 +1306,14 @@ def process_message(
                 reply, detected_lang, out_intent, question_analysis=structured, user_name=user_name
             )
         reply = generate_kb_clarification_reply(message, detected_lang)
-        _save_history(user_id, message, reply, "kb_clarification", structured)
+        _save_history(session_id, message, reply, "kb_clarification", structured)
         logger.info("chat_flow.kb_clarification user_id=%s reason=no_matches_no_openai intent=%s", user_id, intent)
         return _build_response(
             reply, detected_lang, "kb_clarification", question_analysis=structured, user_name=user_name
         )
 
     reply = _off_topic_message(detected_lang)
-    _save_history(user_id, message, reply, "off_topic", structured)
+    _save_history(session_id, message, reply, "off_topic", structured)
     return _build_response(reply, detected_lang, "off_topic", question_analysis=structured, user_name=user_name)
 
 

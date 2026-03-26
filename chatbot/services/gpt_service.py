@@ -21,6 +21,25 @@ if getattr(settings, "OPENAI_API_KEY", None):
 else:
     logger.info("gpt_service.init openai_client_ready=False reason=missing_openai_api_key")
 
+def _lang_system_prefix(language: str) -> str:
+    """
+    Returns a strict language-enforcement line to prepend to any system prompt.
+    This is the single source of truth for forcing output language across all LLM calls.
+    """
+    names = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"})
+    lang_name = names.get(language, "English")
+    if language == "en":
+        return ""
+    return (
+        f"LANGUAGE RULE (ABSOLUTE, HIGHEST PRIORITY): "
+        f"You MUST write your ENTIRE response in {lang_name} only. "
+        f"Every single word must be in {lang_name}. "
+        f"Do NOT use English or any other language anywhere in your response, "
+        f"even if the source context or knowledge base is in English. "
+        f"Translate all content naturally into {lang_name}.\n\n"
+    )
+
+
 STRUCTURED_SCHEMA = {
     "intent": "casual | information_request | business_search | business_comparison | unclear",
     "category": "e.g. legal, tax, housing",
@@ -190,8 +209,8 @@ def generate_kb_clarification_reply(user_message: str, language: str) -> str:
     if not client or not (user_message or "").strip():
         return _kb_clarification_fallback(language)
 
-    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = f"""You are Braelo, helping immigrants in the USA. The user's message did not match any FAQ entry clearly enough to answer safely.
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
+    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA. The user's message did not match any FAQ entry clearly enough to answer safely.
 
 Write 1–2 short sentences in {lang_name} that:
 - Ask them to rephrase using different words, or name the topic (housing, driver's license, taxes, etc.).
@@ -278,7 +297,7 @@ def generate_general_braelo_response(
         logger.info("gpt_service.general_braelo.skip reason=no_openai_client")
         return _kb_clarification_fallback(language)
 
-    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
     loc_parts = [p for p in [city, county, state, zip_code] if p]
     location_hint = ", ".join(loc_parts) if loc_parts else "(none—rely on the question text)"
 
@@ -287,14 +306,14 @@ def generate_general_braelo_response(
 
 Optional profile hints: {location_hint}
 
-Respond in {lang_name}."""
+Respond in {lang_name}. Every word must be in {lang_name}."""
 
     try:
         logger.info("gpt_service.general_braelo.request lang=%s msg_len=%s", language, len(user_message or ""))
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": GENERAL_BRAELO_SYSTEM},
+                {"role": "system", "content": _lang_system_prefix(language) + GENERAL_BRAELO_SYSTEM},
                 {"role": "user", "content": user},
             ],
             temperature=0.45,
@@ -310,14 +329,14 @@ BRAELO_RAG_SYSTEM = """You are Braelo, a warm, empathetic, and professional assi
 
 CORE RULES (NEVER VIOLATE):
 1. ONLY use information from the provided context. NEVER use external knowledge or guess.
-2. When the context CONTAINS information about the SAME topic as the user's question (driver's license, DMV, documents, tests, housing, taxes, immigration steps, etc.) — even if phrased differently or partially — you MUST synthesize a helpful answer from that context. Treat synonyms and related phrases as a match (e.g. "transfer Brazilian license" and "carteira de motorista brasileira para americana"; "step by step" and bullet lists in the context).
-3. Do NOT say "I don't have specific information" when the context mentions the same process, agency (DMV/MVD), documents, or requirements the user is asking about. Use what is there; if something is missing in the context, say only that part is not in your materials — do not refuse the whole answer.
-4. ONLY when the context is empty or is clearly about a completely different subject than the question, say: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?"
-5. Prefer natural flowing paragraphs. If the user explicitly asks for steps or a procedure AND the context lists steps or requirements, you MAY present them as a short numbered list (1, 2, 3) so it is easy to follow — only using steps that appear in the context.
+2. When the context CONTAINS information about the SAME topic as the user's question (driver's license, DMV, documents, tests, housing, taxes, immigration steps, etc.) — even if phrased differently or partially — you MUST synthesize a helpful answer from that context. Treat synonyms and related phrases as a match.
+3. Do NOT say "I don't have specific information" when the context mentions the same process, agency, documents, or requirements the user is asking about. Use what is there; if something is missing in the context, say only that part is not in your materials — do not refuse the whole answer.
+4. ONLY when the context is empty or is clearly about a completely different subject than the question, say in the user's language: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?"
+5. Prefer natural flowing paragraphs. If the user explicitly asks for steps or a procedure AND the context lists steps or requirements, you MAY present those as a short numbered list (1, 2, 3) taken only from the context.
 6. NEVER guess or invent facts beyond the context. If the context is relevant, use it; if only partly relevant, answer the part you can and note what is not covered.
 7. NEVER add closing statements like "Let me know if you need help" or "Is there anything else?" Keep the conversation open.
 8. Acknowledge the user's state or ZIP when they provided it.
-9. Use simple language. When the user asks in English, respond in clear English; translate Portuguese or Spanish context naturally.
+9. LANGUAGE: Respond EXCLUSIVELY in the language stated in "Response language". If the context is in a different language, translate it naturally. Never default to English unless English is the stated response language.
 
 TONE: Warm and clear. Concise but complete."""
 
@@ -334,23 +353,28 @@ def generate_rag_response(
         logger.info("gpt_service.rag.skip reason=no_openai_client")
         return "I don't have enough information to answer that right now. Please try again or share your state, county, and ZIP code."
 
+    lang_names = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"})
+    lang_name = lang_names.get(language, "English")
     location_line = f"Location: {state or 'not provided'}, {county or 'not provided'}, ZIP: {zip_code or 'not provided'}"
-    lang_instruction = "Provide your response in clear, natural English. Use only the context above."
+
     if language == "en":
         lang_instruction = (
-            "Provide your response in clear, natural English. Use only the context above. "
-            "If the context is in Portuguese or Spanish, translate it into proper, natural English so the answer reads well for an English-speaking user (not a literal or word-for-word translation)."
+            "Provide your response in clear, natural English. "
+            "If the context is in Portuguese or Spanish, translate it into natural English."
         )
-    elif language in ("es", "pt"):
-        lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-        lang_instruction = f"Provide your response in {lang_name}. Use only the context above. If the context is in another language, translate it naturally into {lang_name}."
+    else:
+        lang_instruction = (
+            f"Provide your response in {lang_name}. "
+            f"If the context is in another language, translate it naturally into {lang_name}. "
+            f"Every word of your response must be in {lang_name}."
+        )
 
     user = f"""Context from Knowledge Base:
 {retrieved_context or '(No matching content found.)'}
 
 User Information:
 {location_line}
-Response language: {language}
+Response language: {language} ({lang_name})
 
 User Question: {user_message}
 
@@ -365,7 +389,7 @@ User Question: {user_message}
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": BRAELO_RAG_SYSTEM},
+                {"role": "system", "content": _lang_system_prefix(language) + BRAELO_RAG_SYSTEM},
                 {"role": "user", "content": user},
             ],
             temperature=0.3,
@@ -626,11 +650,11 @@ def translate_verified_answer(text: str, target_language: str, preserve_structur
         if not client:
             logger.info("gpt_service.translate_answer.skip reason=no_openai_client")
         return text or ""
-    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(target_language, "English")
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(target_language, "English")
     if preserve_structure:
-        system = f"""Translate the following text to {lang_name}. Keep the same structure, line breaks, and formatting. Do not summarize."""
+        system = _lang_system_prefix(target_language) + f"""Translate the following text to {lang_name}. Keep the same structure, line breaks, and formatting. Do not summarize."""
     else:
-        system = f"""Translate the following text to {lang_name}. Write in flowing paragraphs. Do NOT use bullet points (•) or dashes. Do not add closing phrases. Translate only."""
+        system = _lang_system_prefix(target_language) + f"""Translate the following text to {lang_name}. Write in flowing paragraphs. Do NOT use bullet points (•) or dashes. Do not add closing phrases. Translate only."""
 
     user = f"Translate to {lang_name}:\n\n{text}"
 
@@ -672,8 +696,8 @@ def generate_response(
             reply = reply + "\n\n" + businesses_text
         return reply
 
-    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = f"""You are Braelo, a warm assistant for immigrants in the USA. Respond only in {lang_name}.
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
+    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant for immigrants in the USA. Respond only in {lang_name}.
 Be concise. Do not use bullet points or dashes. Do not end with a closing phrase. Keep the conversation open."""
 
     user = f"The user asked: {user_message}\n\nGive a short helpful response in {lang_name} and suggest they provide their state, county, or ZIP for better answers. No bullets, no closing phrase."
@@ -716,9 +740,9 @@ def generate_exact_kb_answer(
         logger.info("gpt_service.generate_exact_kb.skip reason=no_openai_client")
         return kb_answer or "I don't have a specific answer for that right now."
 
-    lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
 
-    system = f"""You are Braelo, a warm assistant helping immigrants navigate life in the USA.
+    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant helping immigrants navigate life in the USA.
 You have found a strong match in your knowledge base for the user's question.
 Your job: deliver this answer naturally and completely in {lang_name}.
 
