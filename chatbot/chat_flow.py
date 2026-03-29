@@ -793,6 +793,81 @@ def _format_businesses(businesses: list, language: str, location_note: str = Non
 # History helper
 # ---------------------------------------------------------------------------
 
+_ZIP_US_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+
+
+def _load_openai_chat_history(session_id: str, max_documents: int = 200) -> list[dict]:
+    """
+    Prior turns for this session only (chronological). Used as OpenAI user/assistant messages.
+    Excludes the current message (not persisted yet).
+    """
+    if not session_id:
+        return []
+    rows: list[dict] = []
+    try:
+        if getattr(django_settings, "USE_MONGO", False):
+            from chatbot.mongo_db import get_db
+            db = get_db()
+            col = db.chat_history
+            cur = (
+                col.find({"external_id": session_id})
+                .sort("created_at", 1)
+                .limit(max_documents)
+            )
+            for doc in cur:
+                role = doc.get("role")
+                content = (doc.get("content") or "").strip()
+                if role in ("user", "assistant") and content:
+                    rows.append({"role": role, "content": content})
+        else:
+            qs = (
+                ChatHistory.objects.filter(external_id=session_id)
+                .order_by("created_at", "id")[:max_documents]
+            )
+            for row in qs:
+                role = row.role
+                content = (row.content or "").strip()
+                if role in ("user", "assistant") and content:
+                    rows.append({"role": role, "content": content})
+    except Exception:
+        logger.exception("chat_flow.load_history_failed session_id=%s", session_id)
+        return []
+    return rows
+
+
+def _enrich_location_from_history(
+    state: str,
+    city: str,
+    county: str,
+    zip_code: str,
+    chat_history: list,
+) -> tuple:
+    """Fill missing ZIP from recent user turns (e.g. follow-up only refers to restaurants)."""
+    if zip_code:
+        return state, city, county, zip_code
+    for m in reversed(chat_history or []):
+        if m.get("role") != "user":
+            continue
+        mo = _ZIP_US_RE.search(m.get("content") or "")
+        if mo:
+            return state, city, county, mo.group(1)
+    return state, city, county, zip_code
+
+
+def _format_known_facts(state: str, city: str, county: str, zip_code: str) -> str:
+    """Compact block for LLM system/user injection."""
+    parts = []
+    if city:
+        parts.append(f"City: {city}")
+    if state:
+        parts.append(f"State: {state}")
+    if county:
+        parts.append(f"County: {county}")
+    if zip_code:
+        parts.append(f"ZIP: {zip_code}")
+    return "\n".join(parts) if parts else ""
+
+
 def _save_history(user_id: str, message: str, reply: str, intent: str, structured: dict):
     try:
         if getattr(django_settings, "USE_MONGO", False):
@@ -895,10 +970,18 @@ def process_message(
     location_enabled = user_location.get("location_enabled", getattr(user, "location_enabled", True))
     user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
 
+    _hist_cap = getattr(django_settings, "CHAT_HISTORY_MAX_DOCUMENTS", 200)
+    openai_chat_history = _load_openai_chat_history(session_id, _hist_cap)
+    # Short-term location memory: reuse ZIP (etc.) from earlier turns in this session.
+    state, city, county, zip_code = _enrich_location_from_history(
+        state, city, county, zip_code, openai_chat_history
+    )
+
     # Prefer city/state/ZIP named in this message for retrieval (before KB + structured merge).
     state, city, county, zip_code = _apply_message_location_for_map(
         message, state, city, county, zip_code
     )
+    known_facts_for_structured = _format_known_facts(state, city, county, zip_code)
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
     logger.info("chat_flow.openai_key_configured=%s", has_api_key)
@@ -959,7 +1042,11 @@ def process_message(
     # Structured intent extraction  (happens in parallel with KB search)
     # ------------------------------------------------------------------
     if has_api_key:
-        structured = get_structured_output(message)
+        structured = get_structured_output(
+            message,
+            chat_history=openai_chat_history,
+            known_facts=known_facts_for_structured,
+        )
     else:
         structured = {
             "intent": "information_request",
@@ -1019,6 +1106,7 @@ def process_message(
     state, city, county, zip_code = _apply_message_location_for_map(
         message, state, city, county, zip_code
     )
+    known_facts = _format_known_facts(state, city, county, zip_code)
 
     # ------------------------------------------------------------------
     # TIER 2a — Nearest office / restaurants (map lookup) BEFORE generic KB+RAG
@@ -1073,6 +1161,8 @@ def process_message(
             zip_code=zip_code or "",
             language=detected_lang,
             place_label=place_query,
+            chat_history=openai_chat_history,
+            known_facts=known_facts,
         )
         _save_history(session_id, message, reply, "local_search", structured)
         logger.info(
@@ -1099,6 +1189,8 @@ def process_message(
             zip_code=zip_code or "",
             language=detected_lang,
             search_label=restaurant_query,
+            chat_history=openai_chat_history,
+            known_facts=known_facts,
         )
         _save_history(session_id, message, reply, "local_search", structured)
         logger.info(
@@ -1136,6 +1228,8 @@ def process_message(
                 user_message=message,
                 kb_entry=matches[0],
                 language=detected_lang,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
             )
             logger.info(
                 "chat_flow.kb_response user_id=%s mode=exact_kb top_similarity=%.4f",
@@ -1150,6 +1244,8 @@ def process_message(
                 county=county or "",
                 zip_code=zip_code or "",
                 language=detected_lang,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
             )
             logger.info(
                 "chat_flow.kb_response user_id=%s mode=rag top_similarity=%.4f context_items=%s",
@@ -1165,6 +1261,8 @@ def process_message(
                     city or "",
                     zip_code or "",
                     detected_lang,
+                    chat_history=openai_chat_history,
+                    known_facts=known_facts,
                 )
                 structured = dict(structured or {})
                 structured["answer_source"] = "openai_general"
@@ -1200,7 +1298,13 @@ def process_message(
             return _build_response(reply, detected_lang, "location_required", user_name=user_name)
 
         if not state or not county or not zip_code:
-            reply = generate_clarifying_questions(message, detected_lang, missing_location=True)
+            reply = generate_clarifying_questions(
+                message,
+                detected_lang,
+                missing_location=True,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
+            )
             _save_history(session_id, message, reply, "location_incomplete", structured)
             return _build_response(reply, detected_lang, "location_incomplete", user_name=user_name)
 
@@ -1275,7 +1379,12 @@ def process_message(
             user_id,
             len(biz_ctx or ""),
         )
-        reply = generate_business_comparison(message, biz_ctx or "No business data available.", detected_lang)
+        reply = generate_business_comparison(
+            message,
+            biz_ctx or "No business data available.",
+            detected_lang,
+            chat_history=openai_chat_history,
+        )
         _save_history(session_id, message, reply, intent, structured)
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
@@ -1293,6 +1402,8 @@ def process_message(
                 city or "",
                 zip_code or "",
                 detected_lang,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
             )
             structured["answer_source"] = "openai_general"
             out_intent = "information_request"
@@ -1305,7 +1416,12 @@ def process_message(
             return _build_response(
                 reply, detected_lang, out_intent, question_analysis=structured, user_name=user_name
             )
-        reply = generate_kb_clarification_reply(message, detected_lang)
+        reply = generate_kb_clarification_reply(
+            message,
+            detected_lang,
+            chat_history=openai_chat_history,
+            known_facts=known_facts,
+        )
         _save_history(session_id, message, reply, "kb_clarification", structured)
         logger.info("chat_flow.kb_clarification user_id=%s reason=no_matches_no_openai intent=%s", user_id, intent)
         return _build_response(

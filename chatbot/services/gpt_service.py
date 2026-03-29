@@ -21,6 +21,65 @@ if getattr(settings, "OPENAI_API_KEY", None):
 else:
     logger.info("gpt_service.init openai_client_ready=False reason=missing_openai_api_key")
 
+def _trim_openai_chat_history(
+    history: list | None,
+    max_messages: int = 24,
+    max_content_len: int = 3500,
+) -> list[dict]:
+    """Keep recent user/assistant turns for OpenAI; drop empty or invalid entries."""
+    if not history:
+        return []
+    out = []
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        out.append({"role": role, "content": content[:max_content_len]})
+    if len(out) > max_messages:
+        out = out[-max_messages:]
+    while out and out[0]["role"] == "assistant":
+        out = out[1:]
+    return out
+
+
+def _conversation_memory_system_note() -> str:
+    return (
+        "CONVERSATION MEMORY: Prior user/assistant messages in this request are real chat history. "
+        "Use them to resolve follow-ups (\"that\", \"it\", \"the cheapest\", \"the first one\"). "
+        "Stay consistent with earlier answers. Do not contradict yourself without explaining a correction. "
+        "Do not ask again for ZIP, city, state, or other details the user already gave in a previous turn. "
+        "Never claim you cannot remember the conversation when history is present."
+    )
+
+
+def openai_messages_with_history(
+    system_blocks: list,
+    chat_history: list | None,
+    final_user_content: str,
+    *,
+    max_messages: int = 24,
+    max_final_len: int = 4000,
+) -> list[dict]:
+    """
+    Build [system*, ...history user/assistant..., user] for chat.completions.
+    system_blocks: list of non-empty strings (each becomes one system message).
+    """
+    messages = []
+    for block in system_blocks:
+        text = (block or "").strip()
+        if text:
+            messages.append({"role": "system", "content": text[:14000]})
+    hist = _trim_openai_chat_history(chat_history, max_messages=max_messages)
+    if hist:
+        messages.append({"role": "system", "content": _conversation_memory_system_note()})
+    messages.extend(hist)
+    messages.append({"role": "user", "content": (final_user_content or "").strip()[:max_final_len]})
+    return messages
+
+
 def _lang_system_prefix(language: str) -> str:
     """
     Returns a strict language-enforcement line to prepend to any system prompt.
@@ -53,7 +112,12 @@ STRUCTURED_SCHEMA = {
 }
 
 
-def get_structured_output(message: str, conversation_summary: str = "") -> dict:
+def get_structured_output(
+    message: str,
+    conversation_summary: str = "",
+    chat_history: list | None = None,
+    known_facts: str = "",
+) -> dict:
     if not client:
         logger.info("gpt_service.structured.skip reason=no_openai_client")
         return _fallback_structured(message)
@@ -79,20 +143,37 @@ Keys:
 
 If the user names a specific place for a local question (e.g. "restaurants in Phoenix, AZ", "DMV near ZIP 85004", "Mesa Arizona"), extract city, state, county, and zip_code exactly from their words so map search uses that location, not a vague region.
 
+When the LATEST message is a short follow-up (e.g. only a ZIP code, "the cheapest one", "yes", "that one"), use prior turns in the conversation to infer intent, location, and entities. Carry forward zip_code/state/city from earlier user messages if still relevant.
+
 Use null for any field not clearly stated."""
 
-    user = f"User message: {message}"
+    facts_block = ""
+    if (known_facts or "").strip():
+        facts_block = f"\nKnown session facts (trust these; extract into JSON fields when applicable):\n{known_facts.strip()[:2000]}"
+
+    user_tail = f"""Latest user message to classify (this is the current turn):
+{message.strip()[:2000]}"""
     if conversation_summary:
-        user += f"\n(Recent context: {conversation_summary})"
+        user_tail += f"\n\n(Additional summary: {conversation_summary.strip()[:1500]})"
+    if facts_block:
+        user_tail += facts_block
+
+    hist = _trim_openai_chat_history(chat_history, max_messages=20)
+    msg_list = [{"role": "system", "content": system}]
+    if hist:
+        msg_list.append({"role": "system", "content": _conversation_memory_system_note()})
+        msg_list.extend(hist)
+    msg_list.append({"role": "user", "content": user_tail})
 
     try:
-        logger.info("gpt_service.structured.request message_len=%s", len(message or ""))
+        logger.info(
+            "gpt_service.structured.request message_len=%s history_turns=%s",
+            len(message or ""),
+            len(hist),
+        )
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=msg_list,
             temperature=0.1,
         )
         content = (resp.choices[0].message.content or "").strip()
@@ -201,7 +282,12 @@ def rewrite_query_for_kb_retrieval(query: str, user_language: str = "en") -> str
         return ""
 
 
-def generate_kb_clarification_reply(user_message: str, language: str) -> str:
+def generate_kb_clarification_reply(
+    user_message: str,
+    language: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
+) -> str:
     """
     When retrieval is uncertain or empty: ask the user to rephrase or give location.
     Must not use external knowledge; stay within Braelo's scope (USA life / local help).
@@ -214,20 +300,21 @@ def generate_kb_clarification_reply(user_message: str, language: str) -> str:
 
 Write 1–2 short sentences in {lang_name} that:
 - Ask them to rephrase using different words, or name the topic (housing, driver's license, taxes, etc.).
-- Optionally ask for their US state and ZIP code if that would help find region-specific answers.
+- Optionally ask for their US state and ZIP code ONLY if those are not already in the known session facts or prior user messages.
 - Do NOT answer their substantive question. Do NOT use outside facts. Do NOT use bullet points or dashes.
 - Sound warm and helpful. No closing fluff like "Let me know if you need anything else."
 """
 
-    user = f"User message:\n{user_message.strip()[:2000]}"
+    user_parts = []
+    if (known_facts or "").strip():
+        user_parts.append(f"Known session facts (do not ask for these again):\n{known_facts.strip()[:2000]}")
+    user_parts.append(f"User message:\n{user_message.strip()[:2000]}")
+    user = "\n\n".join(user_parts)
 
     try:
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=20),
             temperature=0.35,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -289,6 +376,8 @@ def generate_general_braelo_response(
     city: str,
     zip_code: str,
     language: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
 ) -> str:
     """
     OpenAI answer when KB retrieval is empty or RAG refuses — use any US location the user names.
@@ -304,18 +393,21 @@ def generate_general_braelo_response(
     user = f"""User question:
 {user_message.strip()[:2000]}
 
-Optional profile hints: {location_hint}
-
-Respond in {lang_name}. Every word must be in {lang_name}."""
+Optional profile hints: {location_hint}"""
+    if (known_facts or "").strip():
+        user += f"\n\nKnown session facts (use for continuity; do not re-ask):\n{known_facts.strip()[:2000]}"
+    user += f"\n\nRespond in {lang_name}. Every word must be in {lang_name}."
 
     try:
         logger.info("gpt_service.general_braelo.request lang=%s msg_len=%s", language, len(user_message or ""))
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": _lang_system_prefix(language) + GENERAL_BRAELO_SYSTEM},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history(
+                [_lang_system_prefix(language) + GENERAL_BRAELO_SYSTEM],
+                chat_history,
+                user,
+                max_messages=24,
+            ),
             temperature=0.45,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -331,7 +423,7 @@ CORE RULES (NEVER VIOLATE):
 1. ONLY use information from the provided context. NEVER use external knowledge or guess.
 2. When the context CONTAINS information about the SAME topic as the user's question (driver's license, DMV, documents, tests, housing, taxes, immigration steps, etc.) — even if phrased differently or partially — you MUST synthesize a helpful answer from that context. Treat synonyms and related phrases as a match.
 3. Do NOT say "I don't have specific information" when the context mentions the same process, agency, documents, or requirements the user is asking about. Use what is there; if something is missing in the context, say only that part is not in your materials — do not refuse the whole answer.
-4. ONLY when the context is empty or is clearly about a completely different subject than the question, say in the user's language: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?"
+4. ONLY when the context is empty or is clearly about a completely different subject than the question, say in the user's language: "I don't have specific information about that for your area. Could you rephrase your question or tell me your state, county, and ZIP code so I can give you the most accurate answer?" — but NEVER use that refusal if the user's state, county, or ZIP already appears in "Known user / session facts" or in prior conversation turns; answer with what you have.
 5. Prefer natural flowing paragraphs. If the user explicitly asks for steps or a procedure AND the context lists steps or requirements, you MAY present those as a short numbered list (1, 2, 3) taken only from the context.
 6. NEVER guess or invent facts beyond the context. If the context is relevant, use it; if only partly relevant, answer the part you can and note what is not covered.
 7. NEVER add closing statements like "Let me know if you need help" or "Is there anything else?" Keep the conversation open.
@@ -348,6 +440,8 @@ def generate_rag_response(
     county: str,
     zip_code: str,
     language: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
 ) -> str:
     if not client:
         logger.info("gpt_service.rag.skip reason=no_openai_client")
@@ -369,29 +463,40 @@ def generate_rag_response(
             f"Every word of your response must be in {lang_name}."
         )
 
-    user = f"""Context from Knowledge Base:
-{retrieved_context or '(No matching content found.)'}
+    kb_block = (
+        "Retrieved knowledge base context (use ONLY this for factual claims from the FAQ):\n"
+        f"{retrieved_context or '(No matching content found.)'}"
+    )
+    facts_block = ""
+    if (known_facts or "").strip():
+        facts_block = (
+            "Known user / session facts (short-term memory; honor these; do not ask again):\n"
+            f"{known_facts.strip()[:2500]}"
+        )
 
-User Information:
+    user = f"""User Information:
 {location_line}
 Response language: {language} ({lang_name})
 
-User Question: {user_message}
+Current user message:
+{user_message.strip()[:2000]}
 
 {lang_instruction} Prefer flowing prose; use a short numbered list only if the user asked for steps and the context lists steps. Do not end with a closing phrase. Keep the conversation open."""
 
+    system_blocks = [_lang_system_prefix(language) + BRAELO_RAG_SYSTEM, kb_block]
+    if facts_block:
+        system_blocks.append(facts_block)
+
     try:
         logger.info(
-            "gpt_service.rag.request language=%s context_len=%s",
+            "gpt_service.rag.request language=%s context_len=%s history_turns=%s",
             language,
             len(retrieved_context or ""),
+            len(_trim_openai_chat_history(chat_history)),
         )
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": _lang_system_prefix(language) + BRAELO_RAG_SYSTEM},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history(system_blocks, chat_history, user, max_messages=24),
             temperature=0.3,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -425,6 +530,8 @@ def generate_local_office_response(
     zip_code: str,
     language: str,
     place_label: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
 ) -> str:
     """
     Combine OpenStreetMap/Nominatim results with optional KB snippets.
@@ -444,7 +551,7 @@ def generate_local_office_response(
         }.get(language, f"Here are nearby {place_label} options:")
         return header + "\n\n" + places_block
 
-    system = f"""You are Braelo, helping immigrants in the USA.
+    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA.
 
 The user asked for nearby offices or locations (e.g. DMV). Below are REAL map search results with addresses and map links. You MUST use them.
 
@@ -455,13 +562,17 @@ Rules:
 4. Do NOT say you lack information about office locations when the map results are present.
 5. If "Knowledge base context" below is non-empty, add one short paragraph of tips (documents, tests, appointments) using ONLY that context — no invented facts.
 6. If knowledge base context is empty, omit procedural detail beyond confirming they should verify hours and required documents on the official state DMV/MVD site.
-7. No closing fluff like "Let me know if you need anything else."
+7. Use prior conversation turns when the user refers to "that", "it", or a follow-up question.
+8. No closing fluff like "Let me know if you need anything else."
 """
 
     user = f"""User question:
 {user_message.strip()[:2000]}
 
-User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}
+User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}"""
+    if (known_facts or "").strip():
+        user += f"\n\nKnown session facts:\n{known_facts.strip()[:2000]}"
+    user += f"""
 
 Map results (use all of these):
 {places_block}
@@ -479,10 +590,7 @@ Knowledge base context (may be empty):
         )
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=20),
             temperature=0.25,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -506,6 +614,8 @@ def generate_local_dining_response(
     zip_code: str,
     language: str,
     search_label: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
 ) -> str:
     """
     Format OpenStreetMap/Nominatim restaurant (or dining) results.
@@ -525,7 +635,7 @@ def generate_local_dining_response(
         }.get(language, f"Here are map results for {search_label}:")
         return header + "\n\n" + places_block
 
-    system = f"""You are Braelo, helping immigrants in the USA.
+    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA.
 
 The user asked for nearby restaurants or places to eat. Below are REAL OpenStreetMap/Nominatim map search results (names, addresses, map links). You MUST use them as the ONLY source for restaurant names and locations.
 
@@ -537,13 +647,17 @@ Rules:
 5. Do NOT say you have no specific restaurant information when the map results are present. Do NOT replace the bullet list with generic advice like "use Google Maps or Yelp" as the main answer.
 6. If "Knowledge base context" below is non-empty, add one short paragraph of general tips using ONLY that context — no invented facts.
 7. If knowledge base context is empty, do not add procedural filler beyond the accuracy note in rule 3.
-8. No closing fluff like "Let me know if you need anything else."
+8. Use prior conversation turns for follow-ups (e.g. "which is cheapest" refers to the listed places).
+9. No closing fluff like "Let me know if you need anything else."
 """
 
     user = f"""User question:
 {user_message.strip()[:2000]}
 
-User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}
+User location hint: state={state or 'n/a'}, county={county or 'n/a'}, ZIP={zip_code or 'n/a'}"""
+    if (known_facts or "").strip():
+        user += f"\n\nKnown session facts:\n{known_facts.strip()[:2000]}"
+    user += f"""
 
 Map results (use all of these):
 {places_block}
@@ -561,10 +675,7 @@ Knowledge base context (may be empty):
         )
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=20),
             temperature=0.2,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -579,7 +690,13 @@ Knowledge base context (may be empty):
         return header + "\n\n" + places_block
 
 
-def generate_clarifying_questions(message: str, language: str, missing_location: bool = False) -> str:
+def generate_clarifying_questions(
+    message: str,
+    language: str,
+    missing_location: bool = False,
+    chat_history: list | None = None,
+    known_facts: str = "",
+) -> str:
     if not client:
         logger.info("gpt_service.clarifying.skip reason=no_openai_client")
         if missing_location:
@@ -587,22 +704,27 @@ def generate_clarifying_questions(message: str, language: str, missing_location:
         return "Could you tell me a bit more about what you're looking for? For example, which state or topic?"
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = f"""You are Braelo, a warm assistant for immigrants in the USA. The user's message was unclear or missing important details.
+    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant for immigrants in the USA. The user's message was unclear or missing important details.
 Your job is to ask 2 or 3 short, specific clarifying questions in {lang_name}. Do not use bullet points or dashes; write one or two flowing sentences with questions.
 Do not answer the question yourself. Do not add a closing phrase. Keep the conversation open."""
 
     if missing_location:
-        system += " Emphasize that you need their state, county, and ZIP code to provide accurate, location-specific information."
+        system += (
+            " If known session facts already include state, county, or ZIP, do NOT ask for those again; "
+            "ask only what is still missing."
+        )
+        system += " Otherwise emphasize that you need their state, county, and ZIP code for location-specific information."
 
-    user = f"User message: {message}\n\nGenerate 2-3 clarifying questions in {lang_name}:"
+    user_parts = []
+    if (known_facts or "").strip():
+        user_parts.append(f"Known session facts:\n{known_facts.strip()[:2000]}")
+    user_parts.append(f"User message: {message}\n\nGenerate 2-3 clarifying questions in {lang_name}:")
+    user = "\n\n".join(user_parts)
 
     try:
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=16),
             temperature=0.4,
         )
         out = (resp.choices[0].message.content or "").strip()
@@ -617,6 +739,7 @@ def generate_business_comparison(
     user_message: str,
     businesses_context: str,
     language: str,
+    chat_history: list | None = None,
 ) -> str:
     if not client or not businesses_context:
         if not client:
@@ -624,18 +747,16 @@ def generate_business_comparison(
         return "I couldn't find enough information to compare those businesses. Try naming them again or ask for businesses in your area."
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = f"""You are Braelo. Compare the given businesses based on the provided context. Write in {lang_name}.
-Do NOT use bullet points or dashes. Use flowing paragraphs. Be direct and objective. Do not add a closing statement. Keep the conversation open."""
+    system = _lang_system_prefix(language) + f"""You are Braelo. Compare the given businesses based on the provided context. Write in {lang_name}.
+Do NOT use bullet points or dashes. Use flowing paragraphs. Be direct and objective. Do not add a closing statement. Keep the conversation open.
+Use prior conversation turns if the user refers to businesses mentioned earlier."""
 
     user = f"Context:\n{businesses_context}\n\nUser request: {user_message}\n\nProvide a clear comparison in {lang_name}:"
 
     try:
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=20),
             temperature=0.3,
         )
         return (resp.choices[0].message.content or "").strip() or "I couldn't generate a comparison. Please try again."
@@ -682,6 +803,7 @@ def generate_response(
     knowledge_answer: str = None,
     businesses_text: str = None,
     translate_answer: bool = True,
+    chat_history: list | None = None,
 ) -> str:
     if not client:
         logger.info("gpt_service.generate_response.skip reason=no_openai_client")
@@ -705,10 +827,7 @@ Be concise. Do not use bullet points or dashes. Do not end with a closing phrase
     try:
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user, max_messages=16),
             temperature=0.4,
         )
         reply = (resp.choices[0].message.content or "").strip()
@@ -725,6 +844,8 @@ def generate_exact_kb_answer(
     user_message: str,
     kb_entry: dict,
     language: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
 ) -> str:
     """
     Called when the top KB match has high similarity (strong / exact match).
@@ -757,17 +878,15 @@ STRICT RULES:
 Question: {kb_question}
 Answer: {kb_answer}
 
-User asked: {user_message}
-
-Deliver the knowledge base answer naturally in {lang_name}:"""
+User asked: {user_message}"""
+    if (known_facts or "").strip():
+        user_prompt += f"\n\nKnown session facts:\n{known_facts.strip()[:2000]}"
+    user_prompt += f"\n\nDeliver the knowledge base answer naturally in {lang_name}:"
 
     try:
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=openai_messages_with_history([system], chat_history, user_prompt, max_messages=24),
             temperature=0.2,
         )
         out = (resp.choices[0].message.content or "").strip()
