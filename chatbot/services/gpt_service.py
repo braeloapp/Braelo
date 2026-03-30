@@ -128,6 +128,12 @@ SCOPE: This chatbot helps with (1) practical life in the USA from the knowledge 
 
 Set intent to "information_request" for questions about driver's licenses, permits, DMV visits, tests, documents for driving, or any state-specific procedure that immigrants commonly need — these are IN SCOPE.
 
+Set intent to **"business_search"** (not "information_request") when the user wants to **find, hire, or get a recommendation** for a local professional or service provider — including phrases like "find a lawyer", "need a doctor near me", "any tax person in Phoenix", "immigration attorney in 85001", "plumber nearby", "recommend a realtor", "servicios legales cerca". Extract category, subcategory, and location fields precisely.
+
+Set intent to "information_request" (not business_search) for **career or education** questions about a profession — e.g. "how to become a lawyer", "law school", "what does a CPA do" — with no request to find someone to hire.
+
+For "information_request", when the topic clearly involves a type of professional (e.g. immigration lawyer, tax preparer, real estate agent, doctor), set category and subcategory accordingly (e.g. category "legal", subcategory "lawyer") so the app can suggest local providers — even if the user did not explicitly say "find me a business".
+
 If the user asks for anything OUTSIDE this scope, set intent to "off_topic". Examples of off_topic: writing or debugging software code, programming tutorials, pure math homework, weather, jokes, unrelated trivia, recipes, sports scores, movies, games, or topics with no connection to living in the USA or local services.
 
 Keys:
@@ -361,12 +367,21 @@ The user's question did not match a verified FAQ article closely enough, or no a
 Rules:
 1. Use the user's wording: if they name a US state, city, or region (e.g. Alaska, Phoenix), tailor your answer to that place. Do NOT ask them to repeat state or ZIP if they already gave a location in the question.
 2. Give practical, actionable guidance (where to look, what steps exist, what to watch for). Prefer well-known resource categories: official state websites, federal agencies, workforce or state job boards, USAJOBS for federal jobs, CareerOneStop, local government and library pages, community organizations, networking, training or volunteer programs — as appropriate to their question.
-3. When the topic is work or a job search, briefly remind them that work authorization depends on their immigration status and they should confirm with a qualified professional or official USCIS information; do not assert that someone is or is not allowed to work.
-4. Do not invent private phone numbers, office addresses, or legal citations. If details vary by location or year, say they should check current official sources.
-5. Focus on the United States (any state or territory). If they ask about another country, answer briefly only if helpful and steer back to US-focused guidance when relevant.
-6. Write in the user's language. Short paragraphs or a few bullet points are fine when listing options. No closing fluff like "Let me know if you need anything else."
+3. If the user is trying to **find or hire** a local professional (lawyer, doctor, tax preparer, etc.) in a specific area, do NOT list third-party directories (Avvo, AILA, FindLaw, Yelp, etc.). Say briefly that no matching partners were found in Braelo's directory for their area and invite them to adjust location or category — unless you are explicitly told this is a "directory fallback" turn (separate instructions).
+4. When the topic is work or a job search, briefly remind them that work authorization depends on their immigration status and they should confirm with a qualified professional or official USCIS information; do not assert that someone is or is not allowed to work.
+5. Do not invent private phone numbers, office addresses, or legal citations. If details vary by location or year, say they should check current official sources.
+6. Focus on the United States (any state or territory). If they ask about another country, answer briefly only if helpful and steer back to US-focused guidance when relevant.
+7. Write in the user's language. Short paragraphs or a few bullet points are fine when listing options. No closing fluff like "Let me know if you need anything else."
 
 TONE: Supportive, clear, and honest."""
+
+
+BUSINESS_DIRECTORY_FALLBACK_SYSTEM = """You are Braelo. The app's local business database returned NO matches for this user's request (category + location).
+
+Write a SHORT reply in the user's language (under 120 words):
+1. State clearly that no listings were found in Braelo's directory for that area or category.
+2. Give 2–4 practical next steps: reputable directories and search strategies appropriate to the request — e.g. state bar lawyer referral, Avvo, AILA for immigration attorneys, FindLaw, county or city referral services, professional associations, or official state licensing lookup — as relevant. Do NOT invent phone numbers or office addresses.
+3. No closing pleasantries. Do not imply any listing you name is a partner of Braelo."""
 
 
 def generate_general_braelo_response(
@@ -414,6 +429,53 @@ Optional profile hints: {location_hint}"""
         return out if out else _kb_clarification_fallback(language)
     except Exception:
         logger.exception("gpt_service.general_braelo.error")
+        return _kb_clarification_fallback(language)
+
+
+def generate_business_directory_fallback_response(
+    user_message: str,
+    category: str,
+    subcategory: str,
+    state: str,
+    county: str,
+    city: str,
+    zip_code: str,
+    language: str,
+    chat_history: list | None = None,
+    known_facts: str = "",
+) -> str:
+    """
+    Only after the business DB returned zero rows: suggest external directories (Avvo, AILA, etc.).
+    """
+    if not client:
+        return _kb_clarification_fallback(language)
+    lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
+    loc = ", ".join(filter(None, [city, county, state, zip_code])) or "(from message)"
+    facts = (known_facts or "").strip()
+    user = (
+        f"User message:\n{(user_message or '').strip()[:2000]}\n\n"
+        f"Inferred category: {category or 'unknown'}\n"
+        f"Inferred subcategory: {subcategory or 'unknown'}\n"
+        f"Location context: {loc}"
+    )
+    if facts:
+        user += f"\n\nKnown session facts:\n{facts[:2000]}"
+    user += f"\n\nRespond entirely in {lang_name}."
+    try:
+        resp = client.chat.completions.create(
+            model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=openai_messages_with_history(
+                [_lang_system_prefix(language) + BUSINESS_DIRECTORY_FALLBACK_SYSTEM],
+                chat_history,
+                user,
+                max_messages=20,
+            ),
+            temperature=0.35,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out else _kb_clarification_fallback(language)
+    except Exception:
+        logger.exception("gpt_service.business_directory_fallback.error")
         return _kb_clarification_fallback(language)
 
 

@@ -496,6 +496,13 @@ MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '5'))
 BUSINESS_RADIUS_MILES = float(os.getenv('BUSINESS_RADIUS_MILES', '25'))
 BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES', '50'))
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
+# Comma-separated Mongo collection names: legacy business_listings + flat `businesses` docs (name/category/lat/lon/contact_info)
+MONGO_BUSINESS_COLLECTIONS = [
+    x.strip() for x in os.getenv('MONGO_BUSINESS_COLLECTIONS', 'business_listings,businesses').split(',') if x.strip()
+]
+# After a KB match, surface local providers when intent has category/subcategory + user location
+KB_PROVIDER_SUGGESTIONS = os.getenv('KB_PROVIDER_SUGGESTIONS', 'true').lower() in ('true', '1', 'yes')
+KB_PROVIDER_SUGGESTIONS_MAX = int(os.getenv('KB_PROVIDER_SUGGESTIONS_MAX', '3'))
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
 BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo

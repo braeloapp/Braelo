@@ -113,6 +113,15 @@ def ensure_indexes():
     except Exception:
         logger.exception("mongo_db.ensure_indexes.business_listings_failed")
     try:
+        db.businesses.create_index("category")
+        db.businesses.create_index("subcategory")
+        db.businesses.create_index([("category", 1), ("subcategory", 1)])
+        db.businesses.create_index("state")
+        db.businesses.create_index("zip_code")
+        db.businesses.create_index("is_active")
+    except Exception:
+        logger.exception("mongo_db.ensure_indexes.businesses_failed")
+    try:
         db.users.create_index("external_id", unique=True)
     except Exception:
         logger.exception("mongo_db.ensure_indexes.users_failed")

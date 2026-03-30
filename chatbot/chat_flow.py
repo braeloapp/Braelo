@@ -1,12 +1,15 @@
 """
-RAG chat flow — 3-tier pipeline:
-  Tier 0  : Casual talk  → intents.json  (no API call); skipped for long / FAQ-style messages
-  Tier 1  : Hard off-topic filter
-  Tier 2  : Knowledge base search (always runs before intent routing)
-             - Hybrid score >= RAG_STRONG_MATCH_HYBRID → exact KB answer (OpenAI)
-             - Any non-empty retrieval → RAG from retrieved Q&A (thresholds applied in knowledge_service)
-  Tier 3  : Business search  (location-gated)
-  Tier 4  : No KB match → OpenAI general US-life answer when API key available; else KB clarification; off-topic otherwise
+Chat flow pipeline:
+  Tier 0   : Casual talk (intents.json)
+  Tier 1a  : Structured intent + merged location
+  Tier 1b  : Business database FIRST for find/hire local services + location → strict then loose match;
+             if empty → directory fallback (Avvo/AILA allowed there only), not generic chat
+  Tier 1c  : Knowledge base hybrid search (after business routing)
+  Tier 2a  : Map / local office / dining overrides
+  Tier 2   : KB exact answer / RAG (+ optional KB provider append)
+  Tier 3   : business_search (no KB hit) — same DB + fallback rules
+  Tier 4   : General US-life answer (does not push lawyer directories for hire-intent; rescue path may
+             still hit DB or directory fallback)
 """
 import json
 import logging
@@ -25,10 +28,11 @@ from chatbot.services.gpt_service import (
     generate_local_office_response,
     generate_local_dining_response,
     generate_general_braelo_response,
+    generate_business_directory_fallback_response,
     response_looks_like_rag_refusal,
 )
 from chatbot.services.knowledge_service import search_knowledge
-from chatbot.services.business_matching import get_top_businesses
+from chatbot.services.business_matching import get_top_businesses, mongo_comparison_query
 from chatbot.services.casual_intents import get_casual_response
 from chatbot.services.local_search import find_nearby_places, find_nearby_pois
 
@@ -739,14 +743,169 @@ def _extract_restaurant_search_query(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Business discovery — DB must win before KB / generic web advice (see KB tier for append)
+# ---------------------------------------------------------------------------
+
+_BUSINESS_TRIGGER_RE = re.compile(
+    r"\b(find|search|looking for|need a|need an|want a|want an|recommend|hire|near me|nearby|"
+    r"cerca de|perto de|in my area|servicios|alguien que|alg[uú]n|any\s+\w+\s+near|nearby\s+\w+)\b",
+    re.I,
+)
+
+_CAREER_EDUCATION_RE = re.compile(
+    r"\b(how to become|how do i become|becoming a|career as|law school|med school|what is a (lawyer|attorney|doctor|dentist|cpa)|"
+    r"degree to be|bar exam|years? of college)\b",
+    re.I,
+)
+
+_SERVICE_INFERENCE = [
+    (re.compile(r"\b(attorney|lawyers?|abogad|legal services|law firm)\b", re.I), ("legal", "lawyer")),
+    (re.compile(r"\b(immigration attorney|immigration lawyer|immigration consultant)\b", re.I), ("immigration", "consultant")),
+    (re.compile(r"\b(doctor|physician|clinic|gp\b|general practitioner)\b", re.I), ("health", "doctor")),
+    (re.compile(r"\b(dentist|dental)\b", re.I), ("health", "dentist")),
+    (re.compile(r"\b(tax preparer|cpa\b|accountant|tax filing|imposto|income tax prep)\b", re.I), ("tax", "tax_preparer")),
+    (re.compile(r"\b(plumber|electrician|hvac)\b", re.I), ("home", "home_services")),
+    (re.compile(r"\b(real estate|realtor|realty|corretor de im[oó]veis)\b", re.I), ("housing", "real_estate_agent")),
+]
+
+
+def _infer_service_category_from_text(message: str) -> tuple:
+    for rx, pair in _SERVICE_INFERENCE:
+        if rx.search(message or ""):
+            return pair
+    return (None, None)
+
+
+def _heuristic_business_discovery(message: str) -> bool:
+    """Hire/find local professional: service keyword + trigger (find/near me/ZIP/city phrase)."""
+    t = (message or "").strip()
+    if len(t) < 5:
+        return False
+    if _CAREER_EDUCATION_RE.search(t):
+        return False
+    cat, sub = _infer_service_category_from_text(t)
+    if not (cat or sub):
+        return False
+    if _BUSINESS_TRIGGER_RE.search(t):
+        return True
+    if re.search(r"\b(\d{5})(?:-\d{4})?\b", t):
+        return True
+    if re.search(r"\b(in|near|en)\s+[A-Z][a-z]{2,}", t):
+        return True
+    return False
+
+
+def _has_business_location(state: str, city: str, county: str, zip_code: str, user_lat, user_lon) -> bool:
+    if user_lat is not None and user_lon is not None:
+        return True
+    if not (state or "").strip():
+        return False
+    return bool(zip_code or city or county)
+
+
+def _service_heading_label(category: str, subcategory: str, language: str) -> str:
+    c = (category or "").lower()
+    s = (subcategory or "").lower()
+    labels = {
+        "legal": {"en": "lawyers", "es": "abogados", "pt": "advogados"},
+        "immigration": {"en": "immigration professionals", "es": "profesionales de inmigración", "pt": "profissionais de imigração"},
+        "tax": {"en": "tax professionals", "es": "profesionales de impuestos", "pt": "profissionais de impostos"},
+        "health": {"en": "healthcare providers", "es": "proveedores de salud", "pt": "profissionais de saúde"},
+        "home": {"en": "home service providers", "es": "proveedores de servicios para el hogar", "pt": "profissionais para o lar"},
+        "housing": {"en": "housing professionals", "es": "profesionales de vivienda", "pt": "profissionais de moradia"},
+    }
+    if c in labels:
+        return labels[c].get(language, labels[c]["en"])
+    if s == "lawyer":
+        return {"en": "lawyers", "es": "abogados", "pt": "advogados"}.get(language, "lawyers")
+    return {"en": "providers", "es": "proveedores", "pt": "profissionais"}.get(language, "providers")
+
+
+def _format_businesses_recommendation_engine(
+    businesses: list,
+    language: str,
+    category: str = "",
+    subcategory: str = "",
+    location_note: str = None,
+) -> str:
+    """Concise DB-only listing (no extra marketing copy)."""
+    if not businesses:
+        return ""
+    svc = _service_heading_label(category, subcategory, language)
+    head = {
+        "en": f"Here are some {svc} available in your area:",
+        "es": f"Aquí hay algunos {svc} disponibles en tu zona:",
+        "pt": f"Aqui estão alguns {svc} disponíveis na sua região:",
+    }.get(language, f"Here are some {svc} available in your area:")
+    lines = [head, ""]
+    for i, b in enumerate(businesses, 1):
+        name = b.get("name", "")
+        cat = (b.get("category") or "").strip()
+        sub = (b.get("subcategory") or "").strip()
+        cat_disp = cat.title() if cat else ""
+        sub_disp = sub.replace("_", " ").title() if sub else ""
+        cat_line = f"{cat_disp} ({sub_disp})" if cat_disp and sub_disp else (cat_disp or sub_disp or "—")
+        city = b.get("city") or ""
+        st = b.get("state") or ""
+        z = b.get("zip_code") or ""
+        loc = ", ".join(p for p in [city, st, z] if p)
+        phone = (b.get("contact_info") or "").strip()
+        wa = (b.get("whatsapp_url") or "").strip()
+        lines.append(f"{i}. {name}")
+        lines.append(f"   - Category: {cat_line}")
+        lines.append(f"   - Location: {loc or '—'}")
+        lines.append(f"   - Phone: {phone or '—'}")
+        lines.append(f"   - WhatsApp: {wa or '—'}")
+        lines.append("")
+    if location_note:
+        lines.append(location_note)
+    return "\n".join(lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# KB answer + local provider suggestions (uses same Business table / Mongo collections)
+# ---------------------------------------------------------------------------
+
+def _should_suggest_providers_with_kb(structured: dict) -> bool:
+    """True when classifier gave a concrete service category (not generic/other-only)."""
+    if not structured:
+        return False
+    cat = (structured.get("category") or "").strip().lower()
+    sub = (structured.get("subcategory") or "").strip().lower()
+    if not cat and not sub:
+        return False
+    if cat in ("other", "none", "null") and not sub:
+        return False
+    return True
+
+
+def _user_has_provider_location(
+    state: str,
+    county: str,
+    zip_code: str,
+    user_lat,
+    user_lon,
+) -> bool:
+    if user_lat is not None and user_lon is not None:
+        return True
+    if zip_code and state:
+        return True
+    if county and state:
+        return True
+    if state:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Business formatting helper
 # ---------------------------------------------------------------------------
 
 def _format_businesses(businesses: list, language: str, location_note: str = None,
-                        see_more: bool = False) -> str:
+                        see_more: bool = False, heading: str = None) -> str:
     if not businesses:
         return ""
-    heading = {
+    heading = heading or {
         "en": "Here are some options that might help you:",
         "es": "Estas son algunas opciones que podrían ayudarte:",
         "pt": "Aqui estão algumas opções que podem ajudar:",
@@ -756,7 +915,7 @@ def _format_businesses(businesses: list, language: str, location_note: str = Non
     for b in businesses:
         name = b.get("name", "")
         cat = b.get("category") or b.get("subcategory") or ""
-        loc_parts = filter(None, [b.get("city"), b.get("county"), b.get("state")])
+        loc_parts = filter(None, [b.get("city"), b.get("county"), b.get("state"), b.get("zip_code")])
         loc_str = ", ".join(loc_parts)
         dist = b.get("distance_miles")
         dist_str = f" ({dist} miles away)" if dist is not None else ""
@@ -769,9 +928,12 @@ def _format_businesses(businesses: list, language: str, location_note: str = Non
         if b.get("is_sponsored"):
             line += " (Sponsored)"
         parts.append(line)
-        contact = b.get("contact_info") or b.get("whatsapp_url") or ""
+        contact = (b.get("contact_info") or "").strip()
+        wa = (b.get("whatsapp_url") or "").strip()
         if contact:
             parts.append(f"Contact: {contact}")
+        if wa and wa not in contact:
+            parts.append(f"WhatsApp: {wa}")
 
     brief = {
         "en": "These providers serve your area and can assist with the service you asked about.",
@@ -907,23 +1069,43 @@ def _save_history(user_id: str, message: str, reply: str, intent: str, structure
 
 def _fetch_business_context(structured: dict, state: str) -> str:
     context = ""
-    category = structured.get("category") or structured.get("subcategory")
     try:
         if getattr(django_settings, "USE_MONGO", False):
             from chatbot.mongo_db import get_db
             db = get_db()
-            q = {"is_active": True}
-            if category:
-                q["$or"] = [
-                    {"business_category": {"$regex": category, "$options": "i"}},
-                    {"business_subcategory": {"$regex": category, "$options": "i"}},
-                ]
-            for b in db.business_listings.find(q).limit(5):
-                contact = " ".join(filter(None, [b.get("business_number"), b.get("business_email")]))
-                context += f"{b.get('business_name','')}: {b.get('business_category') or ''} {b.get('business_subcategory') or ''}. {contact}\n"
+            q = mongo_comparison_query(structured or {})
+            collection_names = getattr(django_settings, "MONGO_BUSINESS_COLLECTIONS", None) or [
+                "business_listings",
+                "businesses",
+            ]
+            if isinstance(collection_names, str):
+                collection_names = [x.strip() for x in collection_names.split(",") if x.strip()]
+            seen = set()
+            for coll_name in collection_names:
+                for b in db[coll_name].find(q).limit(8):
+                    sid = str(b.get("_id"))
+                    if sid in seen:
+                        continue
+                    seen.add(sid)
+                    name = b.get("name") or b.get("business_name") or ""
+                    cat = b.get("category") or b.get("business_category") or ""
+                    sub = b.get("subcategory") or b.get("business_subcategory") or ""
+                    city = b.get("city") or ""
+                    st = b.get("state") or ""
+                    contact = (b.get("contact_info") or "").strip()
+                    if not contact:
+                        contact = " ".join(
+                            filter(None, [b.get("business_number"), b.get("business_email")])
+                        )
+                    context += f"{name}: {cat} {sub}, {city} {st}. {contact}\n".strip() + "\n"
+                    if len(seen) >= 5:
+                        break
+                if len(seen) >= 5:
+                    break
         else:
             from chatbot.models import Business
             from django.db.models import Q
+            category = (structured or {}).get("category") or (structured or {}).get("subcategory")
             qs = Business.objects.filter(is_active=True, is_banned=False)
             if state:
                 qs = qs.filter(state__icontains=state)
@@ -1021,25 +1203,7 @@ def process_message(
         return _build_response(reply, detected_lang, "casual", question_analysis=meta_struct, user_name=user_name)
 
     # ------------------------------------------------------------------
-    # TIER 1 — Knowledge base search  (ALWAYS runs first, before intent)
-    # ------------------------------------------------------------------
-    matches = search_knowledge(message, state=state, county=county, user_language=detected_lang)
-
-    # Broaden to global KB if no state-specific match
-    if not matches and state:
-        matches = search_knowledge(message, state=None, county=None, user_language=detected_lang)
-    logger.info(
-        "chat_flow.kb_search user_id=%s lang=%s state=%s county=%s matches=%s top_similarity=%s",
-        user_id,
-        detected_lang,
-        state,
-        county,
-        len(matches or []),
-        (matches[0].get("similarity") if matches else None),
-    )
-
-    # ------------------------------------------------------------------
-    # Structured intent extraction  (happens in parallel with KB search)
+    # TIER 1a — Structured intent + location (before business DB and KB)
     # ------------------------------------------------------------------
     if has_api_key:
         structured = get_structured_output(
@@ -1051,7 +1215,7 @@ def process_message(
         structured = {
             "intent": "information_request",
             "category": None, "subcategory": None,
-            "state": state, "city": None, "county": county, "zip_code": zip_code,
+            "state": state, "city": city, "county": county, "zip_code": zip_code,
             "detected_language": detected_lang,
             "confidence": 0.5,
         }
@@ -1070,17 +1234,178 @@ def process_message(
         detected_lang,
     )
 
-    # If GPT says "unclear" but KB has something useful, treat as information_request
-    if intent == "unclear" and matches:
-        intent = "information_request"
+    # Merge structured extraction into location (message may mention state/ZIP not on profile)
+    state = structured.get("state") or state
+    city = structured.get("city") or city
+    county = structured.get("county") or county
+    zip_code = structured.get("zip_code") or zip_code
+    state, city, county, zip_code = _apply_message_location_for_map(
+        message, state, city, county, zip_code
+    )
+    known_facts = _format_known_facts(state, city, county, zip_code)
 
-    # Keep domain questions in-scope even if model mislabels intent.
     if intent == "off_topic" and _looks_in_scope_topic(message):
         structured["model_intent"] = intent
         intent = "information_request"
 
-    # Off-topic should be a strict fallback:
-    # only if no KB match and explicit off-topic signal (substring/regex or model intent off_topic).
+    # ------------------------------------------------------------------
+    # TIER 1b — Business database FIRST when user is finding/hiring a local service + location
+    # ------------------------------------------------------------------
+    inf_cat, inf_sub = _infer_service_category_from_text(message)
+    biz_cat = structured.get("category") or inf_cat
+    biz_sub = structured.get("subcategory") or inf_sub
+    ulat = user_location.get("latitude") or getattr(user, "latitude", None)
+    ulon = user_location.get("longitude") or getattr(user, "longitude", None)
+    wants_biz = (intent == "business_search" or _heuristic_business_discovery(message)) and bool(
+        biz_cat or biz_sub
+    )
+
+    if wants_biz:
+        if not _has_business_location(state, city, county, zip_code, ulat, ulon):
+            reply = generate_clarifying_questions(
+                message,
+                detected_lang,
+                missing_location=True,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
+            )
+            _save_history(session_id, message, reply, "location_incomplete", structured)
+            return _build_response(
+                reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
+            )
+        lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
+        r1 = get_top_businesses(
+            category=biz_cat,
+            subcategory=biz_sub,
+            state=state,
+            city=city,
+            county=county,
+            zip_code=zip_code,
+            user_lat=ulat,
+            user_lon=ulon,
+            language=detected_lang,
+            limit=lim,
+            external_id=user_id,
+            session_id=session_id or user_id,
+            strict_location=True,
+            sort_mode="fairness",
+        )
+        businesses = r1.get("businesses") or []
+        loc_note = r1.get("location_note")
+        see_more = r1.get("see_more", False)
+        if not businesses:
+            r2 = get_top_businesses(
+                category=biz_cat,
+                subcategory=biz_sub,
+                state=state,
+                city=city,
+                county=county,
+                zip_code=zip_code,
+                user_lat=ulat,
+                user_lon=ulon,
+                language=detected_lang,
+                limit=lim,
+                external_id=user_id,
+                session_id=session_id or user_id,
+                strict_location=False,
+                sort_mode="fairness",
+            )
+            businesses = r2.get("businesses") or []
+            loc_note = r2.get("location_note")
+            see_more = r2.get("see_more", False)
+
+        structured = dict(structured or {})
+        structured["category"] = biz_cat
+        structured["subcategory"] = biz_sub
+
+        if businesses:
+            reply = _format_businesses_recommendation_engine(
+                businesses,
+                detected_lang,
+                category=biz_cat or "",
+                subcategory=biz_sub or "",
+                location_note=loc_note,
+            )
+            structured["answer_source"] = "business_database"
+            logger.info(
+                "chat_flow.business_database_first user_id=%s n=%s strict_then_loose=%s",
+                user_id,
+                len(businesses),
+                True,
+            )
+            require_contact = False
+            contact_msg = None
+            if not getattr(user, "has_contact_details", True):
+                require_contact = True
+                contact_msg = {
+                    "en": "I'll save this and your chat history. Please add your details so I can continue:",
+                    "es": "Guardaré esto y tu historial. Por favor agrega tus datos para continuar:",
+                    "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
+                }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
+            _save_history(session_id, message, reply, "business_search", structured)
+            return _build_response(
+                reply,
+                detected_lang,
+                "business_search",
+                businesses=businesses,
+                see_more=see_more,
+                location_note=loc_note,
+                question_analysis=structured,
+                user_name=user_name,
+                require_contact_details=require_contact,
+                contact_details_message=contact_msg,
+            )
+
+        structured["answer_source"] = "directory_fallback"
+        if has_api_key:
+            reply = generate_business_directory_fallback_response(
+                message,
+                biz_cat or "",
+                biz_sub or "",
+                state or "",
+                county or "",
+                city or "",
+                zip_code or "",
+                detected_lang,
+                chat_history=openai_chat_history,
+                known_facts=known_facts,
+            )
+        else:
+            reply = {
+                "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
+                "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA para abogados de inmigración, o ajusta tu ubicación.",
+                "pt": "Não encontramos parceiros correspondentes em nosso diretório para sua região. Tente a ordem dos advogados do seu estado, Avvo ou AILA para imigração, ou ajuste a localização.",
+            }.get(detected_lang, "No matching listings in our directory.")
+        _save_history(session_id, message, reply, "business_search", structured)
+        logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=directory", user_id)
+        return _build_response(
+            reply,
+            detected_lang,
+            "business_search",
+            businesses=[],
+            question_analysis=structured,
+            user_name=user_name,
+        )
+
+    # ------------------------------------------------------------------
+    # TIER 1c — Knowledge base search (after business routing)
+    # ------------------------------------------------------------------
+    matches = search_knowledge(message, state=state, county=county, user_language=detected_lang)
+    if not matches and state:
+        matches = search_knowledge(message, state=None, county=None, user_language=detected_lang)
+    logger.info(
+        "chat_flow.kb_search user_id=%s lang=%s state=%s county=%s matches=%s top_similarity=%s",
+        user_id,
+        detected_lang,
+        state,
+        county,
+        len(matches or []),
+        (matches[0].get("similarity") if matches else None),
+    )
+
+    if intent == "unclear" and matches:
+        intent = "information_request"
+
     if not matches and (intent == "off_topic" or _looks_off_topic(message)):
         reply = _off_topic_message(detected_lang)
         _save_history(session_id, message, reply, "off_topic", structured)
@@ -1093,20 +1418,8 @@ def process_message(
         )
         return _build_response(reply, detected_lang, "off_topic", user_name=user_name)
 
-    # If intent is off_topic but KB actually found something, override intent so we use the KB
     if intent == "off_topic" and matches:
         intent = "information_request"
-
-    # Merge structured extraction into location (message may mention state/ZIP not on profile)
-    state = structured.get("state") or state
-    city = structured.get("city") or city
-    county = structured.get("county") or county
-    zip_code = structured.get("zip_code") or zip_code
-
-    state, city, county, zip_code = _apply_message_location_for_map(
-        message, state, city, county, zip_code
-    )
-    known_facts = _format_known_facts(state, city, county, zip_code)
 
     # ------------------------------------------------------------------
     # TIER 2a — Nearest office / restaurants (map lookup) BEFORE generic KB+RAG
@@ -1219,6 +1532,7 @@ def process_message(
     # TIER 2 — KB-based response (non-empty matches already passed retrieval thresholds)
     # ------------------------------------------------------------------
     if matches:
+        kb_suggest_businesses = []
         top_sim = float(matches[0].get("similarity") or 0.0)
         context_parts = [f"Q: {m.get('question', '')}\nA: {m.get('answer', '')}" for m in matches]
         retrieved_context = "\n\n".join(context_parts)
@@ -1283,21 +1597,72 @@ def process_message(
             }
             reply = reply.rstrip() + loc_hint.get(detected_lang, loc_hint["en"])
 
+        if (
+            getattr(django_settings, "KB_PROVIDER_SUGGESTIONS", True)
+            and intent in ("information_request", "unclear")
+            and structured.get("answer_source") != "openai_general"
+            and _should_suggest_providers_with_kb(structured)
+            and _user_has_provider_location(
+                state,
+                county,
+                zip_code,
+                user_location.get("latitude") or getattr(user, "latitude", None),
+                user_location.get("longitude") or getattr(user, "longitude", None),
+            )
+        ):
+            ulat = user_location.get("latitude") or getattr(user, "latitude", None)
+            ulon = user_location.get("longitude") or getattr(user, "longitude", None)
+            lim = getattr(django_settings, "KB_PROVIDER_SUGGESTIONS_MAX", 3)
+            prov = get_top_businesses(
+                category=structured.get("category"),
+                subcategory=structured.get("subcategory"),
+                state=state,
+                city=city,
+                county=county,
+                zip_code=zip_code,
+                user_lat=ulat,
+                user_lon=ulon,
+                language=detected_lang,
+                limit=lim,
+                external_id=user_id,
+                session_id=session_id,
+                strict_location=False,
+                sort_mode="fairness",
+            )
+            kb_suggest_businesses = prov.get("businesses") or []
+            if kb_suggest_businesses:
+                reply = reply.rstrip() + "\n\n" + _format_businesses_recommendation_engine(
+                    kb_suggest_businesses,
+                    detected_lang,
+                    category=structured.get("category") or "",
+                    subcategory=structured.get("subcategory") or "",
+                    location_note=prov.get("location_note"),
+                )
+                logger.info(
+                    "chat_flow.kb_provider_suggest user_id=%s category=%s subcategory=%s n=%s",
+                    user_id,
+                    structured.get("category"),
+                    structured.get("subcategory"),
+                    len(kb_suggest_businesses),
+                )
+
         _save_history(session_id, message, reply, intent, structured)
-        return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
+        return _build_response(
+            reply,
+            detected_lang,
+            intent,
+            question_analysis=structured,
+            user_name=user_name,
+            businesses=kb_suggest_businesses,
+        )
 
     # ------------------------------------------------------------------
     # TIER 3 — Business search  (only when KB has no match)
     # ------------------------------------------------------------------
     if intent == "business_search":
-        if not location_enabled:
-            reply = "To give you the most accurate business recommendations, I need access to your location. Please enable location sharing."
-            if has_api_key and detected_lang != "en":
-                reply = translate_verified_answer(reply, detected_lang)
-            _save_history(session_id, message, reply, "location_required", structured)
-            return _build_response(reply, detected_lang, "location_required", user_name=user_name)
-
-        if not state or not county or not zip_code:
+        user_lat = user_location.get("latitude") or getattr(user, "latitude", None)
+        user_lon = user_location.get("longitude") or getattr(user, "longitude", None)
+        if not _has_business_location(state, city, county, zip_code, user_lat, user_lon):
             reply = generate_clarifying_questions(
                 message,
                 detected_lang,
@@ -1306,16 +1671,18 @@ def process_message(
                 known_facts=known_facts,
             )
             _save_history(session_id, message, reply, "location_incomplete", structured)
-            return _build_response(reply, detected_lang, "location_incomplete", user_name=user_name)
+            return _build_response(
+                reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
+            )
 
         limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
-        user_lat = user_location.get("latitude") or getattr(user, "latitude", None)
-        user_lon = user_location.get("longitude") or getattr(user, "longitude", None)
+        bc = structured.get("category")
+        bs = structured.get("subcategory")
         result = get_top_businesses(
-            category=structured.get("category"),
-            subcategory=structured.get("subcategory"),
+            category=bc,
+            subcategory=bs,
             state=state,
-            city=structured.get("city"),
+            city=structured.get("city") or city,
             county=county,
             zip_code=zip_code,
             user_lat=user_lat,
@@ -1324,10 +1691,32 @@ def process_message(
             limit=limit,
             external_id=user_id,
             session_id=session_id or user_id,
+            strict_location=True,
+            sort_mode="fairness",
         )
         businesses = result.get("businesses") or []
         see_more = result.get("see_more", False)
         location_note = result.get("location_note")
+        if not businesses:
+            result = get_top_businesses(
+                category=bc,
+                subcategory=bs,
+                state=state,
+                city=structured.get("city") or city,
+                county=county,
+                zip_code=zip_code,
+                user_lat=user_lat,
+                user_lon=user_lon,
+                language=detected_lang,
+                limit=limit,
+                external_id=user_id,
+                session_id=session_id or user_id,
+                strict_location=False,
+                sort_mode="fairness",
+            )
+            businesses = result.get("businesses") or []
+            see_more = result.get("see_more", False)
+            location_note = result.get("location_note")
         logger.info(
             "chat_flow.business_search user_id=%s businesses=%s see_more=%s has_location_note=%s",
             user_id,
@@ -1337,14 +1726,35 @@ def process_message(
         )
 
         if businesses:
-            reply = _format_businesses(businesses, detected_lang, location_note=location_note, see_more=see_more)
+            reply = _format_businesses_recommendation_engine(
+                businesses,
+                detected_lang,
+                category=bc or "",
+                subcategory=bs or "",
+                location_note=location_note,
+            )
         else:
-            no_biz = {
-                "en": "I couldn't find businesses matching your request in your area. Try adjusting your search or location.",
-                "es": "No encontré negocios que coincidan con tu solicitud en tu zona. Intenta ajustar tu búsqueda o ubicación.",
-                "pt": "Não encontrei negócios que correspondam ao seu pedido na sua área. Tente ajustar sua pesquisa ou localização.",
-            }
-            reply = no_biz.get(detected_lang, no_biz["en"])
+            structured = dict(structured or {})
+            structured["answer_source"] = "directory_fallback"
+            if has_api_key:
+                reply = generate_business_directory_fallback_response(
+                    message,
+                    bc or "",
+                    bs or "",
+                    state or "",
+                    county or "",
+                    city or "",
+                    zip_code or "",
+                    detected_lang,
+                    chat_history=openai_chat_history,
+                    known_facts=known_facts,
+                )
+            else:
+                reply = {
+                    "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
+                    "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA, o ajusta tu ubicación.",
+                    "pt": "Não encontramos parceiros em nosso diretório para sua região. Tente a OAB estadual, Avvo ou AILA, ou ajuste a localização.",
+                }.get(detected_lang, "No matching listings in our directory.")
 
         # When we show business results (connecting user with providers), ask for email/phone if missing
         require_contact = False
@@ -1394,6 +1804,82 @@ def process_message(
     if intent in ("information_request", "unclear"):
         structured = dict(structured or {})
         structured["retrieval_confidence"] = "none"
+        ulat = user_location.get("latitude") or getattr(user, "latitude", None)
+        ulon = user_location.get("longitude") or getattr(user, "longitude", None)
+        ic, isub = _infer_service_category_from_text(message)
+        rescue_cat = structured.get("category") or ic
+        rescue_sub = structured.get("subcategory") or isub
+        if (
+            _heuristic_business_discovery(message)
+            and (rescue_cat or rescue_sub)
+            and _has_business_location(state, city, county, zip_code, ulat, ulon)
+        ):
+            lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
+            rescue = get_top_businesses(
+                category=rescue_cat,
+                subcategory=rescue_sub,
+                state=state,
+                city=city,
+                county=county,
+                zip_code=zip_code,
+                user_lat=ulat,
+                user_lon=ulon,
+                language=detected_lang,
+                limit=lim,
+                external_id=user_id,
+                session_id=session_id or user_id,
+                strict_location=False,
+                sort_mode="fairness",
+            )
+            rescue_biz = rescue.get("businesses") or []
+            if rescue_biz:
+                reply = _format_businesses_recommendation_engine(
+                    rescue_biz,
+                    detected_lang,
+                    category=rescue_cat or "",
+                    subcategory=rescue_sub or "",
+                    location_note=rescue.get("location_note"),
+                )
+                structured["category"] = rescue_cat
+                structured["subcategory"] = rescue_sub
+                structured["answer_source"] = "business_database"
+                _save_history(session_id, message, reply, "information_request", structured)
+                logger.info("chat_flow.tier4.business_rescue user_id=%s n=%s", user_id, len(rescue_biz))
+                return _build_response(
+                    reply,
+                    detected_lang,
+                    "information_request",
+                    businesses=rescue_biz,
+                    see_more=rescue.get("see_more", False),
+                    location_note=rescue.get("location_note"),
+                    question_analysis=structured,
+                    user_name=user_name,
+                )
+            if has_api_key:
+                reply = generate_business_directory_fallback_response(
+                    message,
+                    rescue_cat or "",
+                    rescue_sub or "",
+                    state or "",
+                    county or "",
+                    city or "",
+                    zip_code or "",
+                    detected_lang,
+                    chat_history=openai_chat_history,
+                    known_facts=known_facts,
+                )
+            else:
+                reply = {
+                    "en": "We did not find matching partners in our directory for your area. Try state bar referral, Avvo, or AILA — or adjust your search.",
+                    "es": "No encontramos socios en nuestro directorio. Prueba la referencia del colegio de abogados, Avvo o AILA.",
+                    "pt": "Não há parceiros no diretório. Tente a OAB estadual, Avvo ou AILA.",
+                }.get(detected_lang, "No directory matches.")
+            structured["answer_source"] = "directory_fallback"
+            _save_history(session_id, message, reply, "information_request", structured)
+            return _build_response(
+                reply, detected_lang, "information_request", question_analysis=structured, user_name=user_name
+            )
+
         if has_api_key:
             reply = generate_general_braelo_response(
                 message,
