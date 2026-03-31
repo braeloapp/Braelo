@@ -474,6 +474,10 @@ USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
+# Google Places (Nearby / Text / Details) — server-side only; set in .env (not VITE_).
+GOOGLE_PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY', '')
+GOOGLE_PLACES_RADIUS_M = int(os.getenv('GOOGLE_PLACES_RADIUS_M', '6000'))
+GOOGLE_PLACES_MAX_RESULTS = int(os.getenv('GOOGLE_PLACES_MAX_RESULTS', '7'))
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 KNOWLEDGE_SIMILARITY_THRESHOLD = float(os.getenv('KNOWLEDGE_SIMILARITY_THRESHOLD', '0.55'))
 RAG_TOP_K = int(os.getenv('RAG_TOP_K', '8'))

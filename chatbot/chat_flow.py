@@ -3,8 +3,9 @@ Chat flow pipeline:
   Tier 0   : Casual talk (intents.json)
   Tier 1a  : Structured intent + merged location
   Tier 1b  : Business database FIRST for find/hire local services + location → strict then loose match;
-             if empty → directory fallback (Avvo/AILA allowed there only), not generic chat
+             if empty → directory fallback unless is_location_based_query (then defer to 2a0 / OSM / KB)
   Tier 1c  : Knowledge base hybrid search (after business routing)
+  Tier 2a0 : LLM “near me” business list (trigger phrases + ZIP/GPS/state) before map OSM branch
   Tier 2a  : Map / local office / dining overrides
   Tier 2   : KB exact answer / RAG (+ optional KB provider append)
   Tier 3   : business_search (no KB hit) — same DB + fallback rules
@@ -29,6 +30,7 @@ from chatbot.services.gpt_service import (
     generate_local_dining_response,
     generate_general_braelo_response,
     generate_business_directory_fallback_response,
+    handle_location_search,
     response_looks_like_rag_refusal,
 )
 from chatbot.services.knowledge_service import search_knowledge
@@ -40,6 +42,111 @@ logger = logging.getLogger(__name__)
 
 # Strong hybrid score → prefer exact KB answer path vs RAG (retrieval already filtered candidates)
 _KB_HIGH_THRESHOLD = float(getattr(django_settings, "RAG_STRONG_MATCH_HYBRID", 0.68))
+
+# Phrases that indicate “nearby businesses / services” (LLM + location context) — runs before map local_search.
+LOCATION_QUERY_TRIGGERS = [
+    "near me",
+    "near my location",
+    "nearby",
+    "closest to me",
+    "around me",
+    "in my area",
+    "find me a",
+    "find a",
+    "restaurants near",
+    "services near",
+    "businesses near",
+    "shops near",
+    "stores near",
+    "where can i find",
+    "who delivers to",
+    "open near",
+    "cerca de mí",
+    "cerca de mi",
+    "cerca de mi ubicación",
+    "negocios cerca",
+    "restaurantes cerca",
+    "servicios cerca",
+    "en mi área",
+    "en mi zona",
+    "dónde puedo encontrar",
+    "buscar cerca",
+    "tiendas cerca",
+    "perto de mim",
+    "próximo a mim",
+    "perto da minha localização",
+    "restaurantes perto",
+    "serviços perto",
+    "negócios perto",
+    "na minha área",
+    "onde posso encontrar",
+    "buscar perto",
+]
+
+
+def is_location_based_query(message: str) -> bool:
+    """True when the user is asking for nearby businesses or services (general discovery, not only map POI)."""
+    msg = (message or "").lower().strip()
+    return any(trigger in msg for trigger in LOCATION_QUERY_TRIGGERS)
+
+
+def extract_zip_from_message(message: str) -> str | None:
+    """Extract a 5-digit US ZIP code from the message if present."""
+    mo = re.search(r"\b(\d{5})\b", message or "")
+    return mo.group(1) if mo else None
+
+
+def extract_category_from_message(message: str) -> str:
+    """
+    Extract a simple business category keyword for the location assistant, or fall back to a short query slice.
+    """
+    categories = [
+        "restaurant",
+        "restaurante",
+        "food",
+        "comida",
+        "plumber",
+        "plomero",
+        "electrician",
+        "electricista",
+        "salon",
+        "salão",
+        "hair",
+        "cabelo",
+        "peluquería",
+        "doctor",
+        "médico",
+        "clinic",
+        "clínica",
+        "grocery",
+        "supermercado",
+        "mercado",
+        "mechanic",
+        "mecánico",
+        "auto repair",
+        "dentist",
+        "dentista",
+        "lawyer",
+        "abogado",
+        "advogado",
+        "cleaning",
+        "limpieza",
+        "limpeza",
+        "daycare",
+        "guardería",
+        "childcare",
+        "pharmacy",
+        "farmacia",
+        "farmácia",
+        "bank",
+        "banco",
+        "credit union",
+    ]
+    msg = (message or "").lower()
+    for cat in categories:
+        if cat in msg:
+            return cat
+    return (message or "").strip()[:500] or "local businesses"
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +313,7 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
     """Get or create user; location and profile (display_name, email, phone) are merged and persisted."""
     profile = profile or {}
     loc = location or {}
+    device_only = bool(loc.get("use_device_location_only"))
     merge = {
         "state": loc.get("state"),
         "city": loc.get("city"),
@@ -218,6 +326,10 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
         "email": profile.get("email"),
         "phone": profile.get("phone"),
     }
+    if device_only:
+        merge["state"] = None
+        merge["county"] = None
+        merge["zip_code"] = None
 
     if getattr(django_settings, "USE_MONGO", False):
         try:
@@ -246,7 +358,12 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
                 col.insert_one(doc)
             else:
                 update = {"updated_at": now}
+                if device_only:
+                    for k in ("state", "county", "zip_code"):
+                        update[k] = None
                 for k in ("state", "city", "county", "zip_code", "latitude", "longitude", "display_name", "email", "phone"):
+                    if device_only and k in ("state", "county", "zip_code"):
+                        continue
                     if merge.get(k) is not None:
                         update[k] = merge[k]
                     elif k in profile and profile[k] is not None:
@@ -264,10 +381,18 @@ def get_or_create_user(external_id: str, location: dict = None, profile: dict = 
     try:
         user, _ = User.objects.get_or_create(external_id=external_id)
         updated = False
-        for k in ("state", "city", "county", "zip_code"):
-            if merge.get(k):
-                setattr(user, k, merge[k])
+        if device_only:
+            for k in ("state", "county", "zip_code"):
+                setattr(user, k, None)
+            updated = True
+            if merge.get("city"):
+                setattr(user, "city", merge["city"])
                 updated = True
+        else:
+            for k in ("state", "city", "county", "zip_code"):
+                if merge.get(k):
+                    setattr(user, k, merge[k])
+                    updated = True
         if "location_enabled" in loc:
             user.location_enabled = bool(loc["location_enabled"])
             updated = True
@@ -1145,19 +1270,27 @@ def process_message(
     # Profile and location are looked up / persisted against the STABLE user_id (IP).
     user = get_or_create_user(user_id, user_location, profile=user_profile)
 
-    state = user_location.get("state") or getattr(user, "state", None)
-    city = user_location.get("city") or getattr(user, "city", None)
-    county = user_location.get("county") or getattr(user, "county", None)
-    zip_code = user_location.get("zip_code") or getattr(user, "zip_code", None)
+    use_device_only = bool(user_location.get("use_device_location_only"))
+    if use_device_only:
+        state = user_location.get("state")
+        city = user_location.get("city")
+        county = user_location.get("county")
+        zip_code = user_location.get("zip_code")
+    else:
+        state = user_location.get("state") or getattr(user, "state", None)
+        city = user_location.get("city") or getattr(user, "city", None)
+        county = user_location.get("county") or getattr(user, "county", None)
+        zip_code = user_location.get("zip_code") or getattr(user, "zip_code", None)
     location_enabled = user_location.get("location_enabled", getattr(user, "location_enabled", True))
     user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
 
     _hist_cap = getattr(django_settings, "CHAT_HISTORY_MAX_DOCUMENTS", 200)
     openai_chat_history = _load_openai_chat_history(session_id, _hist_cap)
     # Short-term location memory: reuse ZIP (etc.) from earlier turns in this session.
-    state, city, county, zip_code = _enrich_location_from_history(
-        state, city, county, zip_code, openai_chat_history
-    )
+    if not use_device_only:
+        state, city, county, zip_code = _enrich_location_from_history(
+            state, city, county, zip_code, openai_chat_history
+        )
 
     # Prefer city/state/ZIP named in this message for retrieval (before KB + structured merge).
     state, city, county, zip_code = _apply_message_location_for_map(
@@ -1356,36 +1489,45 @@ def process_message(
                 contact_details_message=contact_msg,
             )
 
-        structured["answer_source"] = "directory_fallback"
-        if has_api_key:
-            reply = generate_business_directory_fallback_response(
-                message,
-                biz_cat or "",
-                biz_sub or "",
-                state or "",
-                county or "",
-                city or "",
-                zip_code or "",
-                detected_lang,
-                chat_history=openai_chat_history,
-                known_facts=known_facts,
+        # "Near me" / local discovery: empty Mongo should not short-circuit with directory fallback;
+        # continue to KB → Tier 2a0 (LLM) / 2a (OSM dining).
+        if is_location_based_query(message):
+            structured["answer_source"] = "deferred_location_discovery"
+            logger.info(
+                "chat_flow.business_database_first user_id=%s n=0 skip_fallback=location_query",
+                user_id,
             )
         else:
-            reply = {
-                "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
-                "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA para abogados de inmigración, o ajusta tu ubicación.",
-                "pt": "Não encontramos parceiros correspondentes em nosso diretório para sua região. Tente a ordem dos advogados do seu estado, Avvo ou AILA para imigração, ou ajuste a localização.",
-            }.get(detected_lang, "No matching listings in our directory.")
-        _save_history(session_id, message, reply, "business_search", structured)
-        logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=directory", user_id)
-        return _build_response(
-            reply,
-            detected_lang,
-            "business_search",
-            businesses=[],
-            question_analysis=structured,
-            user_name=user_name,
-        )
+            structured["answer_source"] = "directory_fallback"
+            if has_api_key:
+                reply = generate_business_directory_fallback_response(
+                    message,
+                    biz_cat or "",
+                    biz_sub or "",
+                    state or "",
+                    county or "",
+                    city or "",
+                    zip_code or "",
+                    detected_lang,
+                    chat_history=openai_chat_history,
+                    known_facts=known_facts,
+                )
+            else:
+                reply = {
+                    "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
+                    "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA para abogados de inmigración, o ajusta tu ubicación.",
+                    "pt": "Não encontramos parceiros correspondentes em nosso diretório para sua região. Tente a ordem dos advogados do seu estado, Avvo ou AILA para imigração, ou ajuste a localização.",
+                }.get(detected_lang, "No matching listings in our directory.")
+            _save_history(session_id, message, reply, "business_search", structured)
+            logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=directory", user_id)
+            return _build_response(
+                reply,
+                detected_lang,
+                "business_search",
+                businesses=[],
+                question_analysis=structured,
+                user_name=user_name,
+            )
 
     # ------------------------------------------------------------------
     # TIER 1c — Knowledge base search (after business routing)
@@ -1422,6 +1564,86 @@ def process_message(
         intent = "information_request"
 
     # ------------------------------------------------------------------
+    # TIER 2a0 — Location-based business search (OpenAI + GPS/ZIP/state), Google Maps–style list
+    # Runs before OSM local_search; on failure or no API key, falls through to existing branches.
+    # ------------------------------------------------------------------
+    if is_location_based_query(message):
+        resolved_zip = zip_code or extract_zip_from_message(message)
+        llat = user_location.get("latitude")
+        llon = user_location.get("longitude")
+        if llat is None:
+            llat = getattr(user, "latitude", None)
+        if llon is None:
+            llon = getattr(user, "longitude", None)
+
+        if llat is None and llon is None and not resolved_zip and not (state or "").strip():
+            missing_location_response = {
+                "en": "To find businesses near you, could you share your ZIP code? That way I can show you the most relevant options in your area.",
+                "es": "Para encontrar negocios cerca de ti, ¿podrías compartir tu código postal? Así puedo mostrarte las opciones más relevantes en tu área.",
+                "pt": "Para encontrar negócios perto de você, pode compartilhar seu CEP? Assim posso mostrar as opções mais relevantes na sua área.",
+            }
+            reply = missing_location_response.get(detected_lang, missing_location_response["en"])
+            loc_struct = dict(structured or {})
+            loc_struct["intent"] = "location_search_needs_zip"
+            loc_struct["detected_language"] = detected_lang
+            _save_history(session_id, message, reply, "location_search_needs_zip", loc_struct)
+            logger.info("chat_flow.location_llm.needs_zip user_id=%s", user_id)
+            return _build_response(
+                reply,
+                detected_lang,
+                "location_search_needs_zip",
+                question_analysis=loc_struct,
+                user_name=user_name,
+            )
+
+        hist = openai_chat_history or []
+        recent_hist = hist[-4:] if len(hist) > 4 else list(hist)
+        category_hint = extract_category_from_message(message)
+        reply = ""
+
+        def _safe_coord(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        if has_api_key:
+            try:
+                reply = handle_location_search(
+                    query=message,
+                    detected_language=detected_lang,
+                    zip_code=resolved_zip,
+                    latitude=_safe_coord(llat),
+                    longitude=_safe_coord(llon),
+                    state=state,
+                    county=county,
+                    city=city,
+                    country=(user_location.get("country") or "").strip() or None,
+                    category=category_hint,
+                    chat_history=recent_hist or None,
+                )
+            except Exception:
+                logger.exception("chat_flow.location_llm.openai_failed user_id=%s", user_id)
+                reply = ""
+
+        if reply:
+            loc_struct = dict(structured or {})
+            loc_struct["intent"] = "location_business_search"
+            loc_struct["detected_language"] = detected_lang
+            loc_struct["location_llm_category"] = category_hint
+            _save_history(session_id, message, reply, "location_business_search", loc_struct)
+            logger.info("chat_flow.location_llm.success user_id=%s len=%s", user_id, len(reply))
+            return _build_response(
+                reply,
+                detected_lang,
+                "location_business_search",
+                question_analysis=loc_struct,
+                user_name=user_name,
+            )
+
+    # ------------------------------------------------------------------
     # TIER 2a — Nearest office / restaurants (map lookup) BEFORE generic KB+RAG
     # (KB often has prose but not live listings; RAG was giving generic "use apps" answers.)
     # ------------------------------------------------------------------
@@ -1441,7 +1663,29 @@ def process_message(
             _save_history(session_id, message, reply, "location_required", structured)
             return _build_response(reply, detected_lang, "location_required", question_analysis=structured, user_name=user_name)
 
-        if not any([zip_code, city, county, state]):
+        map_lat = user_location.get("latitude")
+        map_lon = user_location.get("longitude")
+        if map_lat is None:
+            map_lat = getattr(user, "latitude", None)
+        if map_lon is None:
+            map_lon = getattr(user, "longitude", None)
+        has_text_location = bool(
+            (zip_code and str(zip_code).strip())
+            or (city and str(city).strip())
+            or (county and str(county).strip())
+            or (state and str(state).strip())
+        )
+        try:
+            if map_lat is None or map_lon is None:
+                has_gps_location = False
+            else:
+                float(map_lat)
+                float(map_lon)
+                has_gps_location = True
+        except (TypeError, ValueError):
+            has_gps_location = False
+
+        if not has_text_location and not has_gps_location:
             reply = {
                 "en": "I can search the map for you. Please share at least your ZIP code or your city/state.",
                 "es": "Puedo buscar en el mapa. Comparte al menos tu código postal o tu ciudad/estado.",

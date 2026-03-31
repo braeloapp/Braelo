@@ -3,7 +3,16 @@ GPT service: structured intent/entity extraction and conversational response. Us
 """
 import json
 import logging
+import re
+from urllib.parse import quote_plus
+
 from django.conf import settings
+
+from chatbot.services.google_places_service import (
+    format_places_for_response,
+    search_nearby_places,
+    search_places_text,
+)
 
 logger = logging.getLogger(__name__)
 client = None
@@ -477,6 +486,310 @@ def generate_business_directory_fallback_response(
     except Exception:
         logger.exception("gpt_service.business_directory_fallback.error")
         return _kb_clarification_fallback(language)
+
+
+LOCATION_SEARCH_SYSTEM = """You are Braelo, a helpful local business assistant for the US Latino and immigrant community.
+
+LOCATION CONTEXT:
+{location_context}
+
+YOUR JOB:
+The user is asking to find businesses or services nearby. Respond like a knowledgeable local guide — give a clear,
+numbered list of relevant businesses or service types in the user's area.
+
+FORMAT (IMPORTANT — one line per item, use an em dash between parts):
+1. [Business Name or Type] — [Brief description, 1 sentence] — [Neighborhood or city area if known]
+2. ...
+(List 5 to 8 options; keep each numbered item on a SINGLE line so links can be added after it.)
+
+After the list, add one short sentence suggesting they call ahead to confirm hours/availability.
+
+RULES:
+- {lang_instruction}
+- When GPS coordinates are given, derive the city and neighborhood from those coordinates only. Do not use a separate city/ZIP line from the user profile if it could disagree with the coordinates.
+- Be specific to the user's location. If you know the area from their ZIP/GPS, name real neighborhoods or nearby cities when reasonable.
+- If you don't know specific business names for that exact area, list the types of businesses they should search for.
+- Never make up phone numbers or street addresses or website URLs (links will be added automatically).
+- Keep the tone friendly and helpful, like a knowledgeable neighbor.
+- If the category is very specific (e.g., "Brazilian bakery"), acknowledge it and give the closest useful match.
+- Do not start by saying you are an AI or listing your limitations — begin helping directly.
+"""
+
+
+def _split_business_name_from_list_item(rest: str) -> str:
+    """Take the segment after 'N. ' up to the first em/en dash (description separator)."""
+    rest = (rest or "").strip()
+    for sep in (" — ", " – ", " - "):
+        if sep in rest:
+            return rest.split(sep, 1)[0].strip()
+    for ch in ("—", "–"):
+        if ch in rest:
+            return rest.split(ch, 1)[0].strip()
+    return rest[:160].strip()
+
+
+def _enrich_location_search_with_links(
+    text: str,
+    *,
+    city: str = None,
+    state: str = None,
+    zip_code: str = None,
+    country: str = None,
+    latitude: float = None,
+    longitude: float = None,
+    language: str = "en",
+) -> str:
+    """
+    After the model lists businesses, append a real Google Maps search URL and a Google search URL
+    per item (no invented domains).
+    """
+    if not (text or "").strip():
+        return text
+    lang = (language or "en").lower()[:2]
+    labels = {
+        "en": ("Google Maps", "Website & reviews (Google)"),
+        "es": ("Google Maps", "Web y reseñas (Google)"),
+        "pt": ("Google Maps", "Site e avaliações (Google)"),
+    }
+    lm, lw = labels.get(lang, labels["en"])
+    loc = " ".join(
+        x.strip()
+        for x in (city or "", state or "", zip_code or "", country or "")
+        if x and str(x).strip()
+    ).strip()
+    geo_hint = ""
+    if not loc and latitude is not None and longitude is not None:
+        try:
+            geo_hint = f"{float(latitude):.5f},{float(longitude):.5f}"
+        except (TypeError, ValueError):
+            geo_hint = ""
+
+    lines = text.splitlines()
+    out = []
+    item_line = re.compile(r"^(\d+)\.\s+(.+)$")
+    for line in lines:
+        out.append(line)
+        m = item_line.match(line.strip())
+        if not m:
+            continue
+        name = _split_business_name_from_list_item(m.group(2))
+        if len(name) < 2:
+            continue
+        if loc:
+            q_maps = f"{name} {loc}".strip()
+        elif geo_hint:
+            q_maps = f"{name} near {geo_hint}"
+        else:
+            q_maps = name
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={quote_plus(q_maps)}"
+        q_web = (
+            f"{name} {loc} official website".strip()
+            if loc
+            else (f"{name} near {geo_hint} official website" if geo_hint else f"{name} official website")
+        )
+        web_url = f"https://www.google.com/search?q={quote_plus(q_web)}"
+        out.append(f"   - {lm}: {maps_url}")
+        out.append(f"   - {lw}: {web_url}")
+    return "\n".join(out)
+
+
+def _places_search_keyword(category: str, query: str) -> str:
+    """Keyword for Google Places Nearby/Text search; avoid useless generic categories."""
+    generic = frozenset(
+        {
+            "local businesses",
+            "businesses",
+            "business",
+            "nearby",
+            "services",
+            "shops",
+            "stores",
+            "",
+        }
+    )
+    c = (category or "").strip()
+    if c and c.lower() not in generic and len(c) < 300:
+        return c[:100]
+    q = (query or "").strip()
+    return q[:120] if q else ""
+
+
+def handle_location_search(
+    query: str,
+    detected_language: str = "en",
+    zip_code: str = None,
+    latitude: float = None,
+    longitude: float = None,
+    state: str = None,
+    county: str = None,
+    city: str = None,
+    country: str = None,
+    neighbourhood: str = None,
+    category: str = None,
+    chat_history: list = None,
+) -> str:
+    """
+    Location-based business search: Google Places first (real listings), then GPT fallback.
+    """
+    logger.info(
+        "[LocationSearch] lat=%s, lng=%s, zip=%s, state=%s, city=%s, country=%s, "
+        "category=%s, neighbourhood=%s, lang=%s",
+        latitude,
+        longitude,
+        zip_code,
+        state,
+        city,
+        country,
+        category,
+        neighbourhood,
+        detected_language,
+    )
+
+    radius_m = int(getattr(settings, "GOOGLE_PLACES_RADIUS_M", 6000))
+    max_places = int(getattr(settings, "GOOGLE_PLACES_MAX_RESULTS", 7))
+    kw = _places_search_keyword(category, query)
+
+    try:
+        if latitude is not None and longitude is not None:
+            latf, lonf = float(latitude), float(longitude)
+        else:
+            latf, lonf = None, None
+    except (TypeError, ValueError):
+        latf, lonf = None, None
+
+    if kw and latf is not None and lonf is not None:
+        places = search_nearby_places(
+            latitude=latf,
+            longitude=lonf,
+            keyword=kw,
+            radius_meters=radius_m,
+            max_results=max_places,
+        )
+        if not places:
+            city_s_q = (city or "").strip()
+            full_query = f"{kw} near {city_s_q}" if city_s_q else kw
+            places = search_places_text(
+                query=full_query,
+                latitude=latf,
+                longitude=lonf,
+                radius_meters=radius_m,
+                max_results=max_places,
+            )
+        if places:
+            logger.info(
+                "[LocationSearch] Returning %s Google Places results",
+                len(places),
+            )
+            return format_places_for_response(places, detected_language)
+
+    logger.info("[LocationSearch] Google Places empty or skipped, falling back to GPT")
+
+    if not client:
+        logger.info("gpt_service.location_search.skip reason=no_openai_client")
+        return ""
+
+    city_s = (city or "").strip()
+    country_s = (country or "").strip()
+
+    if latitude is not None and longitude is not None:
+        try:
+            latf, lonf = float(latitude), float(longitude)
+            if city_s and country_s:
+                location_context = (
+                    f"The user is located in {city_s}, {country_s}. "
+                    f"Exact GPS coordinates: latitude {latf}, longitude {lonf}. "
+                    f"This city was verified by reverse geocoding — use '{city_s}' "
+                    f"as the city name in your response. Do NOT use any other city."
+                )
+            elif city_s:
+                location_context = (
+                    f"The user is in {city_s}. "
+                    f"GPS coordinates: latitude {latf}, longitude {lonf}. "
+                    f"Use '{city_s}' as the city — do not guess a different city."
+                )
+            else:
+                location_context = (
+                    f"GPS coordinates: latitude {latf}, longitude {lonf}. "
+                    f"Determine the city from these exact coordinates. "
+                    f"Examples for reference: "
+                    f"lat 31.52 lng 74.36 = Lahore Pakistan, "
+                    f"lat 31.41 lng 73.08 = Faisalabad Pakistan, "
+                    f"lat 33.72 lng 73.09 = Islamabad Pakistan, "
+                    f"lat 24.86 lng 67.00 = Karachi Pakistan, "
+                    f"lat 40.71 lng -74.01 = New York USA, "
+                    f"lat 34.05 lng -118.24 = Los Angeles USA, "
+                    f"lat 25.76 lng -80.19 = Miami USA. "
+                    f"Use ONLY these coordinates to name the city. "
+                    f"Never guess or use a different location."
+                )
+        except (TypeError, ValueError):
+            location_context = "The user's GPS coordinates were invalid."
+    elif zip_code:
+        location_context = f"ZIP code: {zip_code}. Use ONLY this ZIP."
+    elif city_s and state:
+        location_context = f"City: {city_s}, State: {state}. Use ONLY this location."
+    elif city_s:
+        location_context = f"City: {city_s}. Use ONLY this location."
+    elif state:
+        location_context = f"State: {state}. Use ONLY this location."
+    else:
+        location_context = "Location unknown."
+
+    lang_map = {
+        "es": "Respond entirely in Spanish.",
+        "pt": "Respond entirely in Portuguese (Brazilian).",
+        "en": "Respond entirely in English.",
+    }
+    lang_instruction = lang_map.get((detected_language or "en").lower()[:2], lang_map["en"])
+
+    system_body = LOCATION_SEARCH_SYSTEM.format(
+        location_context=location_context,
+        lang_instruction=lang_instruction,
+    )
+    system_full = _lang_system_prefix(detected_language) + system_body
+
+    q = (query or "").strip()[:2000]
+    cat = (category or "").strip()[:300]
+    if cat and cat != q:
+        user_content = f"Business or service category focus: {cat}\n\nUser message:\n{q}"
+    else:
+        user_content = q
+
+    model = getattr(settings, "GPT_MODEL", "gpt-4o-mini")
+    try:
+        logger.info(
+            "gpt_service.location_search.request lang=%s has_gps=%s has_zip=%s",
+            detected_language,
+            latitude is not None and longitude is not None,
+            bool(zip_code),
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=openai_messages_with_history(
+                [system_full],
+                chat_history,
+                user_content,
+                max_messages=12,
+            ),
+            max_tokens=900,
+            temperature=0.4,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        out = _enrich_location_search_with_links(
+            out,
+            city=city,
+            state=state,
+            zip_code=zip_code,
+            country=country,
+            latitude=latitude,
+            longitude=longitude,
+            language=detected_language,
+        )
+        logger.info("gpt_service.location_search.response len=%s", len(out or ""))
+        return out
+    except Exception:
+        logger.exception("gpt_service.location_search.error")
+        return ""
 
 
 BRAELO_RAG_SYSTEM = """You are Braelo, a warm, empathetic, and professional assistant helping immigrants navigate life in the United States. You provide accurate, helpful information based ONLY on the provided knowledge base.

@@ -71,6 +71,12 @@ def _parse_user_location(data: dict) -> dict:
             loc["longitude"] = float(data["longitude"])
         except (TypeError, ValueError):
             pass
+    loc["explicit_address_in_request"] = bool(
+        str(data.get("city") or "").strip()
+        or str(data.get("state") or "").strip()
+        or str(data.get("county") or "").strip()
+        or str(data.get("zip_code") or "").strip()
+    )
     return loc
 
 
