@@ -81,6 +81,45 @@ LOCATION_QUERY_TRIGGERS = [
     "na minha área",
     "onde posso encontrar",
     "buscar perto",
+    # City/state/country mentioned in message
+    "in florida",
+    "in texas",
+    "in california",
+    "in new york",
+    "in arizona",
+    "in illinois",
+    "in georgia",
+    "in nevada",
+    "restaurants in",
+    "food in",
+    "places in",
+    "businesses in",
+    "services in",
+    "shops in",
+    "stores in",
+    # Generic "find X in Y" patterns
+    "find in",
+    "looking for in",
+    "search in",
+    # Without "me" — nearby phrasing
+    "food near",
+    "places near",
+    "near the",
+    "near downtown",
+    "near my hotel",
+    "around the",
+    "around here",
+    "around downtown",
+    # Question-style location queries
+    "where to find",
+    "where to eat",
+    "where are the",
+    "where is the nearest",
+    "any restaurants",
+    "any places",
+    "any businesses",
+    "good restaurants",
+    "best restaurants",
 ]
 
 
@@ -94,6 +133,211 @@ def extract_zip_from_message(message: str) -> str | None:
     """Extract a 5-digit US ZIP code from the message if present."""
     mo = re.search(r"\b(\d{5})\b", message or "")
     return mo.group(1) if mo else None
+
+
+def extract_location_from_message(message: str) -> dict:
+    """
+    Extracts city, state, or country mentioned directly in the message text.
+
+    Examples:
+      "restaurants in Florida" → {"state": "Florida"}
+      "food in Phoenix Arizona" → {"city": "Phoenix", "state": "Arizona"}
+      "places in New York" → {"state": "New York"} (state name; not NYC)
+
+    Returns dict with any of: city, state, country (all optional).
+    Returns empty dict if nothing found.
+    """
+    US_STATES = {
+        "alabama",
+        "alaska",
+        "arizona",
+        "arkansas",
+        "california",
+        "colorado",
+        "connecticut",
+        "delaware",
+        "florida",
+        "georgia",
+        "hawaii",
+        "idaho",
+        "illinois",
+        "indiana",
+        "iowa",
+        "kansas",
+        "kentucky",
+        "louisiana",
+        "maine",
+        "maryland",
+        "massachusetts",
+        "michigan",
+        "minnesota",
+        "mississippi",
+        "missouri",
+        "montana",
+        "nebraska",
+        "nevada",
+        "new hampshire",
+        "new jersey",
+        "new mexico",
+        "new york",
+        "north carolina",
+        "north dakota",
+        "ohio",
+        "oklahoma",
+        "oregon",
+        "pennsylvania",
+        "rhode island",
+        "south carolina",
+        "south dakota",
+        "tennessee",
+        "texas",
+        "utah",
+        "vermont",
+        "virginia",
+        "washington",
+        "west virginia",
+        "wisconsin",
+        "wyoming",
+    }
+
+    US_STATE_ABBR = {
+        "al",
+        "ak",
+        "az",
+        "ar",
+        "ca",
+        "co",
+        "ct",
+        "de",
+        "fl",
+        "ga",
+        "hi",
+        "id",
+        "il",
+        "in",
+        "ia",
+        "ks",
+        "ky",
+        "la",
+        "me",
+        "md",
+        "ma",
+        "mi",
+        "mn",
+        "ms",
+        "mo",
+        "mt",
+        "ne",
+        "nv",
+        "nh",
+        "nj",
+        "nm",
+        "ny",
+        "nc",
+        "nd",
+        "oh",
+        "ok",
+        "or",
+        "pa",
+        "ri",
+        "sc",
+        "sd",
+        "tn",
+        "tx",
+        "ut",
+        "vt",
+        "va",
+        "wa",
+        "wv",
+        "wi",
+        "wy",
+    }
+
+    STATE_ABBR_TO_FULL = {
+        "al": "Alabama",
+        "ak": "Alaska",
+        "az": "Arizona",
+        "ar": "Arkansas",
+        "ca": "California",
+        "co": "Colorado",
+        "ct": "Connecticut",
+        "de": "Delaware",
+        "fl": "Florida",
+        "ga": "Georgia",
+        "hi": "Hawaii",
+        "id": "Idaho",
+        "il": "Illinois",
+        "in": "Indiana",
+        "ia": "Iowa",
+        "ks": "Kansas",
+        "ky": "Kentucky",
+        "la": "Louisiana",
+        "me": "Maine",
+        "md": "Maryland",
+        "ma": "Massachusetts",
+        "mi": "Michigan",
+        "mn": "Minnesota",
+        "ms": "Mississippi",
+        "mo": "Missouri",
+        "mt": "Montana",
+        "ne": "Nebraska",
+        "nv": "Nevada",
+        "nh": "New Hampshire",
+        "nj": "New Jersey",
+        "nm": "New Mexico",
+        "ny": "New York",
+        "nc": "North Carolina",
+        "nd": "North Dakota",
+        "oh": "Ohio",
+        "ok": "Oklahoma",
+        "or": "Oregon",
+        "pa": "Pennsylvania",
+        "ri": "Rhode Island",
+        "sc": "South Carolina",
+        "sd": "South Dakota",
+        "tn": "Tennessee",
+        "tx": "Texas",
+        "ut": "Utah",
+        "vt": "Vermont",
+        "va": "Virginia",
+        "wa": "Washington",
+        "wv": "West Virginia",
+        "wi": "Wisconsin",
+        "wy": "Wyoming",
+    }
+
+    msg_lower = (message or "").lower().strip()
+    result = {}
+
+    # Prefer longer state names first so "west virginia" beats "virginia"
+    found_state = None
+    for state in sorted(US_STATES, key=len, reverse=True):
+        if state in msg_lower:
+            found_state = state.title()
+            break
+
+    if not found_state:
+        # Only treat 2-letter codes as states when BOTH letters are uppercase (e.g. "Portland, ME").
+        # Lowercase "me" from "near me" must NOT map to Maine — that was clearing GPS and biasing to US.
+        for m in re.finditer(r"\b([A-Z]{2})\b", message or ""):
+            clean = m.group(1).lower()
+            if clean in US_STATE_ABBR:
+                found_state = STATE_ABBR_TO_FULL.get(clean, clean.upper())
+                break
+
+    if found_state:
+        result["state"] = found_state
+
+    city_pattern = re.search(
+        r"\bin\s+([A-Z][a-zA-Z\s]{2,25}?)(?:\s*,|\s*\?|$|\s+[A-Z]{2}\b)",
+        message or "",
+    )
+    if city_pattern:
+        potential_city = city_pattern.group(1).strip()
+        if potential_city.lower() not in US_STATES:
+            result["city"] = potential_city
+
+    return result
 
 
 def extract_category_from_message(message: str) -> str:
@@ -1568,15 +1812,61 @@ def process_message(
     # Runs before OSM local_search; on failure or no API key, falls through to existing branches.
     # ------------------------------------------------------------------
     if is_location_based_query(message):
-        resolved_zip = zip_code or extract_zip_from_message(message)
-        llat = user_location.get("latitude")
-        llon = user_location.get("longitude")
-        if llat is None:
-            llat = getattr(user, "latitude", None)
-        if llon is None:
-            llon = getattr(user, "longitude", None)
+        def _safe_coord(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
 
-        if llat is None and llon is None and not resolved_zip and not (state or "").strip():
+        explicit_profile_location = user_location.get("explicit_profile_location", False)
+        if explicit_profile_location:
+            search_lat = None
+            search_lng = None
+            search_city = (city or user_location.get("city") or "").strip()
+            search_state = (state or "").strip() if state else ""
+            search_zip = zip_code
+            search_country = "US"
+        else:
+            llat = user_location.get("latitude")
+            llon = user_location.get("longitude")
+            if llat is None:
+                llat = getattr(user, "latitude", None)
+            if llon is None:
+                llon = getattr(user, "longitude", None)
+            search_lat = _safe_coord(llat)
+            search_lng = _safe_coord(llon)
+            search_city = (city or user_location.get("city") or "").strip()
+            search_state = (state or "").strip() if state else ""
+            search_zip = zip_code or extract_zip_from_message(message)
+            search_country = (user_location.get("country") or "").strip()
+
+        message_location = extract_location_from_message(message)
+        if message_location:
+            resolved_city = (message_location.get("city") or search_city or "").strip()
+            resolved_state = (message_location.get("state") or search_state or "").strip()
+            _rc = message_location.get("country") or search_country or "US"
+            resolved_country = str(_rc).strip() or "US"
+            resolved_lat = None
+            resolved_lng = None
+            resolved_zip = search_zip
+        else:
+            resolved_city = search_city
+            resolved_state = search_state
+            resolved_country = (
+                search_country or ("US" if explicit_profile_location else "")
+            ).strip()
+            resolved_lat = search_lat
+            resolved_lng = search_lng
+            resolved_zip = search_zip or extract_zip_from_message(message)
+
+        if (
+            resolved_lat is None
+            and resolved_lng is None
+            and not resolved_zip
+            and not resolved_state
+        ):
             missing_location_response = {
                 "en": "To find businesses near you, could you share your ZIP code? That way I can show you the most relevant options in your area.",
                 "es": "Para encontrar negocios cerca de ti, ¿podrías compartir tu código postal? Así puedo mostrarte las opciones más relevantes en tu área.",
@@ -1601,26 +1891,19 @@ def process_message(
         category_hint = extract_category_from_message(message)
         reply = ""
 
-        def _safe_coord(v):
-            if v is None:
-                return None
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-
         if has_api_key:
             try:
                 reply = handle_location_search(
                     query=message,
                     detected_language=detected_lang,
                     zip_code=resolved_zip,
-                    latitude=_safe_coord(llat),
-                    longitude=_safe_coord(llon),
-                    state=state,
+                    latitude=resolved_lat,
+                    longitude=resolved_lng,
+                    state=resolved_state or None,
                     county=county,
-                    city=city,
-                    country=(user_location.get("country") or "").strip() or None,
+                    city=resolved_city or None,
+                    country=resolved_country or None,
+                    neighbourhood=(user_location.get("neighbourhood") or ""),
                     category=category_hint,
                     chat_history=recent_hist or None,
                 )

@@ -657,17 +657,22 @@ def handle_location_search(
     except (TypeError, ValueError):
         latf, lonf = None, None
 
-    if kw and latf is not None and lonf is not None:
+    places = []
+    effective_kw = (kw or "").strip()
+    if not effective_kw:
+        effective_kw = ((query or "").strip()[:120] or "restaurant")
+
+    if latf is not None and lonf is not None:
         places = search_nearby_places(
             latitude=latf,
             longitude=lonf,
-            keyword=kw,
+            keyword=effective_kw,
             radius_meters=radius_m,
             max_results=max_places,
         )
         if not places:
             city_s_q = (city or "").strip()
-            full_query = f"{kw} near {city_s_q}" if city_s_q else kw
+            full_query = f"{effective_kw} near {city_s_q}" if city_s_q else effective_kw
             places = search_places_text(
                 query=full_query,
                 latitude=latf,
@@ -675,12 +680,34 @@ def handle_location_search(
                 radius_meters=radius_m,
                 max_results=max_places,
             )
-        if places:
-            logger.info(
-                "[LocationSearch] Returning %s Google Places results",
-                len(places),
-            )
-            return format_places_for_response(places, detected_language)
+    elif zip_code or city or state:
+        location_parts = []
+        if city:
+            location_parts.append(str(city).strip())
+        if state:
+            location_parts.append(str(state).strip())
+        if zip_code:
+            location_parts.append(str(zip_code).strip())
+        location_text = " ".join(p for p in location_parts if p)
+        q_clean = (query or "").strip()
+        if location_text and location_text.lower() not in q_clean.lower():
+            text_q = f"{effective_kw} in {location_text}".strip()
+        else:
+            text_q = (q_clean[:200] if q_clean else f"{effective_kw} in {location_text}".strip())
+        places = search_places_text(
+            query=text_q,
+            latitude=None,
+            longitude=None,
+            radius_meters=None,
+            max_results=max_places,
+        )
+
+    if places:
+        logger.info(
+            "[LocationSearch] Returning %s Google Places results",
+            len(places),
+        )
+        return format_places_for_response(places, detected_language)
 
     logger.info("[LocationSearch] Google Places empty or skipped, falling back to GPT")
 

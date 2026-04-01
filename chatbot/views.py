@@ -77,6 +77,9 @@ def _parse_user_location(data: dict) -> dict:
         or str(data.get("county") or "").strip()
         or str(data.get("zip_code") or "").strip()
     )
+    loc["explicit_profile_location"] = bool(
+        loc.get("city") or loc.get("state") or loc.get("zip_code") or loc.get("county")
+    )
     return loc
 
 

@@ -242,13 +242,14 @@ def format_places_for_response(
 
 def search_places_text(
     query: str,
-    latitude: float,
-    longitude: float,
-    radius_meters: int = 6000,
+    latitude: float = None,
+    longitude: float = None,
+    radius_meters: int = None,
     max_results: int = 7,
 ) -> list:
     """
     Text Search API — useful when keyword alone is not specific enough.
+    When latitude/longitude are omitted, search is not biased to a map center.
     """
     api_key = getattr(settings, "GOOGLE_PLACES_API_KEY", None)
     if not api_key:
@@ -256,11 +257,13 @@ def search_places_text(
 
     params = {
         "query": query,
-        "location": f"{latitude},{longitude}",
-        "radius": radius_meters,
         "key": api_key,
         "language": "en",
     }
+    if latitude is not None and longitude is not None:
+        params["location"] = f"{latitude},{longitude}"
+        if radius_meters is not None:
+            params["radius"] = radius_meters
 
     try:
         response = requests.get(
