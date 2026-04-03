@@ -43,6 +43,29 @@ try:
 except ImportError:
     pass
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_csv(name: str, default: str = "") -> list:
+    raw = os.getenv(name, default)
+    return [x.strip() for x in (raw or "").split(",") if x.strip()]
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip(), 10)
+    except ValueError:
+        return default
+
+
 # current_dir = os.getcwd()
 # firebase_credentials = os.path.join(current_dir, 'config', 'credentials.json')
 
@@ -62,18 +85,21 @@ except ImportError:
 # Get Base64 string from environment variable
 
 
+_firebase_b64 = (
+    os.getenv("FIREBASE_CREDENTIALS", "").strip()
+    or os.getenv("FIREBASE_CREDENTIALS_BASE64", "").strip()
+)
 try:
-    encoded_json="ew0KICAidHlwZSI6ICJzZXJ2aWNlX2FjY291bnQiLA0KICAicHJvamVjdF9pZCI6ICJicmFlbG8tN2E5M2YiLA0KICAicHJpdmF0ZV9rZXlfaWQiOiAiYjY4OGM4MWE4NWI3MjM5YTg2MzA1MmE1MTQ5MTJiOTZlYWFlOGFjNyIsDQogICJwcml2YXRlX2tleSI6ICItLS0tLUJFR0lOIFBSSVZBVEUgS0VZLS0tLS1cbk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ2ZORm12aVc3aFFna2xcbmR1R2xwYmhIeFpIODArOERsU0JGSkw0L25rNG1DelF1Y21PNzMxSUtabFY0dXYxM2RuNzNkYk5GR2VLNVRiaTNcbnZKT2d5QTNSZ0plV3hiL2pnTUJEanRsR2RLcVdpbWtyOE4zVUM4M0QzMjVqTnJHWVFtRnJRNnE2THd6aXdEZ1NcbjU5S2ROOWt5WCtqS0hpbHZqeFJGMTlLV3BxdjgzMEZiMVhiZ1g5WXd4MnhsQlB4eWo1aDJFZHBNSHhCMCs5L0pcbldMV2dXKzArK0tFemU3bkI0eG9VaHBWWWhQM2hnaU5CVThzdnVCRHczSTZwbTBGNnNkaFgzL2hkWTEyL0RFRGxcbmRTdC9pR0I4U21BS1N4alNwREI4US9DbkhML1RZV2NXa0QweXZwNmZZcjNuekQ2cW4rWUpBWHRwYnhwSVpQNXlcbmJNekoyTkM3QWdNQkFBRUNnZ0VBQTVFOE96czBvVmFGOXZGeGYvRTFMbUtHY1doY1VETzh1OS9sWlc2S0tMOFNcbmhjSHBhekhIV0ZWUHIvdGNwNXNmb0RMaWQvZHJCYVR3c1NsSUU0KzRBNHhDbVUzSURYUjZtbWp1aEc0anptaStcbmo0My9vbnM3T3ByY2tkdU5ZakNHbDAwMlc2S25Rc04wM2pPVW5CSSt5eXFzQUM5cDFVYWErUytyVjlYWFA3ekZcbjNBc0V0b1lsazFlVExMTlFwS0QyVXg2VE1kZ0ZhTnhqVndaUDdJbDZ3N25nTlBwQnZxWk1qRHJXRHAyOEJRd1FcbngvaTNjRVhGOU84Q1NPWW5XV2YwQmExUDJiZ0ExRENGZWx4SElNK3JvQm15ZjBlb1FhdHVOVUdGdzJEYTNpVDlcbmE5RkpmV1BWU094ckFtZDNDQkNMZHNJTEtmMk9hcHAzcnBzT2p0L1Y3UUtCZ1FDOGRyKzdLdEtWZ1hDTmFyQlJcbnNLcjl2NGFnTitNa1dEK2FCMUVEWG1yREdPbnk3NnJKYmJ3b3BUeklOZ2FLM2w3WVl5U2N6cWZEbmZyM0NDU1VcblJSL2xKMWc1U0UxdjkzaEg5bS9yeHNsblFxR1YvdUJnMWZyWTZGL3piSExHSXJZeE0vQmZEMVV0eGZhVjZMSDVcbllUZ00zcUU0OWROckI2OGc2QlFvQmdMZzFRS0JnUURZUVdtZ21BY1hIQmZ2bEFDVXpVc0hwMDdFZ2w4WG9LWkZcbnI1eXJESjFaQWNYU3orVUk3TnI5TW1HTUNCNmg4Y2NFRlo3dzErc0xDeEJ5eHNmSVpOanA3WEZ0ZmVITDdTdjBcbjhkb3hKbGlSTVErZ0gzQUhncS9RUkZ0bWMvOUVDbmpuMGZDZGJwUHlQaVlBUitPTEF6bTcwMktnYUgvN2xKVUtcbnhBSE15UDh6VHdLQmdRQ2pyQzJQQ3YyZndhNVI0cG9HRi93b0t6RnI2NTFrYncrdFlUVkdTN1ZFZ2xxTEZRR3BcbnRaZDNaU21JWndML2oyZW5YVkxxcTc2ZThKQ0lBWlppL2pWWStmWndxUTQzY3lBT3YwTXI3SlAxRGJUdlkwN1NcblNvTno1VHVQV0Z2RkgxaERHdXhpWWhxRGlpMUF1N24wN2kyVFg3VjhsbUZwemw2Vm9YZi8ybGlka1FLQmdRQzRcblQ0Zm5CNnVEVnI1UHdxUjhMancwV2JRWVo4VUVMamVJVFJRSjlNWm1oY3hFMEVzMFFDcWtnYndCelNuT2ZISlNcbldOc09DZmlaZ09TVDdqZDM0L3U3NUZNNExvR3pmSUJxVTNiVFRRdFBNN0ZObDMyejZQNVBVdk5UYnFteEkvdklcbkdIWXF0NFFBZ2xlQkJjUTVScForTHJ0d1c2QTRtM29yb3NLbDl1a0tvUUtCZ0E0eEt3dWZnbWs1clpjVGoyL21cbmRmNXdoK0IyMVRFdjFTNU41SitWQ3BJQkg0Qm5UMVFPcDhRMmZIRFdMVk9JUXlsVU9WUnBua2pSN3ZCdGIrOGlcbjlSQVUvdUdQd3lVYS9uUldQVXNWakFWMGp3VFdNdnJQRDhqa3hkbXFtWnR2azY3M3grWkNLTklsR282RTN1UGRcbnZVOWp4N3dXTWdmR1o2cVkwMk5KNlYvL1xuLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLVxuIiwNCiAgImNsaWVudF9lbWFpbCI6ICJmaXJlYmFzZS1hZG1pbnNkay1kcTBvZkBicmFlbG8tN2E5M2YuaWFtLmdzZXJ2aWNlYWNjb3VudC5jb20iLA0KICAiY2xpZW50X2lkIjogIjEwMDA5NjgzMTE5MDI2MjI3OTE0MCIsDQogICJhdXRoX3VyaSI6ICJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20vby9vYXV0aDIvYXV0aCIsDQogICJ0b2tlbl91cmkiOiAiaHR0cHM6Ly9vYXV0aDIuZ29vZ2xlYXBpcy5jb20vdG9rZW4iLA0KICAiYXV0aF9wcm92aWRlcl94NTA5X2NlcnRfdXJsIjogImh0dHBzOi8vd3d3Lmdvb2dsZWFwaXMuY29tL29hdXRoMi92MS9jZXJ0cyIsDQogICJjbGllbnRfeDUwOV9jZXJ0X3VybCI6ICJodHRwczovL3d3dy5nb29nbGVhcGlzLmNvbS9yb2JvdC92MS9tZXRhZGF0YS94NTA5L2ZpcmViYXNlLWFkbWluc2RrLWRxMG9mJTQwYnJhZWxvLTdhOTNmLmlhbS5nc2VydmljZWFjY291bnQuY29tIiwNCiAgInVuaXZlcnNlX2RvbWFpbiI6ICJnb29nbGVhcGlzLmNvbSINCn0NCg=="
-
-    # 🔓 Decode Base64 string
-    firebase_credentials_json = base64.b64decode(encoded_json).decode("utf-8")
-    firebase_credentials = json.loads(firebase_credentials_json)
-
-    # 🔥 Initialize Firebase
-    if initialize_app and credentials:
+    if _firebase_b64 and initialize_app and credentials:
+        firebase_credentials_json = base64.b64decode(_firebase_b64).decode("utf-8")
+        firebase_credentials = json.loads(firebase_credentials_json)
         cred = credentials.Certificate(firebase_credentials)
         initialize_app(cred)
         _settings_log.info("Firebase initialized successfully.")
+    elif not _firebase_b64:
+        _settings_log.warning(
+            "Firebase initialization skipped: set FIREBASE_CREDENTIALS (Base64 JSON) in the environment."
+        )
     else:
         _settings_log.warning("firebase_admin not installed; skipping Firebase init.")
 
@@ -87,9 +113,7 @@ except Exception as e:
     _settings_log.warning("Firebase initialization skipped: %s", e)
 
 
-GOOGLE_OAUTH_CLIENT_ID = (
-    "221272028067-cnm21hi90qmfp0jggj62148fetbv8qbn.apps.googleusercontent.com"
-)
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 
 
 # We need these lines below to allow the Google sign in popup to work.
@@ -105,28 +129,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = (
-    'django-insecure-d(rn*9qo8w(8^+06+f481^h-ncd8^5*2b%&f0dp&_yc4bgsdo8'
+SECRET_KEY = os.getenv(
+    "SECRET_KEY",
+    "django-insecure-dev-only-change-me",
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool("DEBUG", default=True)
 
-ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    '169.254.129.4',
-    '169.254.129.2',
-    'braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net',
-    '.azurewebsites.net',
-]
-CORS_ORIGIN_ALLOW_ALL = True
-CSRF_TRUSTED_ORIGINS = [
-    'https://braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net',
-    'http://localhost',
-    'http://127.0.0.1',
-    'http://192.168.18.4',
-]
+_allowed_default = (
+    "localhost,127.0.0.1,169.254.129.4,169.254.129.2,"
+    "braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net,.azurewebsites.net"
+)
+ALLOWED_HOSTS = _env_csv("ALLOWED_HOSTS", _allowed_default)
+
+CORS_ORIGIN_ALLOW_ALL = _env_bool("CORS_ORIGIN_ALLOW_ALL", default=True)
+
+_csrf_default = (
+    "https://braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net,"
+    "http://localhost,http://127.0.0.1,http://192.168.18.4"
+)
+CSRF_TRUSTED_ORIGINS = _env_csv("CSRF_TRUSTED_ORIGINS", _csrf_default)
 
 LOGGING = {
     "version": 1,
@@ -149,14 +172,16 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 # SMTP server settings
-EMAIL_HOST = 'smtp.gmail.com'  # Gmail SMTP server (adjust for other providers)
-EMAIL_PORT = 587  # Typically 587 for TLS
-EMAIL_USE_TLS = True  # Use TLS (Transport Layer Security) for security
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = _env_int("EMAIL_PORT", 587)
+EMAIL_USE_TLS = _env_bool("EMAIL_USE_TLS", default=True)
 
-# Your email address and password
-EMAIL_HOST_USER = 'braelo.fl@gmail.com'
-EMAIL_HOST_PASSWORD = 'kgpv txaa anwb bvke'
-DEFAULT_FROM_EMAIL = 'braelo.fl@gmail.com'
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "").strip()
+DEFAULT_FROM_EMAIL = os.getenv(
+    "DEFAULT_FROM_EMAIL",
+    EMAIL_HOST_USER or "noreply@example.com",
+)
 
 # Application definition
 
@@ -202,12 +227,20 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'BLACKLIST_AFTER_ROTATION': True,
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=2880),
-    'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=7),
-    'SLIDING_TOKEN_LIFETIME': timedelta(days=30),
-    'SLIDING_TOKEN_REFRESH_LIFETIME_LATE_USER': timedelta(days=1),
-    'SLIDING_TOKEN_LIFETIME_LATE_USER': timedelta(days=30),
+    'BLACKLIST_AFTER_ROTATION': _env_bool('JWT_BLACKLIST_AFTER_ROTATION', default=True),
+    'ACCESS_TOKEN_LIFETIME': timedelta(
+        minutes=_env_int('JWT_ACCESS_TOKEN_MINUTES', 2880)
+    ),
+    'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(
+        days=_env_int('JWT_SLIDING_REFRESH_DAYS', 7)
+    ),
+    'SLIDING_TOKEN_LIFETIME': timedelta(days=_env_int('JWT_SLIDING_TOKEN_DAYS', 30)),
+    'SLIDING_TOKEN_REFRESH_LIFETIME_LATE_USER': timedelta(
+        days=_env_int('JWT_SLIDING_REFRESH_LATE_DAYS', 1)
+    ),
+    'SLIDING_TOKEN_LIFETIME_LATE_USER': timedelta(
+        days=_env_int('JWT_SLIDING_TOKEN_LATE_DAYS', 30)
+    ),
 }
 
 MIDDLEWARE = [
@@ -221,10 +254,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
-REDIS_URL = os.getenv(
-    "REDIS_URL",
-    "redis://:Ds5XpZYB6BUKreYFgRdrFKXYG4UGsojS@redis-15589.c53.west-us.azure.redns.redis-cloud.com:15589/0",
-)
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").strip()
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
@@ -234,20 +264,34 @@ CHANNEL_LAYERS = {
     },
 }
 
-# S3 configurations
-AZURE_ACCOUNT_NAME = 'braelos3'
-AZURE_ACCOUNT_KEY = '5PkRWE5PK49PotcquKuVgZ6jLN261i8VNuqqdpTKJJekYcr2EWwrrlRyqV/s7a+mLOrV/YKBZDOX+AStNDj6pQ=='
-AZURE_CONTAINER_NAME = 'braelo'
-AZURE_CUSTOM_DOMAIN = 'https://braelos3.blob.core.windows.net/braelo'
+# Azure Blob Storage (listings, chat media, business images)
+AZURE_ACCOUNT_NAME = os.getenv("AZURE_ACCOUNT_NAME", "").strip()
+AZURE_ACCOUNT_KEY = os.getenv("AZURE_ACCOUNT_KEY", "").strip()
+AZURE_CONTAINER_NAME = os.getenv("AZURE_CONTAINER_NAME", "braelo").strip()
+AZURE_CUSTOM_DOMAIN = os.getenv("AZURE_CUSTOM_DOMAIN", "").strip()
+AZURE_STORAGE_CONNECTION_STRING = os.getenv(
+    "AZURE_STORAGE_CONNECTION_STRING", ""
+).strip()
+if not AZURE_STORAGE_CONNECTION_STRING and AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY:
+    AZURE_STORAGE_CONNECTION_STRING = (
+        "DefaultEndpointsProtocol=https;"
+        f"AccountName={AZURE_ACCOUNT_NAME};"
+        f"AccountKey={AZURE_ACCOUNT_KEY};"
+        "EndpointSuffix=core.windows.net"
+    )
+if not AZURE_CUSTOM_DOMAIN and AZURE_ACCOUNT_NAME and AZURE_CONTAINER_NAME:
+    AZURE_CUSTOM_DOMAIN = (
+        f"https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}"
+    )
 
-# Twilio Setting
-TWILIO_ACCOUNT_SID = 'ACd73fc3ad8cee9529a484342740e6161b'
-TWILIO_AUTH_TOKEN = 'ef5f648b70cf84215b51e54d44037013 '
-TWILIO_VERIFY_SERVICE_SID = 'VAcd6f5d07809c6f1e0d61f76bb64ce123'
+# Twilio
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_VERIFY_SERVICE_SID = os.getenv("TWILIO_VERIFY_SERVICE_SID", "").strip()
 
-# Firebase notifications
+# Firebase Cloud Messaging (push)
 FCM_DJANGO_SETTINGS = {
-    "FCM_SERVER_KEY": "your-fcm-server-key-here",
+    "FCM_SERVER_KEY": os.getenv("FCM_SERVER_KEY", "").strip(),
 }
 
 
@@ -340,14 +384,15 @@ DJANGO_SKIP_MONGOENGINE = os.getenv("DJANGO_SKIP_MONGOENGINE", "").lower() in (
     "yes",
 )
 
-# Build Atlas URI only when username+password are set (avoid mongodb+srv://:@...)
-if not MONGO_URI and _mongo_username and _mongo_password_raw:
+# Build Atlas URI only when username+password + host are set (avoid mongodb+srv://:@...)
+_mongo_atlas_host = os.getenv("MONGO_ATLAS_HOST", "").strip()
+if not MONGO_URI and _mongo_username and _mongo_password_raw and _mongo_atlas_host:
     # Allow env vars to be either raw or already URL-encoded.
     _enc_user = urllib.parse.quote_plus(urllib.parse.unquote(_mongo_username), safe="")
     _enc_pw = urllib.parse.quote_plus(urllib.parse.unquote(_mongo_password_raw), safe="")
     MONGO_URI = (
         f"mongodb+srv://{_enc_user}:{_enc_pw}"
-        f"@cluster0.7j4rnkk.mongodb.net/{MONGO_DB_NAME}?retryWrites=true&w=majority"
+        f"@{_mongo_atlas_host}/{MONGO_DB_NAME}?retryWrites=true&w=majority"
     )
 
 if MONGO_URI:

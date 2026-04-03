@@ -12,7 +12,7 @@ Helper functions file.
 
 from django.http import JsonResponse
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.core.files.uploadedfile import InMemoryUploadedFile
+from django.core.files.uploadedfile import UploadedFile
 
 
 def get_error_details(error_info):
@@ -49,13 +49,19 @@ def response(status, message, data, error=None):
     :return: Response object with formatted error details.
     '''
 
+    def _sanitize_for_json(value):
+        if isinstance(value, UploadedFile):
+            return value.name
+        if isinstance(value, (list, tuple)):
+            return [_sanitize_for_json(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _sanitize_for_json(v) for k, v in value.items()}
+        return value
+
     def clean_data(data):
         resp = {}
         for key, value in data.items():
-            if not isinstance(value, InMemoryUploadedFile):
-                resp[key] = value
-            else:
-                resp[key] = value.name
+            resp[key] = _sanitize_for_json(value)
         return resp
 
     if isinstance(data, list) and error:

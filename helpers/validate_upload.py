@@ -12,17 +12,12 @@ helper file for validating and uplaoding images on Azure
 
 import uuid
 import phonenumbers
-from azure.storage.blob import BlobServiceClient
 from django.core.validators import validate_email
 from rest_framework.exceptions import ValidationError
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from django.core.files.uploadedfile import InMemoryUploadedFile
 
-blob_service_client = BlobServiceClient.from_connection_string(
-    'DefaultEndpointsProtocol=https;AccountName=braelos3;AccountKey=ODvt'
-    'b8NuHRyWRsNR54wyp2lP0a7YGlM//NnhbkQKKv+JhX9E9Z+JXUSX56/sY7q0OxYPjidA5'
-    'HL0+AStWzRAYA==;EndpointSuffix=core.windows.net'
-)
+from helpers.azure import blob_service_client
 
 
 def upload_pictures(pictures, business_type, user_id, image_type='business'):

@@ -14,7 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 from azure.storage.blob import BlobServiceClient
 from rest_framework.exceptions import ValidationError
-from django.core.files.uploadedfile import InMemoryUploadedFile
+from django.core.files.uploadedfile import UploadedFile
 
 
 from helpers import blob_service_client
@@ -68,6 +68,10 @@ class Serializer(serializers.DocumentSerializer):
         Handles the uploading of pictures to Azure Blob Storage.
         Returns a list of URLs for the uploaded pictures.
         '''
+        if pictures is None:
+            pictures = []
+        elif not isinstance(pictures, (list, tuple)):
+            pictures = [pictures]
         s3_urls = []
         for picture in pictures:
             file_name = f'listings/{category}/{user.id}/{picture.name}'
@@ -237,10 +241,14 @@ class Serializer(serializers.DocumentSerializer):
                 )
         data['is_active'] = True if status else False
         pictures = data.get('pictures', [])
+        if pictures is None:
+            pictures = []
+        elif not isinstance(pictures, (list, tuple)):
+            pictures = [pictures]
+        data['pictures'] = pictures
         for picture in pictures:
-            if isinstance(picture, InMemoryUploadedFile):
-                # Only validate picture types, size, etc.
-                if not picture.name.endswith(('.jpg', '.jpeg', '.png')):
+            if isinstance(picture, UploadedFile):
+                if not picture.name.lower().endswith(('.jpg', '.jpeg', '.png')):
                     raise ValidationError(
                         {'pictures': 'Invalid picture format'}
                     )

@@ -83,13 +83,46 @@ class Listing(generics.CreateAPIView):
                 raise ValidationError(
                     {'listing_coordinates': 'field is required'}
                 )
-            listing_coordinates = json.loads(listing_coordinates)
+            if isinstance(listing_coordinates, (dict, list)):
+                coords_raw = listing_coordinates
+            else:
+                coords_raw = json.loads(listing_coordinates)
+            if (
+                isinstance(coords_raw, dict)
+                and coords_raw.get('type') == 'Point'
+                and isinstance(coords_raw.get('coordinates'), list)
+                and len(coords_raw['coordinates']) >= 2
+            ):
+                listing_coordinates = [
+                    float(coords_raw['coordinates'][0]),
+                    float(coords_raw['coordinates'][1]),
+                ]
+            else:
+                listing_coordinates = coords_raw
         except json.JSONDecodeError as exc:
             raise ValidationError(
-                'Invalid JSON format for business_coordinates.'
+                'Invalid JSON format for listing_coordinates.'
             ) from exc
         mutable_data = request.data.copy()
         mutable_data['listing_coordinates'] = listing_coordinates
+
+        file_list = request.FILES.getlist('pictures')
+        if file_list:
+            mutable_data['pictures'] = file_list
+
+        fb = mutable_data.get('from_business')
+        if isinstance(fb, str):
+            mutable_data['from_business'] = fb.strip().lower() in (
+                'true',
+                '1',
+                'yes',
+            )
+
+        kw = mutable_data.get('keywords')
+        if isinstance(kw, str):
+            mutable_data['keywords'] = [
+                s.strip() for s in kw.split(',') if s.strip()
+            ] or [kw.strip()]
         serializer = self.get_serializer(
             data=mutable_data, context={'request': request}
         )

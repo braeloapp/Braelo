@@ -12,13 +12,13 @@ Fetch Business Serializers.
 
 from django.db import transaction
 from django.utils import timezone
-from azure.storage.blob import BlobServiceClient
 from rest_framework_mongoengine import serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework import serializers as SQL_serializer
 
 from users.models import User, Business
 from config import AZURE_CONTAINER_NAME
+from helpers.azure import blob_service_client
 from helpers import (
     CATEGORIES,
     upload_pictures,
@@ -28,13 +28,6 @@ from helpers import (
 )
 from admin_panel.models import AdminBusinessBanner
 from admin_panel.serializers import BusinessBannerSerializer
-
-
-blob_service_client = BlobServiceClient.from_connection_string(
-    'DefaultEndpointsProtocol=https;AccountName=braelos3;AccountKey=ODvt'
-    'b8NuHRyWRsNR54wyp2lP0a7YGlM//NnhbkQKKv+JhX9E9Z+JXUSX56/sY7q0OxYPjidA5'
-    'HL0+AStWzRAYA==;EndpointSuffix=core.windows.net'
-)
 
 
 class BusinessSerailizer(serializers.DocumentSerializer):
