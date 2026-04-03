@@ -8,6 +8,102 @@ logger = logging.getLogger(__name__)
 PLACES_NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 PLACES_TEXT_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+
+
+def reverse_geocode_coordinates(latitude: float, longitude: float) -> dict:
+    """
+    Google Geocoding API (reverse): lat/lng → city, state, county, zip, country.
+
+    Return shape matches ``reverse_geocode.reverse_geocode_us_location`` so
+    ``merge_gps_into_location`` can use it. Requires ``GOOGLE_PLACES_API_KEY``
+    with the Geocoding API enabled. Returns {} if no key, error, or ZERO_RESULTS.
+    """
+    api_key = getattr(settings, "GOOGLE_PLACES_API_KEY", None)
+    if not api_key:
+        return {}
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return {}
+
+    params = {
+        "latlng": f"{lat},{lon}",
+        "key": api_key,
+        "language": "en",
+    }
+    try:
+        response = requests.get(GEOCODE_URL, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning("[GoogleGeocode] reverse request failed: %s", e)
+        return {}
+
+    status = data.get("status")
+    if status == "ZERO_RESULTS":
+        logger.info("[GoogleGeocode] ZERO_RESULTS for %s,%s", lat, lon)
+        return {}
+    if status != "OK":
+        logger.warning("[GoogleGeocode] status=%s", status)
+        return {}
+
+    results = data.get("results") or []
+    if not results:
+        return {}
+
+    best = results[0]
+    comps = best.get("address_components") or []
+    by_type: dict = {}
+    for c in comps:
+        if not isinstance(c, dict):
+            continue
+        for t in c.get("types") or []:
+            if t and t not in by_type:
+                by_type[t] = c
+
+    def _long(typ: str) -> str:
+        x = by_type.get(typ) or {}
+        return str(x.get("long_name") or "").strip()
+
+    country_comp = by_type.get("country") or {}
+    country_code = str(country_comp.get("short_name") or "").strip().lower()
+    country_name = str(country_comp.get("long_name") or "").strip()
+
+    city = (
+        _long("locality")
+        or _long("postal_town")
+        or _long("sublocality_level_1")
+        or _long("administrative_area_level_3")
+        or _long("neighborhood")
+    )
+    state = _long("administrative_area_level_1")
+    county = _long("administrative_area_level_2")
+    if county and county.lower().endswith(" county"):
+        county = county[: -len(" county")].strip()
+    zip_code = _long("postal_code")
+    if isinstance(zip_code, str) and "-" in zip_code:
+        zip_code = zip_code.split("-")[0][:10]
+
+    display_name = (best.get("formatted_address") or "").strip()
+
+    out = {
+        "city": city,
+        "county": county,
+        "state": state,
+        "zip_code": zip_code,
+        "display_name": display_name,
+        "country_code": country_code,
+        "country": country_name,
+    }
+    logger.info(
+        "[GoogleGeocode] reverse ok city=%s state=%s country=%s",
+        city or "?",
+        state or "?",
+        country_code or "?",
+    )
+    return {k: v for k, v in out.items() if v or k in ("display_name", "country_code", "country")}
 
 
 def search_nearby_places(

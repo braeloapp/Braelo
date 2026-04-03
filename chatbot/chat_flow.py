@@ -29,12 +29,18 @@ from chatbot.services.gpt_service import (
     generate_local_office_response,
     generate_local_dining_response,
     generate_general_braelo_response,
-    generate_business_directory_fallback_response,
     handle_location_search,
     response_looks_like_rag_refusal,
 )
 from chatbot.services.knowledge_service import search_knowledge
-from chatbot.services.business_matching import get_top_businesses, mongo_comparison_query
+from chatbot.services.business_matching import (
+    extract_directory_attribute_terms,
+    get_top_businesses,
+    mongo_comparison_query,
+    search_business_directory_for_discovery,
+)
+from chatbot.geo_constants import backfill_state_from_major_us_city as _backfill_state_from_major_us_city
+from chatbot.services.business_search_service import generate_business_not_found_response
 from chatbot.services.casual_intents import get_casual_response
 from chatbot.services.local_search import find_nearby_places, find_nearby_pois
 
@@ -1121,6 +1127,26 @@ _BUSINESS_TRIGGER_RE = re.compile(
     re.I,
 )
 
+# Listing-style questions with a place name but intent may stay "information_request" from the LLM.
+_DIRECTORY_LISTING_INTENT_RE = re.compile(
+    r"\b(list\s+(?:of\s+)?businesses|businesses\s+of|local\s+businesses|"
+    r"find\s+(?:the\s+)?list|show\s+(?:me\s+)?(?:the\s+)?list|in\s+our\s+directory)\b",
+    re.I,
+)
+
+
+def _directory_listing_intent(message: str) -> bool:
+    t = message or ""
+    if not _DIRECTORY_LISTING_INTENT_RE.search(t):
+        return False
+    if _BUSINESS_TRIGGER_RE.search(t):
+        return True
+    if re.search(r"\b(in|near|around|at)\s+[A-Za-zÀ-ÿ]", t):
+        return True
+    if re.search(r"\b\d{5}(?:-\d{4})?\b", t):
+        return True
+    return False
+
 _CAREER_EDUCATION_RE = re.compile(
     r"\b(how to become|how do i become|becoming a|career as|law school|med school|what is a (lawyer|attorney|doctor|dentist|cpa)|"
     r"degree to be|bar exam|years? of college)\b",
@@ -1135,13 +1161,34 @@ _SERVICE_INFERENCE = [
     (re.compile(r"\b(tax preparer|cpa\b|accountant|tax filing|imposto|income tax prep)\b", re.I), ("tax", "tax_preparer")),
     (re.compile(r"\b(plumber|electrician|hvac)\b", re.I), ("home", "home_services")),
     (re.compile(r"\b(real estate|realtor|realty|corretor de im[oó]veis)\b", re.I), ("housing", "real_estate_agent")),
+    # Food / dining (Portuguese Lista uses "Gastronomia", "Restaurantes", etc.)
+    (
+        re.compile(
+            r"\b(gastronomia|gastronomy|restaurants?|dining|food scene|places to eat|"
+            r"churrascaria|churrasco|lanchonete|comida|where to eat|cuisine|cafes?|coffee shops?)\b",
+            re.I,
+        ),
+        ("food", "restaurant"),
+    ),
 ]
+
+# "list of businesses of the Gastronomia in Los Angeles" → category "Gastronomia"
+_BUSINESS_OF_PHRASE_RE = re.compile(
+    r"(?:list\s+of\s+)?businesses\s+of\s+(?:the\s+)?([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-\&\']{0,48}?)\s+in\b",
+    re.I,
+)
 
 
 def _infer_service_category_from_text(message: str) -> tuple:
+    t = message or ""
     for rx, pair in _SERVICE_INFERENCE:
-        if rx.search(message or ""):
+        if rx.search(t):
             return pair
+    mo = _BUSINESS_OF_PHRASE_RE.search(t)
+    if mo:
+        raw = mo.group(1).strip()
+        if len(raw) >= 2:
+            return (raw, None)
     return (None, None)
 
 
@@ -1153,6 +1200,10 @@ def _heuristic_business_discovery(message: str) -> bool:
     if _CAREER_EDUCATION_RE.search(t):
         return False
     cat, sub = _infer_service_category_from_text(t)
+    if cat or sub:
+        # e.g. "restaurants in florida" — inferred food + state in text (any case)
+        if extract_location_from_message(t):
+            return True
     if not (cat or sub):
         return False
     if _BUSINESS_TRIGGER_RE.search(t):
@@ -1161,6 +1212,103 @@ def _heuristic_business_discovery(message: str) -> bool:
         return True
     if re.search(r"\b(in|near|en)\s+[A-Z][a-z]{2,}", t):
         return True
+    if re.search(r"\b(in|near|around|en)\s+[a-z]", t) and extract_location_from_message(t):
+        return True
+    return False
+
+
+# Substrings that mean "user wants a place or local business" (paired with location-based triggers).
+_DIRECTORY_BUSINESS_NEEDLES = (
+    "restaurant",
+    "restaurante",
+    "food",
+    "dining",
+    "café",
+    "cafe",
+    "coffee shop",
+    "bakery",
+    "bar ",
+    " pub ",
+    "grocery",
+    "supermarket",
+    "plumber",
+    "electrician",
+    "lawyer",
+    "attorney",
+    "abogad",
+    "advogad",
+    "dentist",
+    "doctor",
+    "clinic",
+    "salon",
+    "hair ",
+    "spa ",
+    "mechanic",
+    "pharmacy",
+    "farmacia",
+    "bank ",
+    "hotel",
+    "motel",
+    "gym",
+    "fitness",
+    "shop",
+    "store",
+    "retail",
+    "churrascaria",
+    "gastronom",
+    "comida",
+    "lanchonete",
+    "where to eat",
+    "places to eat",
+    "good restaurants",
+    "best restaurants",
+    "any restaurants",
+)
+
+
+def _directory_lookup_intent(message: str, structured: dict, intent: str) -> bool:
+    """
+    True when we should hit the business directory (Mongo/SQL) before KB, RAG, or other LLM tiers.
+
+    Pipeline: user message → directory first → if empty, fall through to LLM / Places / KB as today.
+    """
+    if intent == "business_search":
+        return True
+    if _directory_listing_intent(message):
+        return True
+    if _heuristic_business_discovery(message):
+        return True
+
+    inf_cat, inf_sub = _infer_service_category_from_text(message or "")
+    sc = (structured.get("category") or "").strip()
+    ss = (structured.get("subcategory") or "").strip()
+    has_cat = bool(inf_cat or inf_sub or sc or ss)
+    loc_in_msg = bool(extract_location_from_message(message))
+    locish = is_location_based_query(message) or loc_in_msg or bool(
+        _BUSINESS_TRIGGER_RE.search(message or "")
+    )
+
+    if has_cat and locish:
+        return True
+
+    if is_location_based_query(message):
+        pq = _extract_local_place_query(message)
+        if pq:
+            return True
+        rq = _extract_restaurant_search_query(message)
+        if rq:
+            return True
+        hint = extract_category_from_message(message or "")
+        if (
+            hint
+            and len(hint) <= 80
+            and hint.strip().lower() not in ("local businesses", "businesses", "business")
+        ):
+            return True
+        msg_l = (message or "").lower()
+        if any(n in msg_l for n in _DIRECTORY_BUSINESS_NEEDLES):
+            return True
+
     return False
 
 
@@ -1229,6 +1377,25 @@ def _format_businesses_recommendation_engine(
     if location_note:
         lines.append(location_note)
     return "\n".join(lines).strip()
+
+
+def _directory_ui_intro(
+    language: str,
+    category: str = "",
+    subcategory: str = "",
+    location_note: str | None = None,
+) -> str:
+    """Short assistant text when the client renders directory rows as structured cards."""
+    svc = _service_heading_label(category, subcategory, language)
+    heads = {
+        "en": f"Here are some {svc} from our directory:",
+        "es": f"Algunos {svc} de nuestro directorio:",
+        "pt": f"Alguns {svc} do nosso diretório:",
+    }
+    head = heads.get(language, heads["en"])
+    if location_note:
+        return f"{head}\n\n{location_note}".strip()
+    return head
 
 
 # ---------------------------------------------------------------------------
@@ -1443,10 +1610,7 @@ def _fetch_business_context(structured: dict, state: str) -> str:
             from chatbot.mongo_db import get_db
             db = get_db()
             q = mongo_comparison_query(structured or {})
-            collection_names = getattr(django_settings, "MONGO_BUSINESS_COLLECTIONS", None) or [
-                "business_listings",
-                "businesses",
-            ]
+            collection_names = getattr(django_settings, "MONGO_BUSINESS_COLLECTIONS", None) or ["businesses"]
             if isinstance(collection_names, str):
                 collection_names = [x.strip() for x in collection_names.split(",") if x.strip()]
             seen = set()
@@ -1487,6 +1651,257 @@ def _fetch_business_context(structured: dict, state: str) -> str:
     return context.strip()
 
 
+def _lista_mongo_directory_response(
+    message: str,
+    *,
+    state,
+    city,
+    county,
+    zip_code,
+    ulat,
+    ulon,
+    detected_lang: str,
+    user_id: str,
+    session_id: str,
+    user_name,
+    structured: dict,
+    user,
+    category_pt: str | None = None,
+    subcategory_pt: str | None = None,
+) -> dict | None:
+    """
+    Lista-shaped Mongo probe (PT category/subcategory + English geo). Used when get_top_businesses
+    returns no rows or before deferring to Places/LLM.
+    """
+    if not getattr(django_settings, "USE_MONGO", False):
+        return None
+    from chatbot.services import business_search_service as bss
+
+    if not bss.is_business_search_query(message):
+        return None
+    parsed = bss.convert_query_to_portuguese_fields(message)
+    cat_pt = category_pt or parsed.get("category_pt")
+    sub_pt = subcategory_pt or parsed.get("subcategory_pt")
+    cat_en = parsed.get("category_en")
+    sub_en = parsed.get("subcategory_en")
+    if not any([cat_pt, sub_pt, cat_en, sub_en]):
+        return None
+    s_state = (state or parsed.get("state_en") or "").strip() or None
+    s_city = (city or parsed.get("city") or "").strip() or None
+    s_county = (county or parsed.get("county") or "").strip() or None
+    s_state = _backfill_state_from_major_us_city(s_state, s_city)
+    if not _has_business_location(s_state, s_city, s_county, zip_code, ulat, ulon):
+        logger.info("chat_flow.lista_probe.skip_no_location user_id=%s", user_id)
+        return None
+    lim = int(getattr(django_settings, "MAX_BUSINESS_RESULTS", 20))
+    logger.info(
+        "chat_flow.lista_probe.search user_id=%s cat_pt=%s sub_pt=%s state=%s city=%s county=%s",
+        user_id,
+        cat_pt,
+        sub_pt,
+        s_state,
+        s_city,
+        s_county,
+    )
+    search_res = bss.search_businesses_in_mongodb(
+        query=message,
+        state=s_state,
+        city=s_city,
+        county=s_county,
+        zip_code=zip_code,
+        category_pt=cat_pt,
+        subcategory_pt=sub_pt,
+        category_en=cat_en,
+        subcategory_en=sub_en,
+        limit=lim,
+        offset=0,
+    )
+    docs = search_res.get("businesses") or []
+    lista_see_more = bool(search_res.get("see_more"))
+    if not docs:
+        logger.info("chat_flow.lista_probe.empty user_id=%s", user_id)
+        return None
+    businesses = bss.mongo_docs_to_api_businesses(docs, user_id, session_id or user_id)
+    if not businesses:
+        return None
+    merged = dict(structured or {})
+    merged["category"] = cat_pt or cat_en
+    merged["subcategory"] = sub_pt or sub_en
+    merged["answer_source"] = "lista_mongo_directory"
+    merged["detected_language"] = detected_lang
+    reply = _directory_ui_intro(
+        detected_lang,
+        category=(cat_pt or cat_en or ""),
+        subcategory=(sub_pt or sub_en or ""),
+        location_note=None,
+    )
+    require_contact = False
+    contact_msg = None
+    if businesses and hasattr(user, "has_contact_details") and not getattr(user, "has_contact_details", True):
+        require_contact = True
+        contact_msg = {
+            "en": "I'll save this and your chat history. Please add your details so I can continue:",
+            "es": "Guardaré esto y tu historial. Por favor agrega tus datos para continuar:",
+            "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
+        }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
+    lista_snap = {
+        "v": 1,
+        "kind": "lista_mongo",
+        "intent": "business_search",
+        "language": detected_lang,
+        "message": message,
+        "state": s_state,
+        "city": s_city,
+        "county": s_county,
+        "zip_code": zip_code,
+        "category_pt": cat_pt,
+        "subcategory_pt": sub_pt,
+        "category_en": cat_en,
+        "subcategory_en": sub_en,
+    }
+    lista_pag = _business_pagination_dict(lista_snap, lim, 0, businesses, lista_see_more)
+    _save_history(session_id, message, reply, "business_search", merged)
+    logger.info("chat_flow.lista_probe.hit user_id=%s n=%s", user_id, len(businesses))
+    return _build_response(
+        reply,
+        detected_lang,
+        "business_search",
+        businesses=businesses,
+        see_more=lista_see_more,
+        location_note=None,
+        question_analysis=merged,
+        user_name=user_name,
+        require_contact_details=require_contact,
+        contact_details_message=contact_msg,
+        business_pagination=lista_pag,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Business list pagination (Show more)
+# ---------------------------------------------------------------------------
+
+def _business_pagination_dict(
+    snapshot: dict,
+    page_size: int,
+    page_offset: int,
+    businesses: list,
+    see_more: bool,
+) -> dict:
+    return {
+        "page_size": page_size,
+        "next_offset": page_offset + len(businesses or []),
+        "has_more": bool(see_more),
+        "snapshot": snapshot,
+    }
+
+
+def _handle_business_load_more(
+    *,
+    business_snapshot: dict | None,
+    business_offset: int,
+    business_page_size: int | None,
+    user_id: str,
+    session_id: str,
+) -> dict:
+    from chatbot.services import business_search_service as bss
+
+    snap = business_snapshot if isinstance(business_snapshot, dict) else None
+    if not snap or snap.get("v") != 1:
+        return _build_response(
+            "Could not load more listings. Please search again.",
+            "en",
+            "business_search",
+            businesses=[],
+            see_more=False,
+        )
+
+    page_size = int(business_page_size or getattr(django_settings, "MAX_BUSINESS_RESULTS", 20))
+    page_size = max(1, min(page_size, 100))
+    off = max(0, int(business_offset or 0))
+    lang = (snap.get("language") or "en").strip()[:2] or "en"
+    kind = snap.get("kind")
+    intent_out = snap.get("intent") or "business_search"
+
+    if kind == "get_top":
+        result = get_top_businesses(
+            category=snap.get("category"),
+            subcategory=snap.get("subcategory"),
+            state=snap.get("state"),
+            city=snap.get("city"),
+            county=snap.get("county"),
+            zip_code=snap.get("zip_code"),
+            user_lat=snap.get("user_lat"),
+            user_lon=snap.get("user_lon"),
+            language=snap.get("language") or "en",
+            limit=page_size,
+            offset=off,
+            external_id=user_id,
+            session_id=session_id or user_id,
+            strict_location=bool(snap.get("strict_location")),
+            sort_mode=snap.get("sort_mode") or "fairness",
+            extra_match_terms=snap.get("extra_match_terms") or None,
+        )
+    elif kind == "directory_discovery":
+        result = search_business_directory_for_discovery(
+            message=snap.get("message") or "",
+            category=snap.get("category"),
+            subcategory=snap.get("subcategory"),
+            category_hint=snap.get("category_hint"),
+            state=snap.get("state"),
+            city=snap.get("city"),
+            county=snap.get("county"),
+            zip_code=snap.get("zip_code"),
+            user_lat=snap.get("user_lat"),
+            user_lon=snap.get("user_lon"),
+            language=snap.get("language"),
+            limit=page_size,
+            offset=off,
+            external_id=user_id,
+            session_id=session_id or user_id,
+        )
+    elif kind == "lista_mongo":
+        res = bss.search_businesses_in_mongodb(
+            query=snap.get("message") or "",
+            state=snap.get("state"),
+            city=snap.get("city"),
+            county=snap.get("county"),
+            zip_code=snap.get("zip_code"),
+            category_pt=snap.get("category_pt"),
+            subcategory_pt=snap.get("subcategory_pt"),
+            category_en=snap.get("category_en"),
+            subcategory_en=snap.get("subcategory_en"),
+            limit=page_size,
+            offset=off,
+        )
+        docs = res.get("businesses") or []
+        businesses = bss.mongo_docs_to_api_businesses(docs, user_id, session_id or user_id)
+        see_more = bool(res.get("see_more"))
+        result = {"businesses": businesses, "see_more": see_more, "location_note": None}
+    else:
+        return _build_response(
+            "Could not load more listings. Please search again.",
+            lang,
+            intent_out,
+            businesses=[],
+            see_more=False,
+        )
+
+    businesses = result.get("businesses") or []
+    see_more = result.get("see_more", False)
+    pag = _business_pagination_dict(snap, page_size, off, businesses, see_more)
+    return _build_response(
+        "",
+        lang,
+        intent_out,
+        businesses=businesses,
+        see_more=see_more,
+        location_note=result.get("location_note"),
+        business_pagination=pag,
+        question_analysis={"intent": intent_out, "detected_language": lang, "business_load_more": True},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -1497,6 +1912,11 @@ def process_message(
     session_id: str = None,
     user_location: dict = None,
     user_profile: dict = None,
+    *,
+    business_load_more: bool = False,
+    business_snapshot: dict | None = None,
+    business_offset: int = 0,
+    business_page_size: int | None = None,
 ) -> dict:
     # user_id  = stable identifier (IP or permanent ID) used for location / profile persistence.
     # session_id = per-tab UUID that resets on every page refresh, used for language locking and
@@ -1513,6 +1933,15 @@ def process_message(
     )
     # Profile and location are looked up / persisted against the STABLE user_id (IP).
     user = get_or_create_user(user_id, user_location, profile=user_profile)
+
+    if business_load_more:
+        return _handle_business_load_more(
+            business_snapshot=business_snapshot,
+            business_offset=business_offset,
+            business_page_size=business_page_size,
+            user_id=user_id,
+            session_id=session_id,
+        )
 
     use_device_only = bool(user_location.get("use_device_location_only"))
     if use_device_only:
@@ -1540,6 +1969,7 @@ def process_message(
     state, city, county, zip_code = _apply_message_location_for_map(
         message, state, city, county, zip_code
     )
+    state = _backfill_state_from_major_us_city(state, city)
     known_facts_for_structured = _format_known_facts(state, city, county, zip_code)
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
@@ -1619,25 +2049,90 @@ def process_message(
     state, city, county, zip_code = _apply_message_location_for_map(
         message, state, city, county, zip_code
     )
+    state = _backfill_state_from_major_us_city(state, city)
     known_facts = _format_known_facts(state, city, county, zip_code)
+
+    ulat = user_location.get("latitude") or getattr(user, "latitude", None)
+    ulon = user_location.get("longitude") or getattr(user, "longitude", None)
+
+    _lista_early = _lista_mongo_directory_response(
+        message,
+        state=state,
+        city=city,
+        county=county,
+        zip_code=zip_code,
+        ulat=ulat,
+        ulon=ulon,
+        detected_lang=detected_lang,
+        user_id=user_id,
+        session_id=session_id,
+        user_name=user_name,
+        structured=dict(structured or {}),
+        user=user,
+    )
+    if _lista_early:
+        return _lista_early
 
     if intent == "off_topic" and _looks_in_scope_topic(message):
         structured["model_intent"] = intent
         intent = "information_request"
 
     # ------------------------------------------------------------------
-    # TIER 1b — Business database FIRST when user is finding/hiring a local service + location
+    # TIER 1b — Business directory first (Mongo when USE_MONGO, else SQL)
+    # Eligibility is _directory_lookup_intent: resolve category, query DB, return listings if any.
+    # If empty: defer to Tier 2a0 (directory discovery + Places/LLM) when location-style query;
+    # otherwise directory LLM fallback here. Later tiers (KB/RAG) run only after this gate.
     # ------------------------------------------------------------------
     inf_cat, inf_sub = _infer_service_category_from_text(message)
-    biz_cat = structured.get("category") or inf_cat
-    biz_sub = structured.get("subcategory") or inf_sub
-    ulat = user_location.get("latitude") or getattr(user, "latitude", None)
-    ulon = user_location.get("longitude") or getattr(user, "longitude", None)
-    wants_biz = (intent == "business_search" or _heuristic_business_discovery(message)) and bool(
-        biz_cat or biz_sub
-    )
+    # Prefer regex/heuristic inference from the user text over the LLM's category labels. Lista and
+    # Mongo often use Portuguese bucket names (Gastronomia, Restaurantes); the LLM may return
+    # English phrases that do not match those fields, which skipped the directory and fell through
+    # to Google Places / generic LLM answers.
+    _st_cat = (structured.get("category") or "").strip() or None
+    _st_sub = (structured.get("subcategory") or "").strip() or None
+    biz_cat = inf_cat or _st_cat
+    biz_sub = inf_sub or _st_sub
+    directory_intent = _directory_lookup_intent(message, structured or {}, intent)
 
-    if wants_biz:
+    if directory_intent:
+        if not (biz_cat or biz_sub):
+            biz_cat = biz_cat or inf_cat
+            biz_sub = biz_sub or inf_sub
+        if not (biz_cat or biz_sub):
+            hint = extract_category_from_message(message or "")
+            gl = (hint or "").strip().lower()
+            if hint and len(hint) <= 80 and gl not in ("local businesses", "businesses", "business"):
+                biz_cat = hint
+        if not (biz_cat or biz_sub) and _extract_restaurant_search_query(message):
+            biz_cat, biz_sub = "food", "restaurant"
+        if not (biz_cat or biz_sub):
+            msg_l = (message or "").lower()
+            if any(
+                n in msg_l
+                for n in (
+                    "restaurant",
+                    "restaurante",
+                    "food",
+                    "dining",
+                    "eat",
+                    "café",
+                    "cafe",
+                    "bakery",
+                    "churrascaria",
+                    "gastronom",
+                    "comida",
+                    "lanchonete",
+                )
+            ):
+                biz_cat, biz_sub = "food", "restaurant"
+        if not (biz_cat or biz_sub):
+            directory_intent = False
+            logger.info(
+                "chat_flow.directory_intent.skip_no_category user_id=%s (fall_through_to_later_tiers)",
+                user_id,
+            )
+
+    if directory_intent:
         if not _has_business_location(state, city, county, zip_code, ulat, ulon):
             reply = generate_clarifying_questions(
                 message,
@@ -1650,7 +2145,10 @@ def process_message(
             return _build_response(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
-        lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
+        lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        _attr_terms = extract_directory_attribute_terms(message)
+        snap_strict = True
+        snap_extra = _attr_terms or None
         r1 = get_top_businesses(
             category=biz_cat,
             subcategory=biz_sub,
@@ -1662,15 +2160,19 @@ def process_message(
             user_lon=ulon,
             language=detected_lang,
             limit=lim,
+            offset=0,
             external_id=user_id,
             session_id=session_id or user_id,
             strict_location=True,
             sort_mode="fairness",
+            extra_match_terms=_attr_terms or None,
         )
         businesses = r1.get("businesses") or []
         loc_note = r1.get("location_note")
         see_more = r1.get("see_more", False)
         if not businesses:
+            snap_strict = False
+            snap_extra = _attr_terms or None
             r2 = get_top_businesses(
                 category=biz_cat,
                 subcategory=biz_sub,
@@ -1682,22 +2184,52 @@ def process_message(
                 user_lon=ulon,
                 language=detected_lang,
                 limit=lim,
+                offset=0,
                 external_id=user_id,
                 session_id=session_id or user_id,
                 strict_location=False,
                 sort_mode="fairness",
+                extra_match_terms=_attr_terms or None,
             )
             businesses = r2.get("businesses") or []
             loc_note = r2.get("location_note")
             see_more = r2.get("see_more", False)
+        if not businesses and _attr_terms:
+            snap_strict = False
+            snap_extra = None
+            r3 = get_top_businesses(
+                category=biz_cat,
+                subcategory=biz_sub,
+                state=state,
+                city=city,
+                county=county,
+                zip_code=zip_code,
+                user_lat=ulat,
+                user_lon=ulon,
+                language=detected_lang,
+                limit=lim,
+                offset=0,
+                external_id=user_id,
+                session_id=session_id or user_id,
+                strict_location=False,
+                sort_mode="fairness",
+                extra_match_terms=None,
+            )
+            businesses = r3.get("businesses") or []
+            loc_note = r3.get("location_note")
+            see_more = r3.get("see_more", False)
+            logger.info(
+                "chat_flow.business_database_first user_id=%s name_hint_fallback_no_match n=%s",
+                user_id,
+                len(businesses),
+            )
 
         structured = dict(structured or {})
         structured["category"] = biz_cat
         structured["subcategory"] = biz_sub
 
         if businesses:
-            reply = _format_businesses_recommendation_engine(
-                businesses,
+            reply = _directory_ui_intro(
                 detected_lang,
                 category=biz_cat or "",
                 subcategory=biz_sub or "",
@@ -1719,6 +2251,24 @@ def process_message(
                     "es": "Guardaré esto y tu historial. Por favor agrega tus datos para continuar:",
                     "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
                 }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
+            biz_snap = {
+                "v": 1,
+                "kind": "get_top",
+                "intent": "business_search",
+                "language": detected_lang,
+                "category": biz_cat,
+                "subcategory": biz_sub,
+                "state": state,
+                "city": city,
+                "county": county,
+                "zip_code": zip_code,
+                "user_lat": ulat,
+                "user_lon": ulon,
+                "strict_location": snap_strict,
+                "sort_mode": "fairness",
+                "extra_match_terms": snap_extra,
+            }
+            biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
             _save_history(session_id, message, reply, "business_search", structured)
             return _build_response(
                 reply,
@@ -1731,6 +2281,7 @@ def process_message(
                 user_name=user_name,
                 require_contact_details=require_contact,
                 contact_details_message=contact_msg,
+                business_pagination=biz_pag,
             )
 
         # "Near me" / local discovery: empty Mongo should not short-circuit with directory fallback;
@@ -1741,29 +2292,38 @@ def process_message(
                 "chat_flow.business_database_first user_id=%s n=0 skip_fallback=location_query",
                 user_id,
             )
+            _lista_defer = _lista_mongo_directory_response(
+                message,
+                state=state,
+                city=city,
+                county=county,
+                zip_code=zip_code,
+                ulat=ulat,
+                ulon=ulon,
+                detected_lang=detected_lang,
+                user_id=user_id,
+                session_id=session_id,
+                user_name=user_name,
+                structured=dict(structured or {}),
+                user=user,
+            )
+            if _lista_defer:
+                return _lista_defer
         else:
-            structured["answer_source"] = "directory_fallback"
-            if has_api_key:
-                reply = generate_business_directory_fallback_response(
-                    message,
-                    biz_cat or "",
-                    biz_sub or "",
-                    state or "",
-                    county or "",
-                    city or "",
-                    zip_code or "",
-                    detected_lang,
-                    chat_history=openai_chat_history,
-                    known_facts=known_facts,
-                )
-            else:
-                reply = {
-                    "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
-                    "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA para abogados de inmigración, o ajusta tu ubicación.",
-                    "pt": "Não encontramos parceiros correspondentes em nosso diretório para sua região. Tente a ordem dos advogados do seu estado, Avvo ou AILA para imigração, ou ajuste a localização.",
-                }.get(detected_lang, "No matching listings in our directory.")
+            structured = dict(structured or {})
+            structured["answer_source"] = "directory_llm_fallback"
+            reply = generate_business_not_found_response(
+                message,
+                city=city or "",
+                state=state or "",
+                county=county or "",
+                zip_code=zip_code or "",
+                category_en=biz_cat,
+                subcategory_en=biz_sub,
+                detected_language=detected_lang,
+            )
             _save_history(session_id, message, reply, "business_search", structured)
-            logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=directory", user_id)
+            logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=helpful_llm", user_id)
             return _build_response(
                 reply,
                 detected_lang,
@@ -1861,11 +2421,15 @@ def process_message(
             resolved_lng = search_lng
             resolved_zip = search_zip or extract_zip_from_message(message)
 
+        _rs_fill = _backfill_state_from_major_us_city(resolved_state, resolved_city)
+        if _rs_fill:
+            resolved_state = _rs_fill
+
         if (
             resolved_lat is None
             and resolved_lng is None
             and not resolved_zip
-            and not resolved_state
+            and not (resolved_state or "").strip()
         ):
             missing_location_response = {
                 "en": "To find businesses near you, could you share your ZIP code? That way I can show you the most relevant options in your area.",
@@ -1890,6 +2454,81 @@ def process_message(
         recent_hist = hist[-4:] if len(hist) > 4 else list(hist)
         category_hint = extract_category_from_message(message)
         reply = ""
+
+        lim_db = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        db_discovery = search_business_directory_for_discovery(
+            message=message,
+            category=biz_cat,
+            subcategory=biz_sub,
+            category_hint=category_hint,
+            state=resolved_state,
+            city=resolved_city,
+            county=county,
+            zip_code=resolved_zip,
+            user_lat=resolved_lat,
+            user_lon=resolved_lng,
+            language=detected_lang,
+            limit=lim_db,
+            offset=0,
+            external_id=user_id,
+            session_id=session_id or user_id,
+        )
+        if db_discovery.get("businesses"):
+            reply = _directory_ui_intro(
+                detected_lang,
+                category=biz_cat or category_hint or "",
+                subcategory=biz_sub or "",
+                location_note=db_discovery.get("location_note"),
+            )
+            loc_struct = dict(structured or {})
+            loc_struct["intent"] = "location_business_search"
+            loc_struct["detected_language"] = detected_lang
+            loc_struct["location_llm_category"] = category_hint
+            loc_struct["answer_source"] = (
+                "directory_discovery_mongo"
+                if getattr(django_settings, "USE_MONGO", False)
+                else "directory_discovery_sql"
+            )
+            _save_history(session_id, message, reply, "location_business_search", loc_struct)
+            logger.info(
+                "chat_flow.location_llm.directory_first user_id=%s n=%s",
+                user_id,
+                len(db_discovery["businesses"]),
+            )
+            disc_snap = {
+                "v": 1,
+                "kind": "directory_discovery",
+                "intent": "location_business_search",
+                "language": detected_lang,
+                "message": message,
+                "category": biz_cat,
+                "subcategory": biz_sub,
+                "category_hint": category_hint,
+                "state": resolved_state,
+                "city": resolved_city,
+                "county": county,
+                "zip_code": resolved_zip,
+                "user_lat": resolved_lat,
+                "user_lon": resolved_lng,
+            }
+            disc_pag = _business_pagination_dict(
+                disc_snap,
+                lim_db,
+                0,
+                db_discovery["businesses"],
+                db_discovery.get("see_more", False),
+            )
+            return _build_response(
+                reply,
+                detected_lang,
+                "location_business_search",
+                businesses=db_discovery["businesses"],
+                see_more=db_discovery.get("see_more", False),
+                location_note=db_discovery.get("location_note"),
+                question_analysis=loc_struct,
+                user_name=user_name,
+                business_pagination=disc_pag,
+            )
 
         if has_api_key:
             try:
@@ -2155,6 +2794,7 @@ def process_message(
                 session_id=session_id,
                 strict_location=False,
                 sort_mode="fairness",
+                extra_match_terms=extract_directory_attribute_terms(message) or None,
             )
             kb_suggest_businesses = prov.get("businesses") or []
             if kb_suggest_businesses:
@@ -2202,48 +2842,87 @@ def process_message(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
 
-        limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
-        bc = structured.get("category")
-        bs = structured.get("subcategory")
+        limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        bc = inf_cat or _st_cat
+        bs = inf_sub or _st_sub
+        _city_for_biz = structured.get("city") or city
+        _attr_biz = extract_directory_attribute_terms(message)
+        snap_strict = True
+        snap_extra = _attr_biz or None
         result = get_top_businesses(
             category=bc,
             subcategory=bs,
             state=state,
-            city=structured.get("city") or city,
+            city=_city_for_biz,
             county=county,
             zip_code=zip_code,
             user_lat=user_lat,
             user_lon=user_lon,
             language=detected_lang,
             limit=limit,
+            offset=0,
             external_id=user_id,
             session_id=session_id or user_id,
             strict_location=True,
             sort_mode="fairness",
+            extra_match_terms=_attr_biz or None,
         )
         businesses = result.get("businesses") or []
         see_more = result.get("see_more", False)
         location_note = result.get("location_note")
         if not businesses:
+            snap_strict = False
+            snap_extra = _attr_biz or None
             result = get_top_businesses(
                 category=bc,
                 subcategory=bs,
                 state=state,
-                city=structured.get("city") or city,
+                city=_city_for_biz,
                 county=county,
                 zip_code=zip_code,
                 user_lat=user_lat,
                 user_lon=user_lon,
                 language=detected_lang,
                 limit=limit,
+                offset=0,
                 external_id=user_id,
                 session_id=session_id or user_id,
                 strict_location=False,
                 sort_mode="fairness",
+                extra_match_terms=_attr_biz or None,
             )
             businesses = result.get("businesses") or []
             see_more = result.get("see_more", False)
             location_note = result.get("location_note")
+        if not businesses and _attr_biz:
+            snap_strict = False
+            snap_extra = None
+            result = get_top_businesses(
+                category=bc,
+                subcategory=bs,
+                state=state,
+                city=_city_for_biz,
+                county=county,
+                zip_code=zip_code,
+                user_lat=user_lat,
+                user_lon=user_lon,
+                language=detected_lang,
+                limit=limit,
+                offset=0,
+                external_id=user_id,
+                session_id=session_id or user_id,
+                strict_location=False,
+                sort_mode="fairness",
+                extra_match_terms=None,
+            )
+            businesses = result.get("businesses") or []
+            see_more = result.get("see_more", False)
+            location_note = result.get("location_note")
+            logger.info(
+                "chat_flow.business_search user_id=%s name_hint_fallback_no_match n=%s",
+                user_id,
+                len(businesses),
+            )
         logger.info(
             "chat_flow.business_search user_id=%s businesses=%s see_more=%s has_location_note=%s",
             user_id,
@@ -2253,8 +2932,7 @@ def process_message(
         )
 
         if businesses:
-            reply = _format_businesses_recommendation_engine(
-                businesses,
+            reply = _directory_ui_intro(
                 detected_lang,
                 category=bc or "",
                 subcategory=bs or "",
@@ -2262,26 +2940,17 @@ def process_message(
             )
         else:
             structured = dict(structured or {})
-            structured["answer_source"] = "directory_fallback"
-            if has_api_key:
-                reply = generate_business_directory_fallback_response(
-                    message,
-                    bc or "",
-                    bs or "",
-                    state or "",
-                    county or "",
-                    city or "",
-                    zip_code or "",
-                    detected_lang,
-                    chat_history=openai_chat_history,
-                    known_facts=known_facts,
-                )
-            else:
-                reply = {
-                    "en": "We did not find matching partners in our directory for your area. Try your state bar association, Avvo, or AILA for immigration attorneys — or adjust your location and search again.",
-                    "es": "No encontramos socios coincidentes en nuestro directorio para tu zona. Prueba el colegio de abogados de tu estado, Avvo o AILA, o ajusta tu ubicación.",
-                    "pt": "Não encontramos parceiros em nosso diretório para sua região. Tente a OAB estadual, Avvo ou AILA, ou ajuste a localização.",
-                }.get(detected_lang, "No matching listings in our directory.")
+            structured["answer_source"] = "directory_llm_fallback"
+            reply = generate_business_not_found_response(
+                message,
+                city=structured.get("city") or city or "",
+                state=state or "",
+                county=county or "",
+                zip_code=zip_code or "",
+                category_en=bc,
+                subcategory_en=bs,
+                detected_language=detected_lang,
+            )
 
         # When we show business results (connecting user with providers), ask for email/phone if missing
         require_contact = False
@@ -2294,6 +2963,27 @@ def process_message(
                 "pt": "Vou salvar isso e seu histórico. Por favor adicione seus dados para continuar:",
             }.get(detected_lang, "Please add your email and phone so we can connect you and save your history:")
 
+        biz_pag = None
+        if businesses:
+            biz_snap = {
+                "v": 1,
+                "kind": "get_top",
+                "intent": intent,
+                "language": detected_lang,
+                "category": bc,
+                "subcategory": bs,
+                "state": state,
+                "city": _city_for_biz,
+                "county": county,
+                "zip_code": zip_code,
+                "user_lat": user_lat,
+                "user_lon": user_lon,
+                "strict_location": snap_strict,
+                "sort_mode": "fairness",
+                "extra_match_terms": snap_extra,
+            }
+            biz_pag = _business_pagination_dict(biz_snap, limit, 0, businesses, see_more)
+
         _save_history(session_id, message, reply, intent, structured)
         return _build_response(
             reply, detected_lang, intent,
@@ -2304,6 +2994,7 @@ def process_message(
             user_name=user_name,
             require_contact_details=require_contact,
             contact_details_message=contact_msg,
+            business_pagination=biz_pag,
         )
 
     # ------------------------------------------------------------------
@@ -2341,7 +3032,9 @@ def process_message(
             and (rescue_cat or rescue_sub)
             and _has_business_location(state, city, county, zip_code, ulat, ulon)
         ):
-            lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 5)
+            lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+            _rescue_attr = extract_directory_attribute_terms(message)
+            rescue_snap_extra = _rescue_attr or None
             rescue = get_top_businesses(
                 category=rescue_cat,
                 subcategory=rescue_sub,
@@ -2353,15 +3046,37 @@ def process_message(
                 user_lon=ulon,
                 language=detected_lang,
                 limit=lim,
+                offset=0,
                 external_id=user_id,
                 session_id=session_id or user_id,
                 strict_location=False,
                 sort_mode="fairness",
+                extra_match_terms=_rescue_attr or None,
             )
             rescue_biz = rescue.get("businesses") or []
+            if not rescue_biz and _rescue_attr:
+                rescue_snap_extra = None
+                rescue = get_top_businesses(
+                    category=rescue_cat,
+                    subcategory=rescue_sub,
+                    state=state,
+                    city=city,
+                    county=county,
+                    zip_code=zip_code,
+                    user_lat=ulat,
+                    user_lon=ulon,
+                    language=detected_lang,
+                    limit=lim,
+                    offset=0,
+                    external_id=user_id,
+                    session_id=session_id or user_id,
+                    strict_location=False,
+                    sort_mode="fairness",
+                    extra_match_terms=None,
+                )
+                rescue_biz = rescue.get("businesses") or []
             if rescue_biz:
-                reply = _format_businesses_recommendation_engine(
-                    rescue_biz,
+                reply = _directory_ui_intro(
                     detected_lang,
                     category=rescue_cat or "",
                     subcategory=rescue_sub or "",
@@ -2370,6 +3085,30 @@ def process_message(
                 structured["category"] = rescue_cat
                 structured["subcategory"] = rescue_sub
                 structured["answer_source"] = "business_database"
+                rescue_snap = {
+                    "v": 1,
+                    "kind": "get_top",
+                    "intent": "information_request",
+                    "language": detected_lang,
+                    "category": rescue_cat,
+                    "subcategory": rescue_sub,
+                    "state": state,
+                    "city": city,
+                    "county": county,
+                    "zip_code": zip_code,
+                    "user_lat": ulat,
+                    "user_lon": ulon,
+                    "strict_location": False,
+                    "sort_mode": "fairness",
+                    "extra_match_terms": rescue_snap_extra,
+                }
+                rescue_pag = _business_pagination_dict(
+                    rescue_snap,
+                    lim,
+                    0,
+                    rescue_biz,
+                    rescue.get("see_more", False),
+                )
                 _save_history(session_id, message, reply, "information_request", structured)
                 logger.info("chat_flow.tier4.business_rescue user_id=%s n=%s", user_id, len(rescue_biz))
                 return _build_response(
@@ -2381,27 +3120,19 @@ def process_message(
                     location_note=rescue.get("location_note"),
                     question_analysis=structured,
                     user_name=user_name,
+                    business_pagination=rescue_pag,
                 )
-            if has_api_key:
-                reply = generate_business_directory_fallback_response(
-                    message,
-                    rescue_cat or "",
-                    rescue_sub or "",
-                    state or "",
-                    county or "",
-                    city or "",
-                    zip_code or "",
-                    detected_lang,
-                    chat_history=openai_chat_history,
-                    known_facts=known_facts,
-                )
-            else:
-                reply = {
-                    "en": "We did not find matching partners in our directory for your area. Try state bar referral, Avvo, or AILA — or adjust your search.",
-                    "es": "No encontramos socios en nuestro directorio. Prueba la referencia del colegio de abogados, Avvo o AILA.",
-                    "pt": "Não há parceiros no diretório. Tente a OAB estadual, Avvo ou AILA.",
-                }.get(detected_lang, "No directory matches.")
-            structured["answer_source"] = "directory_fallback"
+            reply = generate_business_not_found_response(
+                message,
+                city=city or "",
+                state=state or "",
+                county=county or "",
+                zip_code=zip_code or "",
+                category_en=rescue_cat,
+                subcategory_en=rescue_sub,
+                detected_language=detected_lang,
+            )
+            structured["answer_source"] = "directory_llm_fallback"
             _save_history(session_id, message, reply, "information_request", structured)
             return _build_response(
                 reply, detected_lang, "information_request", question_analysis=structured, user_name=user_name
@@ -2461,6 +3192,7 @@ def _build_response(
     user_name: str = None,
     require_contact_details: bool = False,
     contact_details_message: str = None,
+    business_pagination: dict | None = None,
 ) -> dict:
     out = {
         "response": response,
@@ -2476,4 +3208,6 @@ def _build_response(
     if require_contact_details:
         out["require_contact_details"] = True
         out["contact_details_message"] = contact_details_message or "Please add your email and phone so we can continue."
+    if business_pagination:
+        out["business_pagination"] = business_pagination
     return out

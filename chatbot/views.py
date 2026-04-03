@@ -107,8 +107,15 @@ def api_chat(request):
     try:
         data = json.loads(request.body) if request.body else {}
         message = (data.get("message") or data.get("msg") or "").strip()
-        if not message or len(message) > 4000:
+        business_load_more = bool(data.get("business_load_more"))
+        business_snapshot = data.get("business_snapshot")
+        if len(message) > 4000:
             return JsonResponse({"error": "Invalid or missing message", "response": ""}, status=400)
+        if not business_load_more:
+            if not message:
+                return JsonResponse({"error": "Invalid or missing message", "response": ""}, status=400)
+        elif not isinstance(business_snapshot, dict):
+            return JsonResponse({"error": "business_snapshot required", "response": ""}, status=400)
         # user_id is the STABLE identity for location/profile persistence (IP or explicit user_id).
         # session_id resets on every page-load so language detection re-locks per conversation.
         user_id = data.get("user_id") or _get_client_ip(request)
@@ -141,6 +148,10 @@ def api_chat(request):
             session_id=session_id,
             user_location=user_location,
             user_profile=user_profile,
+            business_load_more=business_load_more,
+            business_snapshot=business_snapshot if isinstance(business_snapshot, dict) else None,
+            business_offset=int(data.get("business_offset") or 0),
+            business_page_size=data.get("business_page_size"),
         )
         payload = {
             "response": out["response"],
@@ -150,6 +161,7 @@ def api_chat(request):
             "see_more": out.get("see_more", False),
             "location_note": out.get("location_note"),
             "question_analysis": out.get("question_analysis"),
+            "business_pagination": out.get("business_pagination"),
         }
         if out.get("user_name") is not None:
             payload["user_name"] = out["user_name"]

@@ -111,7 +111,15 @@ def merge_gps_into_location(location: dict) -> dict:
     if not need:
         return loc
 
-    found = reverse_geocode_us_location(lat, lon)
+    found: dict = {}
+    try:
+        from chatbot.services.google_places_service import reverse_geocode_coordinates
+
+        found = reverse_geocode_coordinates(lat, lon) or {}
+    except Exception:
+        logger.exception("reverse_geocode.google_reverse_failed lat=%s lon=%s", lat, lon)
+    if not found:
+        found = reverse_geocode_us_location(lat, lon)
     if not found:
         return loc
 

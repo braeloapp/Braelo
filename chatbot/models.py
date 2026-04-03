@@ -100,6 +100,7 @@ class Business(models.Model):
     latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     languages = models.CharField(max_length=256, null=True, blank=True)  # comma-separated: en,es,pt
+    tags = models.TextField(null=True, blank=True)  # search tokens: pipe-separated + EN hints (Lista import)
     contact_info = models.TextField(null=True, blank=True)
     whatsapp_url = models.URLField(max_length=512, null=True, blank=True)
     ad_package = models.ForeignKey(AdPackage, on_delete=models.SET_NULL, null=True, blank=True)

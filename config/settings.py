@@ -21,9 +21,18 @@ import urllib
 from pathlib import Path
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
-from mongoengine import connect
+
+try:
+    from mongoengine import connect
+except ImportError:
+    connect = None  # type: ignore[misc, assignment]
 
 _settings_log = logging.getLogger(__name__)
+if connect is None:
+    _settings_log.warning(
+        "mongoengine is not installed; MongoEngine is disabled. "
+        "Install: pip install mongoengine  (or pip install -r requirements.txt)"
+    )
 
 try:
     from firebase_admin import initialize_app, credentials  # type: ignore
@@ -425,7 +434,9 @@ _auto_skip_mongo_ci = (
 ) and not _mongo_uri_valid(MONGO_URI)
 
 
-if DJANGO_SKIP_MONGOENGINE or _auto_skip_mongo_ci:
+if connect is None:
+    pass  # already logged at import time
+elif DJANGO_SKIP_MONGOENGINE or _auto_skip_mongo_ci:
     _settings_log.warning(
         "MongoEngine not initialized (%s). Set MONGO_URI or DJANGO_SKIP_MONGOENGINE=false with valid credentials.",
         "DJANGO_SKIP_MONGOENGINE"
@@ -541,13 +552,14 @@ RAG_MIN_CONFIDENT_HYBRID = float(os.getenv('RAG_MIN_CONFIDENT_HYBRID', '0.46')) 
 RAG_EMBEDDING_MIN_FOR_MATCH = float(os.getenv('RAG_EMBEDDING_MIN_FOR_MATCH', '0.18'))
 # DOCX knowledge base: set DOCX_DATA_DIR in .env to your folder (can be outside braelo). Default: parent folder / documents
 DOCX_DATA_DIR = Path(os.getenv('DOCX_DATA_DIR', str(BASE_DIR.parent / 'documents')))
-MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '5'))
+MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '20'))
 BUSINESS_RADIUS_MILES = float(os.getenv('BUSINESS_RADIUS_MILES', '25'))
 BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES', '50'))
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
-# Comma-separated Mongo collection names: legacy business_listings + flat `businesses` docs (name/category/lat/lon/contact_info)
+# Comma-separated Mongo collection names. Default is Lista/flat `businesses` only (import_lista_business_mongo).
+# Legacy `business_listings` is opt-in, e.g. MONGO_BUSINESS_COLLECTIONS=business_listings,businesses
 MONGO_BUSINESS_COLLECTIONS = [
-    x.strip() for x in os.getenv('MONGO_BUSINESS_COLLECTIONS', 'business_listings,businesses').split(',') if x.strip()
+    x.strip() for x in os.getenv('MONGO_BUSINESS_COLLECTIONS', 'businesses').split(',') if x.strip()
 ]
 # After a KB match, surface local providers when intent has category/subcategory + user location
 KB_PROVIDER_SUGGESTIONS = os.getenv('KB_PROVIDER_SUGGESTIONS', 'true').lower() in ('true', '1', 'yes')
