@@ -24,15 +24,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set SQLite writable path
-        run: |
-          mkdir -p /tmp/db
-          export DB_PATH=/tmp/db/db.sqlite3
-          sed -i "s|BASE_DIR / 'db.sqlite3'|\"$DB_PATH\"|g" manage.py
-
-      - name: Run migrations
-        run: python manage.py migrate
-
       - name: Collect static files
         run: python manage.py collectstatic --noinput
 
