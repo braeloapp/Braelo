@@ -54,6 +54,9 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Apply migrations
+        run: python manage.py migrate
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
