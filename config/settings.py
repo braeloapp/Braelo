@@ -526,7 +526,15 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Chatbot app (RAG, business matching, OpenAI). Uses same .env as Braelo.
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-USE_MONGO = os.getenv('USE_MONGO', 'false').lower() in ('true', '1', 'yes')
+# Business directory: MongoDB vs Django Business table. If USE_MONGO is unset but MONGO_URI is
+# valid (typical local/deploy .env), default to True so local matches production without a second flag.
+_use_mongo_env = os.getenv("USE_MONGO", "").strip().lower()
+if _use_mongo_env in ("false", "0", "no", "off"):
+    USE_MONGO = False
+elif _use_mongo_env in ("true", "1", "yes", "on"):
+    USE_MONGO = True
+else:
+    USE_MONGO = bool(_mongo_uri_valid(MONGO_URI))
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
@@ -564,6 +572,12 @@ MONGO_BUSINESS_COLLECTIONS = [
 # After a KB match, surface local providers when intent has category/subcategory + user location
 KB_PROVIDER_SUGGESTIONS = os.getenv('KB_PROVIDER_SUGGESTIONS', 'true').lower() in ('true', '1', 'yes')
 KB_PROVIDER_SUGGESTIONS_MAX = int(os.getenv('KB_PROVIDER_SUGGESTIONS_MAX', '3'))
+# Verbose [SessionGeo] logs in chat_flow (terminal). Set false in production to reduce noise.
+BRAELO_SESSION_GEO_DEBUG = os.getenv("BRAELO_SESSION_GEO_DEBUG", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
 BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo

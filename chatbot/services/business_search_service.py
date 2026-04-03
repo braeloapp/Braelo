@@ -823,6 +823,7 @@ def convert_query_to_portuguese_fields(message: str | None) -> dict:
                 "your",
                 "this",
                 "that",
+                "there",
                 "town",
                 "downtown",
                 "area",
@@ -837,23 +838,33 @@ def convert_query_to_portuguese_fields(message: str | None) -> dict:
         )
         if mo_lc:
             cand_l = mo_lc.group(1).strip()
+            cand_l = re.sub(r"\s+(please|thanks|thank you)\s*$", "", cand_l).strip()
+            first_tok = cand_l.split()[0] if cand_l else ""
             if (
                 cand_l not in _skip_after_in
+                and first_tok not in _skip_after_in
                 and cand_l not in STATE_NORMALIZE_TO_ENGLISH
                 and cand_l not in STATE_ABBR_TO_ENGLISH
+                and first_tok not in STATE_ABBR_TO_ENGLISH
                 and len(cand_l) > 2
             ):
                 result["city"] = " ".join(w.title() for w in cand_l.split())
 
-    if not result["city"]:
-        mo = re.search(
-            r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b",
-            msg,
-        )
-        if mo:
-            cand = mo.group(1).strip()
-            if cand.lower() not in STATE_NORMALIZE_TO_ENGLISH:
-                result["city"] = cand
+        if not result["city"]:
+            mo = re.search(
+                r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b",
+                msg,
+            )
+            if mo:
+                cand = mo.group(1).strip()
+                cand_norm = re.sub(r"\s+(please|thanks|thank you)\s*$", "", cand.lower()).strip()
+                ft = cand_norm.split()[0] if cand_norm else ""
+                if (
+                    cand_norm not in STATE_NORMALIZE_TO_ENGLISH
+                    and cand_norm not in _skip_after_in
+                    and ft not in _skip_after_in
+                ):
+                    result["city"] = cand
 
     mo2 = re.search(
         r"\b([A-Za-z][A-Za-z\s]{2,40}?)\s*,\s*([A-Za-z]{2}|[A-Za-z][a-z]+(?:\s+[a-z]+)?)\s*(?:\?|$|,)",
@@ -1154,6 +1165,7 @@ def search_businesses_in_mongodb(
     subcategory_en: str | None = None,
     limit: int = 7,
     offset: int = 0,
+    caller_geo_only: bool = False,
 ) -> dict:
     """
     Lista / mixed-schema Mongo directory search.
@@ -1167,6 +1179,8 @@ def search_businesses_in_mongodb(
 
     parsed = convert_query_to_portuguese_fields(query)
     ep = dict(parsed)
+    if caller_geo_only:
+        ep = {**ep, "city": None, "state_en": None, "county": None}
 
     def _cat_axis_ok(d: dict) -> bool:
         return bool(

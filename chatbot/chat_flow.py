@@ -886,6 +886,28 @@ def _extract_location_hints_from_message(message: str) -> dict:
     if state_val:
         out["state"] = state_val
 
+    # Phrases like "restaurants in Florida" set state_en in convert_query but do not match
+    # city+state regexes above; merge so cached session city (e.g. Los Angeles) is overridden.
+    from chatbot.services import business_search_service as bss
+
+    parsed = bss.convert_query_to_portuguese_fields(text)
+    ps = (parsed.get("state_en") or "").strip()
+    pc = (parsed.get("city") or "").strip()
+    pco = (parsed.get("county") or "").strip()
+    if ps and not out.get("state"):
+        out["state"] = ps
+    if pc and not out.get("city"):
+        out["city"] = pc
+    if pco and not out.get("county"):
+        out["county"] = pco
+    if ps or pc or pco:
+        _session_geo_log(
+            "hints_from_convert_query",
+            state_en=ps or None,
+            city=pc or None,
+            county=pco or None,
+        )
+
     return out
 
 
@@ -918,6 +940,10 @@ def _apply_message_location_for_map(
         co = hints["county"]
 
     if hints.get("zip_code") and not hints.get("city"):
+        c = None
+        co = None
+    # State named without a city ("in Florida") must drop prior session/profile city.
+    if hints.get("state") and not hints.get("city"):
         c = None
         co = None
 
@@ -1493,11 +1519,360 @@ def _format_businesses(businesses: list, language: str, location_note: str = Non
 
 _ZIP_US_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
+_SESSION_LOCATION_CACHE_KEY = "braelo_session_location_{}"
+_SESSION_LOCATION_CACHE_TTL = 3600
+_DIRECTORY_GEO_HISTORY_INTENTS = frozenset({"business_search", "location_business_search"})
+_LOCATION_REFERENCE_PHRASES_EN = (
+    "in that",
+    "in there",
+    "over there",
+    "that area",
+    "same place",
+    "same city",
+    "same area",
+    "same town",
+    "that city",
+    "that town",
+    "that place",
+    "those ones",
+    "those places",
+    "the same area",
+    "around there",
+)
+_LOCATION_REFERENCE_PHRASES_ES = (
+    "en eso",
+    "ahí",
+    "allí",
+    "misma ciudad",
+    "mismo lugar",
+    "esa área",
+    "esa zona",
+)
+_LOCATION_REFERENCE_PHRASES_PT = (
+    "no mesmo lugar",
+    "mesma cidade",
+    "mesma área",
+    "mesma area",
+    "lá",
+    "ali",
+    "nesse lugar",
+    "nessa cidade",
+    "nessa área",
+    "nessa area",
+)
+_THERE_REFERENCE_RE = re.compile(r"\bthere\?|\bthere\s*$", re.I)
+
+_DEVICE_PROXIMITY_PHRASES_EN = (
+    "near me",
+    "near my location",
+    "near my area",
+    "around me",
+    "close to me",
+    "next to me",
+    "where i am",
+    "where i'm",
+    "current location",
+    "my gps",
+    "locate me",
+    "closest to me",
+    "around here",
+    "in my area",
+    "in my town",
+    "in my city",
+)
+_DEVICE_PROXIMITY_PHRASES_ES = (
+    "cerca de mí",
+    "cerca de mi",
+    "cerca de mi ubicación",
+    "cerca de mi ubicacion",
+    "en mi área",
+    "en mi area",
+    "donde estoy",
+    "mi ubicación",
+    "mi ubicacion",
+)
+_DEVICE_PROXIMITY_PHRASES_PT = (
+    "perto de mim",
+    "perto da minha localização",
+    "perto da minha localizacao",
+    "na minha área",
+    "na minha area",
+    "onde estou",
+    "minha localização",
+    "minha localizacao",
+)
+
+
+def _session_geo_debug_enabled() -> bool:
+    return getattr(django_settings, "BRAELO_SESSION_GEO_DEBUG", True)
+
+
+def _session_geo_log(event: str, **fields) -> None:
+    if not _session_geo_debug_enabled():
+        return
+    parts = " ".join(f"{k}={fields[k]!r}" for k in sorted(fields))
+    logger.info("[SessionGeo] %s | %s", event, parts)
+
+
+def _parse_history_entities(raw) -> dict | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _store_session_location(
+    session_id: str,
+    *,
+    city: str | None = None,
+    state: str | None = None,
+    county: str | None = None,
+    zip_code: str | None = None,
+) -> None:
+    if not session_id:
+        return
+    payload: dict = {}
+    if city and str(city).strip():
+        payload["city"] = str(city).strip()
+    if state and str(state).strip():
+        payload["state"] = str(state).strip()
+    if county and str(county).strip():
+        payload["county"] = str(county).strip()
+    if zip_code and str(zip_code).strip():
+        payload["zip_code"] = str(zip_code).strip()
+    if not payload:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.set(
+            _SESSION_LOCATION_CACHE_KEY.format(session_id),
+            payload,
+            timeout=_SESSION_LOCATION_CACHE_TTL,
+        )
+        _session_geo_log("cache_store", session_id=session_id, **payload)
+    except Exception:
+        logger.debug("chat_flow.session_location_store_failed session_id=%s", session_id, exc_info=True)
+
+
+def _get_session_location(session_id: str) -> dict:
+    if not session_id:
+        return {}
+    try:
+        from django.core.cache import cache
+
+        data = cache.get(_SESSION_LOCATION_CACHE_KEY.format(session_id))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _is_location_reference(message: str) -> bool:
+    t = (message or "").lower()
+    if not t.strip():
+        return False
+    if any(p in t for p in _LOCATION_REFERENCE_PHRASES_EN):
+        return True
+    if any(p in t for p in _LOCATION_REFERENCE_PHRASES_ES):
+        return True
+    if any(p in t for p in _LOCATION_REFERENCE_PHRASES_PT):
+        return True
+    if _THERE_REFERENCE_RE.search(message or ""):
+        return True
+    return False
+
+
+def _message_prefers_device_gps_for_geo(message: str | None, user_location: dict | None) -> bool:
+    loc = user_location or {}
+    if loc.get("latitude") is None or loc.get("longitude") is None:
+        return False
+    if _is_location_reference(message or ""):
+        return False
+    t = (message or "").lower()
+    if not t.strip():
+        return False
+    if any(p in t for p in _DEVICE_PROXIMITY_PHRASES_EN):
+        return True
+    if any(p in t for p in _DEVICE_PROXIMITY_PHRASES_ES):
+        return True
+    if any(p in t for p in _DEVICE_PROXIMITY_PHRASES_PT):
+        return True
+    return False
+
+
+def _extract_location_from_chat_history(
+    chat_history: list | None,
+    *,
+    limit: int = 8,
+) -> dict:
+    from chatbot.services import business_search_service as bss
+
+    n = 0
+    for m in reversed(chat_history or []):
+        if m.get("role") != "user":
+            continue
+        if n >= limit:
+            break
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        n += 1
+        parsed = bss.convert_query_to_portuguese_fields(content)
+        ci = (parsed.get("city") or "").strip() or None
+        st = (parsed.get("state_en") or "").strip() or None
+        if ci or st:
+            return {"city": ci, "state": st}
+    return {}
+
+
+def _geo_from_last_directory_turn(chat_history: list | None) -> dict:
+    for m in reversed(chat_history or []):
+        if m.get("intent") not in _DIRECTORY_GEO_HISTORY_INTENTS:
+            continue
+        ent = m.get("entities")
+        if not isinstance(ent, dict):
+            continue
+        st = (ent.get("state") or ent.get("state_en") or "").strip() or None
+        ci = (ent.get("city") or "").strip() or None
+        co = (ent.get("county") or "").strip() or None
+        z = (ent.get("zip_code") or "").strip() or None
+        if st or ci or co or z:
+            return {"state": st, "city": ci, "county": co, "zip_code": z}
+    return {}
+
+
+def _initial_location_with_priority(
+    user_location: dict,
+    user,
+    session_id: str,
+    chat_history: list | None,
+    *,
+    message: str | None = None,
+) -> tuple:
+    def nz(x):
+        return (str(x).strip() if x is not None else "") or None
+
+    state = nz(getattr(user, "state", None))
+    city = nz(getattr(user, "city", None))
+    county = nz(getattr(user, "county", None))
+    zip_code = nz(getattr(user, "zip_code", None))
+
+    if nz(user_location.get("state")):
+        state = nz(user_location.get("state"))
+    if nz(user_location.get("city")):
+        city = nz(user_location.get("city"))
+    if nz(user_location.get("county")):
+        county = nz(user_location.get("county"))
+    if nz(user_location.get("zip_code")):
+        zip_code = nz(user_location.get("zip_code"))
+
+    if not zip_code:
+        for m in reversed(chat_history or []):
+            if m.get("role") != "user":
+                continue
+            mo = _ZIP_US_RE.search(m.get("content") or "")
+            if mo:
+                zip_code = mo.group(1)
+                break
+
+    if not _message_prefers_device_gps_for_geo(message, user_location):
+        for layer in (
+            _extract_location_from_chat_history(chat_history, limit=8),
+            _get_session_location(session_id),
+            _geo_from_last_directory_turn(chat_history),
+        ):
+            if not layer:
+                continue
+            st = nz(layer.get("state") or layer.get("state_en"))
+            ci = nz(layer.get("city"))
+            co = nz(layer.get("county"))
+            z = nz(layer.get("zip_code") or layer.get("zip"))
+            if ci:
+                city = ci
+            if st:
+                state = st
+            if co:
+                county = co
+            if z:
+                zip_code = z
+
+    _session_geo_log(
+        "initial_location_result",
+        session_id=session_id or "",
+        state=state,
+        city=city,
+        county=county,
+        zip_code=zip_code,
+        skipped_session_layers=_message_prefers_device_gps_for_geo(message, user_location),
+    )
+    return state, city, county, zip_code
+
+
+def _apply_directory_session_geo_overrides(
+    message: str,
+    state: str,
+    city: str,
+    county: str,
+    zip_code: str,
+    chat_history: list,
+    intent: str,
+    *,
+    session_id: str = "",
+    use_device_location_only: bool = False,
+    user_location: dict | None = None,
+) -> tuple:
+    from chatbot.services import business_search_service as bss
+
+    if use_device_location_only and _message_prefers_device_gps_for_geo(message, user_location):
+        _session_geo_log(
+            "overrides_skip_device_gps_preferred",
+            session_id=session_id or "",
+            state=state,
+            city=city,
+        )
+        return state, city, county, zip_code
+
+    hints = _extract_location_hints_from_message(message)
+    if hints:
+        _session_geo_log("overrides_skip_explicit_message_hints", hints=dict(hints))
+        return state, city, county, zip_code
+
+    if intent not in _DIRECTORY_GEO_HISTORY_INTENTS and not bss.is_business_search_query(message):
+        return state, city, county, zip_code
+
+    hist = _geo_from_last_directory_turn(chat_history)
+    sl = _get_session_location(session_id) if session_id else {}
+    mem_st = ((hist.get("state") or "").strip() or (sl.get("state") or "").strip() or None)
+    mem_ci = ((hist.get("city") or "").strip() or (sl.get("city") or "").strip() or None)
+    mem_co = ((hist.get("county") or "").strip() or (sl.get("county") or "").strip() or None)
+    mem_z = ((hist.get("zip_code") or "").strip() or (sl.get("zip_code") or "").strip() or None)
+    if not (mem_st or mem_ci or mem_co or mem_z):
+        return state, city, county, zip_code
+
+    new_state = mem_st or state
+    new_city = mem_ci or city
+    new_county = mem_co or county
+    new_zip = mem_z or zip_code
+    _session_geo_log(
+        "overrides_applied",
+        session_id=session_id or "",
+        from_history=hist,
+        from_cache=sl,
+        out_state=new_state,
+        out_city=new_city,
+        out_county=new_county,
+        out_zip=new_zip,
+    )
+    return new_state, new_city, new_county, new_zip
+
 
 def _load_openai_chat_history(session_id: str, max_documents: int = 200) -> list[dict]:
     """
     Prior turns for this session only (chronological). Used as OpenAI user/assistant messages.
-    Excludes the current message (not persisted yet).
+    Rows may include intent + entities (entities_json) for session geo; gpt_service keeps role/content only.
     """
     if not session_id:
         return []
@@ -1516,7 +1891,13 @@ def _load_openai_chat_history(session_id: str, max_documents: int = 200) -> list
                 role = doc.get("role")
                 content = (doc.get("content") or "").strip()
                 if role in ("user", "assistant") and content:
-                    rows.append({"role": role, "content": content})
+                    item: dict = {"role": role, "content": content}
+                    if doc.get("intent"):
+                        item["intent"] = doc.get("intent")
+                    ent = _parse_history_entities(doc.get("entities_json"))
+                    if ent:
+                        item["entities"] = ent
+                    rows.append(item)
         else:
             qs = (
                 ChatHistory.objects.filter(external_id=session_id)
@@ -1526,7 +1907,13 @@ def _load_openai_chat_history(session_id: str, max_documents: int = 200) -> list
                 role = row.role
                 content = (row.content or "").strip()
                 if role in ("user", "assistant") and content:
-                    rows.append({"role": role, "content": content})
+                    item = {"role": role, "content": content}
+                    if row.intent:
+                        item["intent"] = row.intent
+                    ent = _parse_history_entities(row.entities_json)
+                    if ent:
+                        item["entities"] = ent
+                    rows.append(item)
     except Exception:
         logger.exception("chat_flow.load_history_failed session_id=%s", session_id)
         return []
@@ -1686,10 +2073,33 @@ def _lista_mongo_directory_response(
     sub_en = parsed.get("subcategory_en")
     if not any([cat_pt, sub_pt, cat_en, sub_en]):
         return None
-    s_state = (state or parsed.get("state_en") or "").strip() or None
-    s_city = (city or parsed.get("city") or "").strip() or None
-    s_county = (county or parsed.get("county") or "").strip() or None
+    has_regex_hints = bool(_extract_location_hints_from_message(message))
+    has_parse_geo = bool(
+        (parsed.get("city") or "").strip() or (parsed.get("state_en") or "").strip()
+    )
+    if has_parse_geo and _is_location_reference(message) and not has_regex_hints:
+        has_parse_geo = False
+    caller_geo_only = not has_regex_hints and not has_parse_geo
+    if caller_geo_only:
+        s_state = (state or "").strip() or None
+        s_city = (city or "").strip() or None
+        s_county = (county or "").strip() or None
+    else:
+        s_state = (state or parsed.get("state_en") or "").strip() or None
+        s_city = (city or parsed.get("city") or "").strip() or None
+        s_county = (county or parsed.get("county") or "").strip() or None
     s_state = _backfill_state_from_major_us_city(s_state, s_city)
+    _session_geo_log(
+        "lista_geo_resolve",
+        session_id=session_id,
+        caller_geo_only=caller_geo_only,
+        has_parse_geo=has_parse_geo,
+        has_regex_hints=has_regex_hints,
+        pipeline_state=state,
+        pipeline_city=city,
+        s_state=s_state,
+        s_city=s_city,
+    )
     if not _has_business_location(s_state, s_city, s_county, zip_code, ulat, ulon):
         logger.info("chat_flow.lista_probe.skip_no_location user_id=%s", user_id)
         return None
@@ -1715,6 +2125,7 @@ def _lista_mongo_directory_response(
         subcategory_en=sub_en,
         limit=lim,
         offset=0,
+        caller_geo_only=caller_geo_only,
     )
     docs = search_res.get("businesses") or []
     lista_see_more = bool(search_res.get("see_more"))
@@ -1729,6 +2140,25 @@ def _lista_mongo_directory_response(
     merged["subcategory"] = sub_pt or sub_en
     merged["answer_source"] = "lista_mongo_directory"
     merged["detected_language"] = detected_lang
+    merged["state"] = s_state or merged.get("state")
+    merged["city"] = s_city or merged.get("city")
+    merged["county"] = s_county or merged.get("county")
+    if zip_code:
+        merged["zip_code"] = zip_code
+    _store_session_location(
+        session_id,
+        city=s_city,
+        state=s_state,
+        county=s_county,
+        zip_code=zip_code,
+    )
+    _session_geo_log(
+        "lista_hit_store_session",
+        session_id=session_id,
+        stored_city=s_city,
+        stored_state=s_state,
+        n_businesses=len(businesses),
+    )
     reply = _directory_ui_intro(
         detected_lang,
         category=(cat_pt or cat_en or ""),
@@ -1944,32 +2374,43 @@ def process_message(
         )
 
     use_device_only = bool(user_location.get("use_device_location_only"))
-    if use_device_only:
-        state = user_location.get("state")
-        city = user_location.get("city")
-        county = user_location.get("county")
-        zip_code = user_location.get("zip_code")
-    else:
-        state = user_location.get("state") or getattr(user, "state", None)
-        city = user_location.get("city") or getattr(user, "city", None)
-        county = user_location.get("county") or getattr(user, "county", None)
-        zip_code = user_location.get("zip_code") or getattr(user, "zip_code", None)
     location_enabled = user_location.get("location_enabled", getattr(user, "location_enabled", True))
     user_name = getattr(user, "display_name", None) or user_profile.get("name") or user_profile.get("display_name")
 
     _hist_cap = getattr(django_settings, "CHAT_HISTORY_MAX_DOCUMENTS", 200)
     openai_chat_history = _load_openai_chat_history(session_id, _hist_cap)
-    # Short-term location memory: reuse ZIP (etc.) from earlier turns in this session.
-    if not use_device_only:
-        state, city, county, zip_code = _enrich_location_from_history(
-            state, city, county, zip_code, openai_chat_history
-        )
+    _session_geo_log(
+        "turn_start",
+        session_id=session_id,
+        message_preview=(message or "")[:120],
+        use_device_location_only=use_device_only,
+        history_turns=len(openai_chat_history),
+        cache_snapshot=_get_session_location(session_id),
+    )
+    state, city, county, zip_code = _initial_location_with_priority(
+        user_location,
+        user,
+        session_id,
+        openai_chat_history,
+        message=message,
+    )
+    state, city, county, zip_code = _enrich_location_from_history(
+        state, city, county, zip_code, openai_chat_history
+    )
 
     # Prefer city/state/ZIP named in this message for retrieval (before KB + structured merge).
     state, city, county, zip_code = _apply_message_location_for_map(
         message, state, city, county, zip_code
     )
     state = _backfill_state_from_major_us_city(state, city)
+    _session_geo_log(
+        "after_message_location_pass1",
+        session_id=session_id,
+        state=state,
+        city=city,
+        county=county,
+        zip_code=zip_code,
+    )
     known_facts_for_structured = _format_known_facts(state, city, county, zip_code)
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
@@ -2050,6 +2491,29 @@ def process_message(
         message, state, city, county, zip_code
     )
     state = _backfill_state_from_major_us_city(state, city)
+    state, city, county, zip_code = _apply_directory_session_geo_overrides(
+        message,
+        state,
+        city,
+        county,
+        zip_code,
+        openai_chat_history,
+        intent,
+        session_id=session_id,
+        use_device_location_only=use_device_only,
+        user_location=user_location,
+    )
+    state = _backfill_state_from_major_us_city(state, city)
+    _session_geo_log(
+        "pipeline_before_lista",
+        session_id=session_id,
+        intent=intent,
+        state=state,
+        city=city,
+        county=county,
+        zip_code=zip_code,
+        location_reference=_is_location_reference(message or ""),
+    )
     known_facts = _format_known_facts(state, city, county, zip_code)
 
     ulat = user_location.get("latitude") or getattr(user, "latitude", None)
@@ -2236,6 +2700,26 @@ def process_message(
                 location_note=loc_note,
             )
             structured["answer_source"] = "business_database"
+            structured["state"] = state or structured.get("state")
+            structured["city"] = city or structured.get("city")
+            structured["county"] = county or structured.get("county")
+            structured["zip_code"] = zip_code or structured.get("zip_code")
+            _store_session_location(
+                session_id,
+                city=city,
+                state=state,
+                county=county,
+                zip_code=zip_code,
+            )
+            _session_geo_log(
+                "get_top_hit_store_session",
+                session_id=session_id,
+                city=city,
+                state=state,
+                county=county,
+                zip_code=zip_code,
+                n_businesses=len(businesses),
+            )
             logger.info(
                 "chat_flow.business_database_first user_id=%s n=%s strict_then_loose=%s",
                 user_id,
