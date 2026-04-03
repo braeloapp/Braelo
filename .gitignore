@@ -10,7 +10,6 @@ listings/models/__pycache__/
 users/__pycache__/
 users/api/__pycache__/
 users/helpers/__pycache__/
-users/migrations/
 users/models/__pycache__/
 venv/
 /__pycache__/
