@@ -1012,12 +1012,17 @@ def _execute_directory_mongo_levels(
     listing_name_terms: list[str] | None = None,
 ) -> list[dict]:
     """
-    Layered Mongo filters, union results until ``limit`` (prefer real DB rows).
+    Layered Mongo filters, union results up to ``limit`` (cap per page, not a minimum).
 
-    First tier: Lista tripod (category + subcategory + state), same as a manual Compass query.
-    Then dual-schema OR + location (strict → broad): city/county + state + zip → … → category only.
-    When ``listing_name_terms`` is set (user said e.g. Brazilian, sushi), AND a name/tags match across
-    all tiers; when empty, no name narrowing (full category+location set).
+    When the user supplied city, county, or ZIP, we run **geo tiers** first: city/county/ZIP-scoped
+    queries. If any row matches those tiers, we **stop** — we do not keep broadening to state-only or
+    category-only just to fill ``limit`` rows. That keeps the list length equal to real matches (up
+    to the cap) instead of padding with out-of-area listings.
+
+    If strict geo tiers return nothing, we fall back: Lista tripod + state-scoped dual queries, then
+    category-only (national) as a last resort.
+
+    When ``listing_name_terms`` is set (e.g. Brazilian, sushi), AND name/tags match across tiers.
     """
     loc_q = _city_or_county_clause(city) if city else None
     county_q = _county_regex(county) if county else None
@@ -1026,9 +1031,11 @@ def _execute_directory_mongo_levels(
     name_part = _listing_text_hint_clause(listing_name_terms or [])
 
     seen_lvl: set[str] = set()
-    uniq_levels: list[dict] = []
+    levels_local: list[dict] = []
+    levels_regional: list[dict] = []
+    levels_global: list[dict] = []
 
-    def _add_level(*parts: dict | None):
+    def _add_level(bucket: list[dict], *parts: dict | None):
         seq = [p for p in parts if p]
         if name_part:
             seq.append(name_part)
@@ -1039,33 +1046,77 @@ def _execute_directory_mongo_levels(
         if key in seen_lvl:
             return
         seen_lvl.add(key)
-        uniq_levels.append(m)
+        bucket.append(m)
 
     tripod = _lista_tripod_clause(lista_cat_pt, lista_sub_pt, state_en)
     if tripod:
-        _add_level(tripod)
+        _add_level(levels_regional, tripod)
 
     if loc_q:
-        _add_level(dual, loc_q, st_part, zip_part)
-        _add_level(dual, loc_q, st_part)
-        _add_level(dual, loc_q, zip_part)
-        _add_level(dual, loc_q)
+        _add_level(levels_local, dual, loc_q, st_part, zip_part)
+        _add_level(levels_local, dual, loc_q, st_part)
+        _add_level(levels_local, dual, loc_q, zip_part)
+        _add_level(levels_local, dual, loc_q)
     if county_q:
-        _add_level(dual, county_q, st_part, zip_part)
-        _add_level(dual, county_q, st_part)
-        _add_level(dual, county_q)
+        _add_level(levels_local, dual, county_q, st_part, zip_part)
+        _add_level(levels_local, dual, county_q, st_part)
+        _add_level(levels_local, dual, county_q)
     if st_part:
-        _add_level(dual, st_part, zip_part)
-        _add_level(dual, st_part)
+        if zip_part:
+            _add_level(levels_local, dual, st_part, zip_part)
+        _add_level(levels_regional, dual, st_part)
     if zip_part:
-        _add_level(dual, zip_part)
-    _add_level(dual)
+        _add_level(levels_local, dual, zip_part)
+    _add_level(levels_global, dual)
+
+    has_precise_geo = bool(
+        (city or "").strip()
+        or (county or "").strip()
+        or (zip_code and str(zip_code).strip())
+    )
 
     seen: set[str] = set()
     out: list[dict] = []
     lim = max(1, int(limit or 7))
 
-    for extra in uniq_levels:
+    def _run_bucket(bucket: list[dict]) -> bool:
+        """Run queries in ``bucket``; return True if ``lim`` rows collected."""
+        for extra in bucket:
+            q = {"$and": [_base_filter(), extra]}
+            for coll_name in col_names:
+                try:
+                    cur = db[coll_name].find(q).limit(lim * 2)
+                    for doc in cur:
+                        sid = str(doc.get("_id"))
+                        if sid in seen:
+                            continue
+                        if doc.get("is_banned"):
+                            continue
+                        seen.add(sid)
+                        out.append(doc)
+                        if len(out) >= lim:
+                            logger.info(
+                                "business_search_service.hits dual_schema coll=%s n=%s",
+                                coll_name,
+                                len(out),
+                            )
+                            return True
+                except Exception:
+                    logger.exception("business_search_service.query_failed coll=%s", coll_name)
+        return False
+
+    if has_precise_geo:
+        _run_bucket(levels_local)
+        if out:
+            return out[:lim]
+        _run_bucket(levels_regional)
+        if out:
+            return out[:lim]
+        _run_bucket(levels_global)
+        return out[:lim]
+
+    ordered = levels_regional + levels_local + levels_global
+    for extra in ordered:
         q = {"$and": [_base_filter(), extra]}
         for coll_name in col_names:
             try:
