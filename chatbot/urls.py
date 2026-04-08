@@ -16,4 +16,6 @@ urlpatterns = [
     path("api/health/", views.health, name="health_slash"),
     path("api/debug/knowledge", views.debug_knowledge, name="debug_knowledge"),
     path("api/debug/knowledge/", views.debug_knowledge, name="debug_knowledge_slash"),
+    path("api/learning-gaps", views.api_learning_gaps, name="api_learning_gaps"),
+    path("api/learning-gaps/", views.api_learning_gaps, name="api_learning_gaps_slash"),
 ]

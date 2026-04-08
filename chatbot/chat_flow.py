@@ -5,7 +5,8 @@ Chat flow pipeline:
   Tier 1b  : Business database FIRST for find/hire local services + location → strict then loose match;
              if empty → directory fallback unless is_location_based_query (then defer to 2a0 / OSM / KB)
   Tier 1c  : Knowledge base hybrid search (after business routing)
-  Tier 2a0 : LLM “near me” business list (trigger phrases + ZIP/GPS/state) before map OSM branch
+  Tier 2a0 : LLM “near me” business list (trigger phrases + ZIP/GPS/state) before map OSM branch;
+             skipped when KB-first routing or strong KB retrieval preempts bare “in [state]” heuristics
   Tier 2a  : Map / local office / dining overrides
   Tier 2   : KB exact answer / RAG (+ optional KB provider append)
   Tier 3   : business_search (no KB hit) — same DB + fallback rules
@@ -43,6 +44,10 @@ from chatbot.geo_constants import backfill_state_from_major_us_city as _backfill
 from chatbot.services.business_search_service import generate_business_not_found_response
 from chatbot.services.casual_intents import get_casual_response
 from chatbot.services.local_search import find_nearby_places, find_nearby_pois
+from chatbot.agents.intent_classifier import (
+    classify_response_route,
+    should_preempt_directory_for_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +138,66 @@ def is_location_based_query(message: str) -> bool:
     """True when the user is asking for nearby businesses or services (general discovery, not only map POI)."""
     msg = (message or "").lower().strip()
     return any(trigger in msg for trigger in LOCATION_QUERY_TRIGGERS)
+
+
+def _skip_tier2a0_for_kb_precedence(
+    message: str,
+    intent: str,
+    confidence: float,
+    matches: list | None,
+    kb_over_directory: bool,
+) -> bool:
+    """
+    LOCATION_QUERY_TRIGGERS include bare phrases like 'in florida', which match many
+    information_request turns that already have KB hits. Skip Tier 2a0 so Tier 2 (exact KB / RAG) runs.
+    """
+    if kb_over_directory:
+        logger.info("chat_flow.tier2a0.skip reason=kb_over_directory")
+        return True
+    if not matches:
+        return False
+    top_sim = float((matches[0] or {}).get("similarity") or 0.0)
+    min_sim = float(
+        getattr(django_settings, "CHAT_TIER2A0_SKIP_MIN_KB_SIMILARITY", 0.48)
+    )
+    if top_sim < min_sim:
+        return False
+    if intent not in ("information_request", "unclear"):
+        return False
+    if intent == "unclear" and float(confidence or 0.0) < 0.5:
+        return False
+    msg = (message or "").lower()
+    strong_listing = (
+        "near me",
+        "nearby",
+        "closest",
+        "find me a",
+        "show me",
+        "list of",
+        "where can i find",
+        "good restaurants",
+        "best restaurants",
+        "any restaurants",
+        "any places",
+        "where is the nearest",
+        "where to eat",
+        "open near",
+        "services near",
+        "businesses near",
+        "shops near",
+        "stores near",
+    )
+    if any(t in msg for t in strong_listing):
+        return False
+    # "find a ..." as a discovery phrase (word-boundary), not arbitrary substrings
+    if re.search(r"\bfind\s+a\s+", msg):
+        return False
+    logger.info(
+        "chat_flow.tier2a0.skip reason=kb_preempt_location tier top_sim=%.3f intent=%s",
+        top_sim,
+        intent,
+    )
+    return True
 
 
 def extract_zip_from_message(message: str) -> str | None:
@@ -393,6 +458,26 @@ def extract_category_from_message(message: str) -> str:
         "credit union",
     ]
     msg = (message or "").lower()
+    generic_business = (
+        "local business",
+        "local businesses",
+        "location business",
+        "location businesses",
+        "businesses in",
+        "business in",
+        "list of business",
+        "providers in",
+        "services in",
+        "companies in",
+        "establishments in",
+        "any business",
+        "some business",
+        "find business",
+        "search business",
+    )
+    for g in generic_business:
+        if g in msg:
+            return "local businesses"
     for cat in categories:
         if cat in msg:
             return cat
@@ -830,7 +915,37 @@ def _normalize_hint_city(raw: str) -> str:
         return ""
     if low.startswith("my ") or low.startswith("the "):
         return ""
+    if _implausible_hint_city_fragment(low):
+        return ""
     return city
+
+
+def _implausible_hint_city_fragment(low: str) -> bool:
+    """Reject regex-captured 'city' that is clearly prose (commas with state abbr false positives)."""
+    if len(low) > 46:
+        return True
+    if low.count(" ") >= 7:
+        return True
+    noise = (
+        " how ",
+        " many ",
+        " what ",
+        " which ",
+        " type ",
+        " types ",
+        " guide ",
+        " tell ",
+        " explain ",
+        " can you",
+        " are there",
+        " are in ",
+        " properly",
+        " proper ",
+        " about ",
+        " businesses ",
+        " restaurants ",
+    )
+    return any(n in low for n in noise)
 
 
 def _extract_location_hints_from_message(message: str) -> dict:
@@ -892,7 +1007,7 @@ def _extract_location_hints_from_message(message: str) -> dict:
 
     parsed = bss.convert_query_to_portuguese_fields(text)
     ps = (parsed.get("state_en") or "").strip()
-    pc = (parsed.get("city") or "").strip()
+    pc = _normalize_hint_city((parsed.get("city") or "").strip())
     pco = (parsed.get("county") or "").strip()
     if ps and not out.get("state"):
         out["state"] = ps
@@ -1292,12 +1407,21 @@ _DIRECTORY_BUSINESS_NEEDLES = (
 )
 
 
-def _directory_lookup_intent(message: str, structured: dict, intent: str) -> bool:
+def _directory_lookup_intent(
+    message: str, structured: dict, intent: str, confidence: float = 0.5
+) -> bool:
     """
     True when we should hit the business directory (Mongo/SQL) before KB, RAG, or other LLM tiers.
 
     Pipeline: user message → directory first → if empty, fall through to LLM / Places / KB as today.
     """
+    conf = float((structured or {}).get("confidence") or confidence or 0.5)
+    if should_preempt_directory_for_knowledge(message, intent, conf, structured):
+        logger.info(
+            "chat_flow.directory_intent.skip reason=knowledge_preempt intent=%s",
+            intent,
+        )
+        return False
     if intent == "business_search":
         return True
     if _directory_listing_intent(message):
@@ -1441,22 +1565,63 @@ def _should_suggest_providers_with_kb(structured: dict) -> bool:
     return True
 
 
-def _user_has_provider_location(
+def _kb_provider_search_location(
     state: str,
+    city: str,
     county: str,
     zip_code: str,
+    user_location: dict | None,
     user_lat,
     user_lon,
-) -> bool:
-    if user_lat is not None and user_lon is not None:
-        return True
-    if zip_code and state:
-        return True
-    if county and state:
-        return True
-    if state:
-        return True
-    return False
+) -> dict | None:
+    """
+    Build location kwargs for get_top_businesses when appending directory rows to a KB answer.
+    Non-US device GPS must not widen the Mongo query (would return unrelated US listings).
+    When we only have an international GPS pin and no US state/ZIP/county, skip the appendix.
+    """
+    loc = user_location or {}
+    cc = (loc.get("country_code") or "").strip().lower()
+
+    st = (state or "").strip()
+    cy = (city or "").strip()
+    co = (county or "").strip()
+    z = (zip_code or "").strip()
+
+    has_us_text_anchor = bool(st or z or co)
+    us_device_ok = user_lat is not None and user_lon is not None and cc in ("us", "")
+    if not has_us_text_anchor and not us_device_ok:
+        logger.info(
+            "chat_flow.kb_provider_suggest.skip reason=no_us_directory_anchor country_code=%s",
+            cc or "unset",
+        )
+        return None
+
+    p_lat, p_lon = user_lat, user_lon
+    p_city, p_st, p_co, p_z = cy, st, co, z
+
+    if cc and cc != "us":
+        p_lat = None
+        p_lon = None
+        if not has_us_text_anchor:
+            logger.info(
+                "chat_flow.kb_provider_suggest.skip reason=intl_gps_only country_code=%s",
+                cc,
+            )
+            return None
+        p_city = ""
+        strict = True
+    else:
+        strict = bool(p_st or p_z or p_co)
+
+    return {
+        "state": p_st or None,
+        "city": p_city or None,
+        "county": p_co or None,
+        "zip_code": p_z or None,
+        "user_lat": p_lat,
+        "user_lon": p_lon,
+        "strict_location": strict,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2482,6 +2647,18 @@ def process_message(
         detected_lang,
     )
 
+    kb_over_directory = should_preempt_directory_for_knowledge(
+        message, intent, confidence, structured
+    )
+    if kb_over_directory:
+        logger.info("chat_flow.route_kb_first user_id=%s intent=%s", user_id, intent)
+    _route = classify_response_route(message, intent, confidence, structured)
+    logger.info(
+        "chat_flow.intent_classifier route=%s knowledge_first=%s",
+        _route.get("response_type"),
+        _route.get("knowledge_before_directory"),
+    )
+
     # Merge structured extraction into location (message may mention state/ZIP not on profile)
     state = structured.get("state") or state
     city = structured.get("city") or city
@@ -2519,21 +2696,23 @@ def process_message(
     ulat = user_location.get("latitude") or getattr(user, "latitude", None)
     ulon = user_location.get("longitude") or getattr(user, "longitude", None)
 
-    _lista_early = _lista_mongo_directory_response(
-        message,
-        state=state,
-        city=city,
-        county=county,
-        zip_code=zip_code,
-        ulat=ulat,
-        ulon=ulon,
-        detected_lang=detected_lang,
-        user_id=user_id,
-        session_id=session_id,
-        user_name=user_name,
-        structured=dict(structured or {}),
-        user=user,
-    )
+    _lista_early = None
+    if not kb_over_directory:
+        _lista_early = _lista_mongo_directory_response(
+            message,
+            state=state,
+            city=city,
+            county=county,
+            zip_code=zip_code,
+            ulat=ulat,
+            ulon=ulon,
+            detected_lang=detected_lang,
+            user_id=user_id,
+            session_id=session_id,
+            user_name=user_name,
+            structured=dict(structured or {}),
+            user=user,
+        )
     if _lista_early:
         return _lista_early
 
@@ -2556,7 +2735,9 @@ def process_message(
     _st_sub = (structured.get("subcategory") or "").strip() or None
     biz_cat = inf_cat or _st_cat
     biz_sub = inf_sub or _st_sub
-    directory_intent = _directory_lookup_intent(message, structured or {}, intent)
+    directory_intent = _directory_lookup_intent(
+        message, structured or {}, intent, confidence
+    ) and not kb_over_directory
 
     if directory_intent:
         if not (biz_cat or biz_sub):
@@ -2770,7 +2951,7 @@ def process_message(
 
         # "Near me" / local discovery: empty Mongo should not short-circuit with directory fallback;
         # continue to KB → Tier 2a0 (LLM) / 2a (OSM dining).
-        if is_location_based_query(message):
+        if is_location_based_query(message) and not kb_over_directory:
             structured["answer_source"] = "deferred_location_discovery"
             logger.info(
                 "chat_flow.business_database_first user_id=%s n=0 skip_fallback=location_query",
@@ -2855,7 +3036,9 @@ def process_message(
     # TIER 2a0 — Location-based business search (OpenAI + GPS/ZIP/state), Google Maps–style list
     # Runs before OSM local_search; on failure or no API key, falls through to existing branches.
     # ------------------------------------------------------------------
-    if is_location_based_query(message):
+    if is_location_based_query(message) and not _skip_tier2a0_for_kb_precedence(
+        message, intent, confidence, matches, kb_over_directory
+    ):
         def _safe_coord(v):
             if v is None:
                 return None
@@ -2865,11 +3048,20 @@ def process_message(
                 return None
 
         explicit_profile_location = user_location.get("explicit_profile_location", False)
+        pipeline_city = (city or "").strip()
+        pipeline_state = (state or "").strip() if state else ""
+
         if explicit_profile_location:
             search_lat = None
             search_lng = None
-            search_city = (city or user_location.get("city") or "").strip()
-            search_state = (state or "").strip() if state else ""
+            if pipeline_city:
+                search_city = pipeline_city or (user_location.get("city") or "").strip()
+            elif pipeline_state:
+                # State named (e.g. Florida) without city — do not pin to GPS city abroad
+                search_city = ""
+            else:
+                search_city = (pipeline_city or user_location.get("city") or "").strip()
+            search_state = pipeline_state
             search_zip = zip_code
             search_country = "US"
         else:
@@ -2881,17 +3073,29 @@ def process_message(
                 llon = getattr(user, "longitude", None)
             search_lat = _safe_coord(llat)
             search_lng = _safe_coord(llon)
-            search_city = (city or user_location.get("city") or "").strip()
-            search_state = (state or "").strip() if state else ""
+            if pipeline_city:
+                search_city = pipeline_city or (user_location.get("city") or "").strip()
+            elif pipeline_state:
+                search_city = ""
+                search_lat, search_lng = None, None
+            else:
+                search_city = (pipeline_city or user_location.get("city") or "").strip()
+            search_state = pipeline_state
             search_zip = zip_code or extract_zip_from_message(message)
             search_country = (user_location.get("country") or "").strip()
 
         message_location = extract_location_from_message(message)
         if message_location:
-            resolved_city = (message_location.get("city") or search_city or "").strip()
-            resolved_state = (message_location.get("state") or search_state or "").strip()
-            _rc = message_location.get("country") or search_country or "US"
-            resolved_country = str(_rc).strip() or "US"
+            msg_city = (message_location.get("city") or "").strip()
+            msg_state = (message_location.get("state") or search_state or "").strip()
+            resolved_state = msg_state
+            resolved_city = msg_city
+            if not resolved_city:
+                resolved_city = ""
+            _rc = message_location.get("country") or search_country or (
+                "US" if pipeline_state else ""
+            )
+            resolved_country = str(_rc).strip() or ("US" if pipeline_state else "")
             resolved_lat = None
             resolved_lng = None
             resolved_zip = search_zip
@@ -2901,13 +3105,19 @@ def process_message(
             resolved_country = (
                 search_country or ("US" if explicit_profile_location else "")
             ).strip()
-            resolved_lat = search_lat
-            resolved_lng = search_lng
+            if pipeline_state and not pipeline_city:
+                resolved_lat, resolved_lng = None, None
+                resolved_country = resolved_country or "US"
+            else:
+                resolved_lat = search_lat
+                resolved_lng = search_lng
             resolved_zip = search_zip or extract_zip_from_message(message)
 
         _rs_fill = _backfill_state_from_major_us_city(resolved_state, resolved_city)
         if _rs_fill:
             resolved_state = _rs_fill
+        if pipeline_state and not pipeline_city and (resolved_state or "").strip():
+            resolved_country = "US"
 
         if (
             resolved_lat is None
@@ -2939,11 +3149,64 @@ def process_message(
         category_hint = extract_category_from_message(message)
         reply = ""
 
-        lim_db = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
-        db_discovery = search_business_directory_for_discovery(
+        from chatbot.agents.decision_agent import DecisionAgent
+        from chatbot.agents.intent_agent import IntentAgent
+        from chatbot.agents.location_agent import LocationAgent
+        from chatbot.agents.service_search_agent import ServiceSearchAgent
+        from chatbot.agents.ranking_agent import RankingAgent
+        from chatbot.agents.response_agent import ResponseAgent
+        from chatbot.agents.validation_agent import ValidationAgent
+        from chatbot.agents.learning_agent import LearningAgent
+
+        _session_ctx = {"history_turns": len(openai_chat_history or [])}
+        _decision = DecisionAgent().run(
             message=message,
-            category=biz_cat,
-            subcategory=biz_sub,
+            detected_language=detected_lang,
+            session_id=session_id,
+            session_context=_session_ctx,
+            structured_output=dict(structured or {}),
+        )
+        _intent_ag = IntentAgent().run(message, structured_output=dict(structured or {}))
+        _loc_ag = LocationAgent().run_from_pipeline(
+            resolved_city=resolved_city or "",
+            resolved_state=resolved_state or "",
+            county=county or "",
+            zip_code=resolved_zip or "",
+            latitude=resolved_lat,
+            longitude=resolved_lng,
+            country=resolved_country or "",
+            user_location=user_location,
+            explicit_profile_location=explicit_profile_location,
+            message=message,
+            session_id=session_id,
+        )
+        logger.info(
+            "chat_flow.tier2a0.agent_bridge decision=%s intent=%s loc=%s",
+            _decision.route,
+            _intent_ag.primary_intent,
+            _loc_ag.source,
+        )
+
+        _t2_cat, _t2_sub = biz_cat, biz_sub
+        _bad_cat = (_t2_cat or "").strip()
+        _msg_l = (message or "").strip().lower()
+        if (
+            len(_bad_cat) > 80
+            or "please tell" in _bad_cat.lower()
+            or "can you " in _bad_cat.lower()
+            or (
+                len(_bad_cat) > 32
+                and _msg_l.startswith(_bad_cat.lower()[: min(48, len(_bad_cat))])
+            )
+        ):
+            _t2_cat, _t2_sub = None, None
+            logger.info("chat_flow.tier2a0.sanitize_category dropped garbage biz_cat")
+
+        lim_db = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        _search_ag = ServiceSearchAgent().run(
+            message=message,
+            category=_t2_cat,
+            subcategory=_t2_sub,
             category_hint=category_hint,
             state=resolved_state,
             city=resolved_city,
@@ -2957,12 +3220,48 @@ def process_message(
             external_id=user_id,
             session_id=session_id or user_id,
         )
+        _rank_ag = RankingAgent().run(
+            _search_ag.businesses,
+            message=message,
+            user_lat=resolved_lat,
+            user_lon=resolved_lng,
+        )
+        db_discovery = {
+            "businesses": _rank_ag.businesses,
+            "see_more": _search_ag.see_more,
+            "location_note": _search_ag.location_note,
+        }
         if db_discovery.get("businesses"):
-            reply = _directory_ui_intro(
-                detected_lang,
+            _resp_ag = ResponseAgent().build_directory_intro(
+                language=detected_lang,
                 category=biz_cat or category_hint or "",
                 subcategory=biz_sub or "",
                 location_note=db_discovery.get("location_note"),
+                route_label=_decision.route,
+            )
+            reply = _resp_ag.response_text
+            _val_ag = ValidationAgent().run(
+                response_text=reply,
+                source=_resp_ag.source,
+                detected_language=detected_lang,
+                original_message=message,
+                businesses_count=len(db_discovery["businesses"]),
+            )
+            LearningAgent().log_interaction(
+                session_id=session_id,
+                user_id=user_id,
+                message=message,
+                route=_decision.route,
+                source=_search_ag.source,
+                gap_detected=False,
+                location_source=_loc_ag.source,
+                search_params=_search_ag.search_params,
+                response_valid=_val_ag.is_valid,
+                detected_language=detected_lang,
+                meta={
+                    "intent_primary": _intent_ag.primary_intent,
+                    "validation_issues": list(_val_ag.issues),
+                },
             )
             loc_struct = dict(structured or {})
             loc_struct["intent"] = "location_business_search"
@@ -2973,6 +3272,9 @@ def process_message(
                 if getattr(django_settings, "USE_MONGO", False)
                 else "directory_discovery_sql"
             )
+            loc_struct["agent_decision_route"] = _decision.route
+            loc_struct["agent_validation_ok"] = _val_ag.is_valid
+            loc_struct["agent_validation_issues"] = list(_val_ag.issues)
             _save_history(session_id, message, reply, "location_business_search", loc_struct)
             logger.info(
                 "chat_flow.location_llm.directory_first user_id=%s n=%s",
@@ -3012,6 +3314,21 @@ def process_message(
                 question_analysis=loc_struct,
                 user_name=user_name,
                 business_pagination=disc_pag,
+            )
+
+        if not db_discovery.get("businesses"):
+            LearningAgent().log_interaction(
+                session_id=session_id,
+                user_id=user_id,
+                message=message,
+                route=_decision.route,
+                source=_search_ag.source,
+                gap_detected=True,
+                location_source=_loc_ag.source,
+                search_params=_search_ag.search_params,
+                response_valid=False,
+                detected_language=detected_lang,
+                meta={"stage": "tier2a0_directory_empty_before_llm"},
             )
 
         if has_api_key:
@@ -3247,36 +3564,38 @@ def process_message(
             }
             reply = reply.rstrip() + loc_hint.get(detected_lang, loc_hint["en"])
 
+        _kb_loc = None
         if (
             getattr(django_settings, "KB_PROVIDER_SUGGESTIONS", True)
             and intent in ("information_request", "unclear")
             and structured.get("answer_source") != "openai_general"
             and _should_suggest_providers_with_kb(structured)
-            and _user_has_provider_location(
+        ):
+            _kb_loc = _kb_provider_search_location(
                 state,
+                city,
                 county,
                 zip_code,
+                user_location,
                 user_location.get("latitude") or getattr(user, "latitude", None),
                 user_location.get("longitude") or getattr(user, "longitude", None),
             )
-        ):
-            ulat = user_location.get("latitude") or getattr(user, "latitude", None)
-            ulon = user_location.get("longitude") or getattr(user, "longitude", None)
+        if _kb_loc:
             lim = getattr(django_settings, "KB_PROVIDER_SUGGESTIONS_MAX", 3)
             prov = get_top_businesses(
                 category=structured.get("category"),
                 subcategory=structured.get("subcategory"),
-                state=state,
-                city=city,
-                county=county,
-                zip_code=zip_code,
-                user_lat=ulat,
-                user_lon=ulon,
+                state=_kb_loc["state"],
+                city=_kb_loc["city"],
+                county=_kb_loc["county"],
+                zip_code=_kb_loc["zip_code"],
+                user_lat=_kb_loc["user_lat"],
+                user_lon=_kb_loc["user_lon"],
                 language=detected_lang,
                 limit=lim,
                 external_id=user_id,
                 session_id=session_id,
-                strict_location=False,
+                strict_location=bool(_kb_loc["strict_location"]),
                 sort_mode="fairness",
                 extra_match_terms=extract_directory_attribute_terms(message) or None,
             )

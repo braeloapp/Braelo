@@ -578,6 +578,18 @@ BRAELO_SESSION_GEO_DEBUG = os.getenv("BRAELO_SESSION_GEO_DEBUG", "true").lower()
     "true",
     "yes",
 )
+# Verbose [BraeloAgent:…] logs for the agent wrapper layer (Tier 2a0 + learning).
+BRAELO_AGENT_DEBUG = os.getenv("BRAELO_AGENT_DEBUG", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# Persist learning_logs to Mongo when URI/DB available; disable to log to stdout only.
+BRAELO_LEARNING_LOG_TO_MONGO = os.getenv("BRAELO_LEARNING_LOG_TO_MONGO", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 SUPPORTED_LANGUAGES = ['en', 'es', 'pt']
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese'}
 BRAELO_MONGO_URI = os.getenv('BRAELO_MONGO_URI', os.getenv('BRAELO_MONGO_DB_URI', ''))  # optional: for sync_braelo_mongo

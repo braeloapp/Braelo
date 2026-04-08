@@ -512,6 +512,83 @@ def _mongo_row_eligible(doc: dict) -> bool:
     return True
 
 
+def _fetch_mongo_business_docs_broad_location(
+    db,
+    collection_names: list,
+    state: str | None,
+    city: str | None,
+    county: str | None,
+    zip_code: str | None,
+    *,
+    max_docs: int = 600,
+) -> list:
+    """
+    Category-agnostic fetch: active businesses constrained by region fields only.
+    Cursor limit caps load when the directory is large.
+    """
+    base = {
+        "is_active": True,
+        "$or": [{"is_banned": False}, {"is_banned": {"$exists": False}}],
+    }
+    and_parts: list = [base]
+    st = (state or "").strip()
+    ct = (city or "").strip()
+    cy = (county or "").strip()
+    uz = _zip5(zip_code)
+    if st:
+        and_parts.append({
+            "$or": [
+                {"state": {"$regex": re.escape(st), "$options": "i"}},
+                {"business_state": {"$regex": re.escape(st), "$options": "i"}},
+            ]
+        })
+    if ct:
+        and_parts.append({
+            "$or": [
+                {"city": {"$regex": re.escape(ct), "$options": "i"}},
+                {"business_city": {"$regex": re.escape(ct), "$options": "i"}},
+            ]
+        })
+    if cy:
+        and_parts.append({
+            "$or": [
+                {"county": {"$regex": re.escape(cy), "$options": "i"}},
+                {"business_county": {"$regex": re.escape(cy), "$options": "i"}},
+            ]
+        })
+    if uz:
+        and_parts.append({
+            "$or": [
+                {"zip_code": {"$regex": "^" + re.escape(uz)}},
+                {"business_zip": {"$regex": "^" + re.escape(uz)}},
+            ]
+        })
+    query = {"$and": and_parts} if len(and_parts) > 1 else and_parts[0]
+    seen: set[str] = set()
+    out: list = []
+    cap = max(50, min(int(max_docs or 600), 2000))
+    for coll_name in collection_names:
+        try:
+            for doc in db[coll_name].find(query).limit(cap):
+                sid = str(doc.get("_id"))
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                if not _mongo_row_eligible(doc):
+                    continue
+                out.append(doc)
+        except Exception:
+            logger.exception("business_matching.mongo.broad_collection_failed name=%s", coll_name)
+    logger.info(
+        "business_matching.mongo.broad_location state=%s city=%s n=%s cap=%s",
+        st or None,
+        ct or None,
+        len(out),
+        cap,
+    )
+    return out
+
+
 def _fetch_mongo_business_docs(
     db,
     collection_names: list,
@@ -794,6 +871,8 @@ def _get_top_businesses_mongo(
     strict_location: bool = False,
     sort_mode: str = "default",
     extra_match_terms: list[str] | None = None,
+    *,
+    broad_location_only: bool = False,
 ) -> dict:
     from django.conf import settings
 
@@ -821,13 +900,45 @@ def _get_top_businesses_mongo(
     try:
         from chatbot.mongo_db import get_db
         db = get_db()
-        all_rows = _fetch_mongo_business_docs(
-            db,
-            collection_names,
-            category,
-            subcategory,
-            extra_match_terms=extra_match_terms,
-        )
+        if broad_location_only:
+            all_rows = _fetch_mongo_business_docs_broad_location(
+                db,
+                collection_names,
+                state,
+                city,
+                county,
+                zip_code,
+            )
+            if extra_match_terms:
+                terms_l = [str(t).lower() for t in extra_match_terms if t]
+                filtered = []
+                for doc in all_rows:
+                    hay = " ".join(
+                        filter(
+                            None,
+                            [
+                                doc.get("name"),
+                                doc.get("business_name"),
+                                doc.get("category"),
+                                doc.get("business_category"),
+                                doc.get("subcategory"),
+                                doc.get("business_subcategory"),
+                                doc.get("tags"),
+                            ],
+                        )
+                    ).lower()
+                    if any(t in hay for t in terms_l):
+                        filtered.append(doc)
+                if filtered:
+                    all_rows = filtered
+        else:
+            all_rows = _fetch_mongo_business_docs(
+                db,
+                collection_names,
+                category,
+                subcategory,
+                extra_match_terms=extra_match_terms,
+            )
     except Exception:
         logger.exception("business_matching.mongo.query_failed")
         return {"businesses": [], "see_more": False, "location_note": None}
@@ -944,12 +1055,13 @@ def _get_top_businesses_mongo(
             logger.exception("business_matching.mongo.impression_log_failed business_id=%s", bid)
 
     logger.info(
-        "business_matching.mongo.result category=%s subcategory=%s attr_terms=%s results=%s see_more=%s",
+        "business_matching.mongo.result category=%s subcategory=%s attr_terms=%s results=%s see_more=%s broad=%s",
         category,
         subcategory,
         len(extra_match_terms or []),
         len(out_list),
         see_more,
+        broad_location_only,
     )
     return {"businesses": out_list, "see_more": see_more, "location_note": location_note}
 
@@ -971,10 +1083,15 @@ def get_top_businesses(
     strict_location: bool = False,
     sort_mode: str = "default",
     extra_match_terms: list[str] | None = None,
+    *,
+    broad_location_only: bool = False,
 ) -> dict:
     from django.conf import settings
-    if not (str(category or "").strip() or str(subcategory or "").strip()):
+    if not broad_location_only and not (str(category or "").strip() or str(subcategory or "").strip()):
         logger.info("business_matching.skip empty category+subcategory")
+        return {"businesses": [], "see_more": False, "location_note": None}
+    if broad_location_only and not getattr(settings, "USE_MONGO", False):
+        logger.info("business_matching.skip broad_location_only requires USE_MONGO")
         return {"businesses": [], "see_more": False, "location_note": None}
     if getattr(settings, "USE_MONGO", False):
         return _get_top_businesses_mongo(
@@ -994,6 +1111,7 @@ def get_top_businesses(
             strict_location=strict_location,
             sort_mode=sort_mode,
             extra_match_terms=extra_match_terms,
+            broad_location_only=broad_location_only,
         )
 
     from chatbot.models import Business, AdPackage, ImpressionsLog
@@ -1179,6 +1297,27 @@ def _business_alias_token_lower_set() -> frozenset[str]:
 _MONGO_DISCOVERY_GENERIC_HINTS = frozenset(
     {"local businesses", "businesses", "business", "local business", "establishment", "establishments"}
 )
+
+
+def _is_generic_local_business_listing_message(message: str) -> bool:
+    """True when user asks for broad local listings without a specific vertical (lawyer, food, etc.)."""
+    m = (message or "").lower()
+    needles = (
+        "local business",
+        "local businesses",
+        "location business",
+        "location businesses",
+        "businesses in",
+        "business in",
+        "providers in",
+        "services in",
+        "companies in",
+        "establishments in",
+        "list of business",
+        "any business",
+        "some business",
+    )
+    return any(n in m for n in needles)
 
 
 def _mongo_pick_category_from_discovery_terms(terms: list[str]) -> str | None:
@@ -1378,9 +1517,29 @@ def search_business_directory_for_discovery(
         cat, sub = _mongo_resolve_discovery_category_labels(
             message, category, subcategory, category_hint
         )
-        if not cat and not sub:
-            return {"businesses": [], "see_more": False, "location_note": None}
         attr_terms = extract_directory_attribute_terms(message)
+        if not cat and not sub:
+            if _is_generic_local_business_listing_message(message or ""):
+                return get_top_businesses(
+                    category=None,
+                    subcategory=None,
+                    state=state,
+                    city=city,
+                    county=county,
+                    zip_code=zip_code,
+                    user_lat=user_lat,
+                    user_lon=user_lon,
+                    language=language,
+                    limit=limit,
+                    offset=offset,
+                    external_id=external_id,
+                    session_id=session_id,
+                    strict_location=False,
+                    sort_mode="default",
+                    extra_match_terms=attr_terms or None,
+                    broad_location_only=True,
+                )
+            return {"businesses": [], "see_more": False, "location_note": None}
         return get_top_businesses(
             category=cat,
             subcategory=sub,

@@ -336,6 +336,32 @@ def debug_knowledge(request):
     })
 
 
+@require_http_methods(["GET"])
+def api_learning_gaps(request):
+    """
+    Summary of directory gaps logged by LearningAgent (Mongo learning_logs).
+    Restricted to DEBUG or staff in production.
+    """
+    if not getattr(django_settings, "DEBUG", False):
+        if not getattr(request, "user", None) or not request.user.is_authenticated:
+            return JsonResponse({"error": "Not found"}, status=404)
+        if not getattr(request.user, "is_staff", False):
+            return JsonResponse({"error": "Not found"}, status=404)
+    try:
+        days = int(request.GET.get("days", "7"))
+    except ValueError:
+        days = 7
+    try:
+        from chatbot.agents.learning_agent import LearningAgent
+
+        summary = LearningAgent().get_gap_summary(days=days)
+        logger.info("chatbot.api_learning_gaps days=%s total_gaps=%s", days, summary.get("total_gaps"))
+        return JsonResponse({"status": "ok", "data": summary})
+    except Exception as e:
+        logger.exception("chatbot.api_learning_gaps.error")
+        return JsonResponse({"status": "error", "error": str(e)}, status=500)
+
+
 @csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
 def track_contact(request):
