@@ -20,6 +20,7 @@ from admin_panel.api.admin import (
     SendAdminNotification,
     AdminBanner,
 )
+from admin_panel.api.collections import AdminMongoCollections
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
@@ -49,6 +50,8 @@ from listings.api import (
 )
 
 urlpatterns = [
+    # MongoDB collection names (admin tools)
+    path('collections', AdminMongoCollections.as_view()),
     # Update api's
     path('jobs/<str:pk>', JobsUpdateAPI.as_view()),
     path('kids/<str:pk>', KidsUpdateAPI.as_view()),

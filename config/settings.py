@@ -152,7 +152,12 @@ _allowed_default = (
 )
 ALLOWED_HOSTS = _env_csv("ALLOWED_HOSTS", _allowed_default)
 
-CORS_ORIGIN_ALLOW_ALL = _env_bool("CORS_ORIGIN_ALLOW_ALL", default=True)
+# django-cors-headers 4.x prefers CORS_ALLOW_ALL_ORIGINS; it falls back to CORS_ORIGIN_ALLOW_ALL if unset
+_cors_allow_all = _env_bool("CORS_ORIGIN_ALLOW_ALL", default=True)
+CORS_ALLOW_ALL_ORIGINS = _env_bool(
+    "CORS_ALLOW_ALL_ORIGINS", default=_cors_allow_all
+)
+CORS_ORIGIN_ALLOW_ALL = CORS_ALLOW_ALL_ORIGINS
 
 _csrf_default = (
     "https://braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net,"
