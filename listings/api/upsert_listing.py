@@ -50,11 +50,26 @@ def _normalize_keywords(raw):
     '''
     Build a list[str] for ListField(StringField): split comma-separated text,
     strip accidental wrapping quotes (e.g. 'abc' from Postman), coerce non-strings.
+
+    Multipart often sends one field value like "abc, used" → getlist may yield
+    one string; we split commas inside each segment too.
     '''
     if raw is None:
         return []
+    parts = []
     if isinstance(raw, (list, tuple)):
-        parts = list(raw)
+        for item in raw:
+            s = str(item).strip()
+            if not s:
+                continue
+            if (s.startswith("'") and s.endswith("'")) or (
+                s.startswith('"') and s.endswith('"')
+            ):
+                s = s[1:-1].strip()
+            if ',' in s:
+                parts.extend([x.strip() for x in s.split(',') if x.strip()])
+            else:
+                parts.append(s)
     else:
         text = str(raw).strip()
         if not text:
@@ -74,6 +89,33 @@ def _normalize_keywords(raw):
         if s:
             out.append(s)
     return out
+
+
+def _listing_create_payload(request, listing_coordinates):
+    '''
+    Plain dict for DRF/mongo ListField: QueryDict + ListField mixes getlist()
+    with indexed keys (keywords[0]) and breaks CharField children. Files stay
+    on getlist('pictures').
+    '''
+    qd = request.data
+    payload = {}
+    for key in qd.keys():
+        if key in ('pictures', 'keywords', 'listing_coordinates'):
+            continue
+        payload[key] = qd.get(key)
+    payload['listing_coordinates'] = listing_coordinates
+    file_list = request.FILES.getlist('pictures')
+    if file_list:
+        payload['pictures'] = file_list
+    fb = payload.get('from_business')
+    if isinstance(fb, str):
+        payload['from_business'] = fb.strip().lower() in (
+            'true',
+            '1',
+            'yes',
+        )
+    payload['keywords'] = _normalize_keywords(qd.get('keywords'))
+    return payload
 
 
 class Listing(generics.CreateAPIView):
@@ -133,24 +175,9 @@ class Listing(generics.CreateAPIView):
             raise ValidationError(
                 'Invalid JSON format for listing_coordinates.'
             ) from exc
-        mutable_data = request.data.copy()
-        mutable_data['listing_coordinates'] = listing_coordinates
-
-        file_list = request.FILES.getlist('pictures')
-        if file_list:
-            mutable_data['pictures'] = file_list
-
-        fb = mutable_data.get('from_business')
-        if isinstance(fb, str):
-            mutable_data['from_business'] = fb.strip().lower() in (
-                'true',
-                '1',
-                'yes',
-            )
-
-        mutable_data['keywords'] = _normalize_keywords(mutable_data.get('keywords'))
+        payload = _listing_create_payload(request, listing_coordinates)
         serializer = self.get_serializer(
-            data=mutable_data, context={'request': request}
+            data=payload, context={'request': request}
         )
         # Validate and create the listing if valid
         serializer.is_valid(raise_exception=True)
