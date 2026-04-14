@@ -13,6 +13,9 @@ from django.db.models import F, Q
 
 logger = logging.getLogger(__name__)
 
+# Shared haystack for TAGS/name confirmation (same fields as directory search).
+from chatbot.services.business_search_service import _mongo_tag_match_blob  # noqa: E402
+
 def _distance_miles(lat1, lon1, lat2, lon2):
     if None in (lat1, lon1, lat2, lon2):
         return None
@@ -374,6 +377,7 @@ _MONGO_DIRECTORY_TEXT_FIELDS = (
     "name",
     "business_name",
     "tags",
+    "TAGS",
     "category",
     "business_category",
     "subcategory",
@@ -447,7 +451,7 @@ def _mongo_regex_or_on_business_fields(terms: list[str], field_names: tuple[str,
 
 def _mongo_category_filter(category: str, subcategory: str) -> dict:
     parts = []
-    TEXT_FIELDS = ("category", "business_category", "subcategory", "business_subcategory", "tags")
+    TEXT_FIELDS = ("category", "business_category", "subcategory", "business_subcategory", "tags", "TAGS")
     if category and str(category).strip():
         cterms = _search_terms_for_directory_label(str(category).strip())
         block = _mongo_regex_or_on_business_fields(cterms, TEXT_FIELDS)
@@ -924,6 +928,7 @@ def _get_top_businesses_mongo(
                                 doc.get("subcategory"),
                                 doc.get("business_subcategory"),
                                 doc.get("tags"),
+                                doc.get("TAGS"),
                             ],
                         )
                     ).lower()
@@ -1032,6 +1037,7 @@ def _get_top_businesses_mongo(
         out_list.append({
             "id": bid,
             "name": n["name"],
+            "tag_match_text": _mongo_tag_match_blob(b),
             "category": n["category"],
             "subcategory": n["subcategory"],
             "state": n["state"],
@@ -1252,9 +1258,21 @@ def get_top_businesses(
         out_list = []
         with transaction.atomic():
             for b, dist in selected_pairs:
+                tag_bits = " ".join(
+                    filter(
+                        None,
+                        [
+                            (b.name or "").strip(),
+                            (getattr(b, "tags", None) or "").strip(),
+                            (b.category or "").strip(),
+                            (b.subcategory or "").strip(),
+                        ],
+                    )
+                ).strip()
                 out_list.append({
                     "id": b.id,
                     "name": b.name,
+                    "tag_match_text": tag_bits,
                     "category": b.category,
                     "subcategory": b.subcategory,
                     "state": b.state,

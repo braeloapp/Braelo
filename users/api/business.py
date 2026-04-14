@@ -22,6 +22,7 @@ from rest_framework.permissions import (
     IsAuthenticated,
     AllowAny,
 )
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from users.models import User, Business
 from helpers.constants import CATEGORIES
@@ -31,6 +32,10 @@ from admin_panel.models import AdminBusinessBanner
 from listings.api.fetch_listings import get_user_recommendations
 from notifications.serializers.events import EventNotificationSerializer
 from users.serializers.business import BusinessSerailizer, BannerSearilizer
+from users.services.businesses_directory_sync import (
+    set_businesses_directory_active,
+    upsert_businesses_directory_doc,
+)
 
 
 class BusinessPagination(PageNumberPagination):
@@ -83,6 +88,7 @@ class BussinessListing(generics.CreateAPIView):
     API endpoint to handle business creation
     '''
 
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = BusinessSerailizer
 
@@ -139,6 +145,7 @@ class BussinessListing(generics.CreateAPIView):
         instance.business_qr = business_qr.get('qr_image')
         instance.business_url = business_qr.get('unique_url')
         instance.save()
+        upsert_businesses_directory_doc(instance)
         serialized_data = BusinessSerailizer(instance).data
         self.send_notification(serialized_data)
         return response(
@@ -183,6 +190,7 @@ class DeactivateBusiness(generics.CreateAPIView):
             user.is_business = False
             user.save(update_fields=['is_business'])
             business.save(update_fields=['is_active'])
+            set_businesses_directory_active(str(business.id), False)
             return response(
                 status=status.HTTP_204_NO_CONTENT,
                 message='Business Deactivated Successfully',
@@ -275,6 +283,7 @@ class Activate_Business(generics.UpdateAPIView):
         user.is_business = True
         business_status.save()
         user.save()
+        upsert_businesses_directory_doc(business_status)
 
         return response(
             status=status.HTTP_201_CREATED,

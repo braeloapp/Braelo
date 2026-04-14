@@ -130,7 +130,11 @@ def get_structured_output(
     if not client:
         logger.info("gpt_service.structured.skip reason=no_openai_client")
         return _fallback_structured(message)
-    system = """You are an assistant for immigrant communities in the USA (Hispanic and Brazilian).
+    from chatbot.ellu.persona import ELLU_NAME
+
+    system = f"""You are a message classifier for Éllu ({ELLU_NAME} by Braelo), serving immigrant communities in the USA (Hispanic and Brazilian).
+Output must be a single JSON object only — no markdown, no explanation, no extra text before or after.
+
 Classify the user message and extract structured data. Respond with a JSON object only, no markdown.
 
 SCOPE: This chatbot helps with (1) practical life in the USA from the knowledge base: immigration paperwork, housing and renting, taxes and ITIN, jobs and work authorization, health and insurance, education, banking, driver's license and DMV/MVD processes (including converting or transferring a foreign license), vehicle registration, state ID, and similar day-to-day topics, (2) finding local businesses (lawyer, tax preparer, doctor, real estate, etc.), (3) comparing businesses, (4) casual conversation (greetings, thanks, goodbye).
@@ -311,7 +315,13 @@ def generate_kb_clarification_reply(
         return _kb_clarification_fallback(language)
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
-    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA. The user's message did not match any FAQ entry clearly enough to answer safely.
+    from chatbot.ellu.persona import get_system_prompt
+
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}The user's message did not match any FAQ entry clearly enough to answer safely.
 
 Write 1–2 short sentences in {lang_name} that:
 - Ask them to rephrase using different words, or name the topic (housing, driver's license, taxes, etc.).
@@ -424,10 +434,14 @@ Optional profile hints: {location_hint}"""
 
     try:
         logger.info("gpt_service.general_braelo.request lang=%s msg_len=%s", language, len(user_message or ""))
+        from chatbot.ellu.persona import get_system_prompt
+        ellu_base = get_system_prompt(language or "pt")
+        system_prompt = f"{ellu_base}\n\nYOUR TASK FOR THIS RESPONSE:\n{GENERAL_BRAELO_SYSTEM}"
+
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=openai_messages_with_history(
-                [_lang_system_prefix(language) + GENERAL_BRAELO_SYSTEM],
+                [system_prompt],
                 chat_history,
                 user,
                 max_messages=24,
@@ -471,10 +485,14 @@ def generate_business_directory_fallback_response(
         user += f"\n\nKnown session facts:\n{facts[:2000]}"
     user += f"\n\nRespond entirely in {lang_name}."
     try:
+        from chatbot.ellu.persona import get_system_prompt
+        ellu_base = get_system_prompt(language or "pt")
+        system_prompt = f"{ellu_base}\n\nYOUR TASK FOR THIS RESPONSE:\n{BUSINESS_DIRECTORY_FALLBACK_SYSTEM}"
+
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
             messages=openai_messages_with_history(
-                [_lang_system_prefix(language) + BUSINESS_DIRECTORY_FALLBACK_SYSTEM],
+                [system_prompt],
                 chat_history,
                 user,
                 max_messages=20,
@@ -773,7 +791,9 @@ def handle_location_search(
         location_context=location_context,
         lang_instruction=lang_instruction,
     )
-    system_full = _lang_system_prefix(detected_language) + system_body
+    from chatbot.ellu.persona import get_system_prompt
+    ellu_base = get_system_prompt(detected_language or "pt")
+    system_full = f"{ellu_base}\n\nYOUR TASK FOR THIS RESPONSE:\n{system_body}"
 
     q = (query or "").strip()[:2000]
     cat = (category or "").strip()[:300]
@@ -885,7 +905,11 @@ Current user message:
 
 {lang_instruction} Prefer flowing prose; use a short numbered list only if the user asked for steps and the context lists steps. Do not end with a closing phrase. Keep the conversation open."""
 
-    system_blocks = [_lang_system_prefix(language) + BRAELO_RAG_SYSTEM, kb_block]
+    from chatbot.ellu.persona import get_system_prompt
+    ellu_base = get_system_prompt(language or "pt")
+    system_prompt = f"{ellu_base}\n\nYOUR TASK FOR THIS RESPONSE:\n{BRAELO_RAG_SYSTEM}"
+
+    system_blocks = [system_prompt, kb_block]
     if facts_block:
         system_blocks.append(facts_block)
 
@@ -953,9 +977,13 @@ def generate_local_office_response(
         }.get(language, f"Here are nearby {place_label} options:")
         return header + "\n\n" + places_block
 
-    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA.
+    from chatbot.ellu.persona import get_system_prompt
 
-The user asked for nearby offices or locations (e.g. DMV). Below are REAL map search results with addresses and map links. You MUST use them.
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}The user asked for nearby offices or locations (e.g. DMV). Below are REAL map search results with addresses and map links. You MUST use them.
 
 Rules:
 1. Write in {lang_name}. Start with one short friendly intro sentence (no bullets in the intro).
@@ -1037,9 +1065,13 @@ def generate_local_dining_response(
         }.get(language, f"Here are map results for {search_label}:")
         return header + "\n\n" + places_block
 
-    system = _lang_system_prefix(language) + f"""You are Braelo, helping immigrants in the USA.
+    from chatbot.ellu.persona import get_system_prompt
 
-The user asked for nearby restaurants or places to eat. Below are REAL OpenStreetMap/Nominatim map search results (names, addresses, map links). You MUST use them as the ONLY source for restaurant names and locations.
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}The user asked for nearby restaurants or places to eat. Below are REAL OpenStreetMap/Nominatim map search results (names, addresses, map links). You MUST use them as the ONLY source for restaurant names and locations.
 
 Rules:
 1. Write in {lang_name}. Start with one short friendly intro sentence (no bullets in the intro).
@@ -1106,7 +1138,13 @@ def generate_clarifying_questions(
         return "Could you tell me a bit more about what you're looking for? For example, which state or topic?"
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant for immigrants in the USA. The user's message was unclear or missing important details.
+    from chatbot.ellu.persona import get_system_prompt
+
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}The user's message was unclear or missing important details.
 Your job is to ask 2 or 3 short, specific clarifying questions in {lang_name}. Do not use bullet points or dashes; write one or two flowing sentences with questions.
 Do not answer the question yourself. Do not add a closing phrase. Keep the conversation open."""
 
@@ -1149,7 +1187,13 @@ def generate_business_comparison(
         return "I couldn't find enough information to compare those businesses. Try naming them again or ask for businesses in your area."
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {}).get(language, "English")
-    system = _lang_system_prefix(language) + f"""You are Braelo. Compare the given businesses based on the provided context. Write in {lang_name}.
+    from chatbot.ellu.persona import get_system_prompt
+
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}Compare the given businesses based on the provided context. Write in {lang_name}.
 Do NOT use bullet points or dashes. Use flowing paragraphs. Be direct and objective. Do not add a closing statement. Keep the conversation open.
 Use prior conversation turns if the user refers to businesses mentioned earlier."""
 
@@ -1221,7 +1265,13 @@ def generate_response(
         return reply
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
-    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant for immigrants in the USA. Respond only in {lang_name}.
+    from chatbot.ellu.persona import get_system_prompt
+
+    ellu_base = get_system_prompt(language or "pt")
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
+{_lang_system_prefix(language)}Respond only in {lang_name}.
 Be concise. Do not use bullet points or dashes. Do not end with a closing phrase. Keep the conversation open."""
 
     user = f"The user asked: {user_message}\n\nGive a short helpful response in {lang_name} and suggest they provide their state, county, or ZIP for better answers. No bullets, no closing phrase."
@@ -1265,7 +1315,12 @@ def generate_exact_kb_answer(
 
     lang_name = getattr(settings, "LANGUAGE_NAMES", {"en": "English", "es": "Spanish", "pt": "Portuguese"}).get(language, "English")
 
-    system = _lang_system_prefix(language) + f"""You are Braelo, a warm assistant helping immigrants navigate life in the USA.
+    from chatbot.ellu.persona import get_system_prompt
+    ellu_base = get_system_prompt(language or "pt")
+    
+    system = f"""{ellu_base}
+
+YOUR TASK FOR THIS RESPONSE:
 You have found a strong match in your knowledge base for the user's question.
 Your job: deliver this answer naturally and completely in {lang_name}.
 

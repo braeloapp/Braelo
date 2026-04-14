@@ -260,6 +260,8 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
+    # Some clients send "bearer" (lowercase); SimpleJWT matches the scheme exactly otherwise auth is skipped → 401.
+    'AUTH_HEADER_TYPES': ('Bearer', 'bearer', 'JWT'),
     'BLACKLIST_AFTER_ROTATION': _env_bool('JWT_BLACKLIST_AFTER_ROTATION', default=True),
     'ACCESS_TOKEN_LIFETIME': timedelta(
         minutes=_env_int('JWT_ACCESS_TOKEN_MINUTES', 2880)
@@ -562,8 +564,16 @@ else:
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
+# When True (default), directory name/TAGS narrowing may ask the LLM for extra PT/EN substrings (e.g. BBQ ↔ churrasco).
+TAG_SEARCH_LLM_EXPAND = os.getenv('TAG_SEARCH_LLM_EXPAND', 'true').lower() in ('true', '1', 'yes', 'on')
 # Google Places (Nearby / Text / Details) — server-side only; set in .env (not VITE_).
 GOOGLE_PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY', '')
+# Optional: Geocoding API key (reverse geocode lat/lng → state/city/county). Defaults to GOOGLE_PLACES_API_KEY if unset.
+GOOGLE_MAPS_GEOCODING_API_KEY = os.getenv('GOOGLE_MAPS_GEOCODING_API_KEY', '').strip()
+# When true: log full `businesses` mirror payload and print to stdout (local testing only).
+BUSINESS_DIRECTORY_SYNC_DEBUG = os.getenv(
+    "BUSINESS_DIRECTORY_SYNC_DEBUG", ""
+).strip().lower() in ("1", "true", "yes", "on")
 GOOGLE_PLACES_RADIUS_M = int(os.getenv('GOOGLE_PLACES_RADIUS_M', '6000'))
 GOOGLE_PLACES_MAX_RESULTS = int(os.getenv('GOOGLE_PLACES_MAX_RESULTS', '7'))
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')

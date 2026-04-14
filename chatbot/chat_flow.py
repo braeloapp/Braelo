@@ -1,6 +1,7 @@
 """
 Chat flow pipeline:
   Tier 0   : Casual talk (intents.json)
+  Tier 0b  : Yes/no follow-up on last directory listings (cuisine/TAGS match vs user question)
   Tier 1a  : Structured intent + merged location
   Tier 1b  : Business database FIRST for find/hire local services + location → strict then loose match;
              if empty → directory fallback unless is_location_based_query (then defer to 2a0 / OSM / KB)
@@ -41,7 +42,9 @@ from chatbot.services.business_matching import (
     search_business_directory_for_discovery,
 )
 from chatbot.geo_constants import backfill_state_from_major_us_city as _backfill_state_from_major_us_city
-from chatbot.services.business_search_service import generate_business_not_found_response
+from chatbot.services.business_search_service import (
+    generate_business_not_found_response,
+)
 from chatbot.services.casual_intents import get_casual_response
 from chatbot.services.local_search import find_nearby_places, find_nearby_pois
 from chatbot.agents.intent_classifier import (
@@ -839,24 +842,8 @@ def _is_assistant_meta_question(message: str) -> bool:
 
 
 def _assistant_capabilities_message(language: str) -> str:
-    msgs = {
-        "en": (
-            "I'm here to help with information about living in the USA and finding local businesses "
-            "in your area. I can't help with that. What would you like to know about immigration, "
-            "housing, taxes, or which type of business are you looking for?"
-        ),
-        "es": (
-            "Estoy aquí para ayudarte con información sobre vivir en EE.UU. y encontrar negocios locales "
-            "en tu zona. No puedo ayudarte con eso. ¿Qué te gustaría saber sobre inmigración, vivienda, "
-            "impuestos, o qué tipo de negocio buscas?"
-        ),
-        "pt": (
-            "Estou aqui para ajudar com informações sobre viver nos EUA e encontrar negócios locais "
-            "na sua região. Não posso ajudar com isso. O que você gostaria de saber sobre imigração, "
-            "moradia, impostos, ou que tipo de negócio você procura?"
-        ),
-    }
-    return msgs.get(language, msgs["en"])
+    from chatbot.ellu.persona import get_phrase
+    return get_phrase("capabilities", language)
 
 
 _US_STATE_NAMES = {
@@ -1789,6 +1776,236 @@ def _parse_history_entities(raw) -> dict | None:
         return None
 
 
+def _compact_directory_listings_for_history(businesses: list | None) -> list[dict]:
+    out: list[dict] = []
+    for b in businesses or []:
+        if not isinstance(b, dict):
+            continue
+        out.append(
+            {
+                "id": b.get("id"),
+                "name": (b.get("name") or "")[:200],
+                "category": (b.get("category") or "")[:120],
+                "subcategory": (b.get("subcategory") or "")[:120],
+                "tag_match_text": ((b.get("tag_match_text") or "")[:2000]),
+            }
+        )
+    return out[:16]
+
+
+def _last_directory_listings_snapshot_from_history(chat_history: list | None) -> list[dict] | None:
+    for item in reversed(chat_history or []):
+        if item.get("role") != "assistant":
+            continue
+        ent = item.get("entities")
+        if not isinstance(ent, dict):
+            continue
+        snap = ent.get("directory_listings_snapshot")
+        if isinstance(snap, list) and len(snap) > 0:
+            return snap
+    return None
+
+
+def _is_directory_attribute_yes_no_followup(message: str | None) -> bool:
+    t = (message or "").strip().lower()
+    if len(t) < 10:
+        return False
+    wants_yn = bool(
+        re.search(
+            r"\b(yes\s+or\s+no|tell\s+me\s+(yes|no)\b|\b(?:answer|reply)\s+with\s+(yes|no))",
+            t,
+        )
+        or ("?" in t and re.search(r"\b(yes|no)\b", t))
+    )
+    refers_back = bool(
+        re.search(
+            r"\b(these|those|that|they|them|above|previous|last|same)\b",
+            t,
+        )
+    )
+    has_cuisine = bool(
+        re.search(
+            r"\b(bbq|barbecue|barbeque|brazil|brazilian|churras|steakhouse|sushi|pizza|vegan|"
+            r"halal|kosher|mexican|italian|chinese|thai|korean|japanese|indian|restaurant)\b",
+            t,
+        )
+    )
+    return (wants_yn or refers_back) and has_cuisine
+
+
+def _merge_terms_for_directory_confirmation(message: str) -> list[str]:
+    from chatbot.services.business_search_service import extract_listing_name_filter_terms
+
+    t1 = extract_listing_name_filter_terms(message) or []
+    t2 = extract_directory_attribute_terms(message) or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in list(t1) + list(t2):
+        s = (x or "").strip().lower()
+        if len(s) >= 2 and s not in seen:
+            seen.add(s)
+            out.append(s)
+    if out:
+        return out[:32]
+    m = (message or "").lower()
+    fb: list[str] = []
+    if re.search(r"\b(bbq|barbecue|barbeque)\b", m):
+        fb.extend(
+            ["bbq", "barbecue", "churrasco", "churrasqueiro", "churrasqueiros", "churrascaria"]
+        )
+    if re.search(r"\b(brazil|brazilian|brasileir)\b", m):
+        fb.extend(["brazil", "brazilian", "brasileir", "brasil"])
+    dedup: list[str] = []
+    seen2: set[str] = set()
+    for x in fb:
+        if x not in seen2:
+            seen2.add(x)
+            dedup.append(x)
+    return dedup[:32]
+
+
+def _listing_snapshot_matches_terms(snap: dict, terms: list[str]) -> bool:
+    if not terms:
+        return False
+    hay = " ".join(
+        [
+            str(snap.get("name") or ""),
+            str(snap.get("tag_match_text") or ""),
+            str(snap.get("category") or ""),
+            str(snap.get("subcategory") or ""),
+        ]
+    ).lower()
+    for term in terms:
+        te = (term or "").strip().lower()
+        if len(te) < 2:
+            continue
+        if len(te) <= 3:
+            if re.search(r"(?<![a-z0-9])" + re.escape(te) + r"(?![a-z0-9])", hay):
+                return True
+        elif te in hay:
+            return True
+    return False
+
+
+def _compose_directory_confirmation_reply(
+    *,
+    snapshot: list[dict],
+    terms: list[str],
+    detected_lang: str,
+) -> str:
+    flags = [_listing_snapshot_matches_terms(s, terms) for s in snapshot]
+    n_ok = sum(1 for x in flags if x)
+    n = len(flags)
+    labels = [str(s.get("name") or "?")[:80] for s in snapshot]
+
+    def label_join(names: list[str]) -> str:
+        if len(names) <= 2:
+            return " and ".join(names)
+        return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+    if detected_lang == "pt":
+        if n == 0:
+            return ""
+        if n_ok == n:
+            return (
+                "**Sim** — para a sua pergunta, todos esses anúncios batem com os termos "
+                "que verificamos (nome e TAGS)."
+            )
+        if n_ok == 0:
+            return (
+                "**Não** — nenhum desses anúncios bateu com os termos esperados (nome/TAGS) para esta pergunta."
+            )
+        yes_ix = [labels[i] for i in range(n) if flags[i]]
+        no_ix = [labels[i] for i in range(n) if not flags[i]]
+        return (
+            "**Parcialmente** — "
+            + (f"combinam: {label_join(yes_ix)}. " if yes_ix else "")
+            + (f"não combinam: {label_join(no_ix)}." if no_ix else "")
+        )
+
+    if detected_lang == "es":
+        if n == 0:
+            return ""
+        if n_ok == n:
+            return (
+                "**Sí** — para tu pregunta, todos estos listados coinciden con los términos "
+                "que comprobamos (nombre y TAGS)."
+            )
+        if n_ok == 0:
+            return "**No** — ninguno de estos listados coincide con los términos (nombre/TAGS) de tu pregunta."
+        yes_ix = [labels[i] for i in range(n) if flags[i]]
+        no_ix = [labels[i] for i in range(n) if not flags[i]]
+        return (
+            "**Parcialmente** — "
+            + (f"sí: {label_join(yes_ix)}. " if yes_ix else "")
+            + (f"no: {label_join(no_ix)}." if no_ix else "")
+        )
+
+    if n == 0:
+        return ""
+    if n_ok == n:
+        return (
+            "**Yes** — for your question, all of these directory listings match the terms we check "
+            "(name and TAGS)."
+        )
+    if n_ok == 0:
+        return "**No** — none of these listings matched the expected terms for your question (name/TAGS)."
+    yes_ix = [labels[i] for i in range(n) if flags[i]]
+    no_ix = [labels[i] for i in range(n) if not flags[i]]
+    return (
+        "**Partially** — "
+        + (f"matches: {label_join(yes_ix)}. " if yes_ix else "")
+        + (f"does not match: {label_join(no_ix)}." if no_ix else "")
+    )
+
+
+def _reload_businesses_for_snapshot(
+    snapshot: list[dict],
+    user_id: str,
+    session_id: str | None,
+) -> list[dict]:
+    from chatbot.services import business_search_service as bss
+
+    ids = [str(s.get("id")) for s in (snapshot or []) if s.get("id")]
+    if not ids:
+        return []
+    try:
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        from chatbot.mongo_db import get_db
+
+        oids: list = []
+        for i in ids:
+            try:
+                oids.append(ObjectId(i))
+            except (InvalidId, TypeError):
+                continue
+        if not oids:
+            return []
+        db = get_db()
+        names = getattr(django_settings, "MONGO_BUSINESS_COLLECTIONS", None) or ["businesses"]
+        if isinstance(names, str):
+            names = [x.strip() for x in names.split(",") if x.strip()]
+        docs: list = []
+        for coll_name in names:
+            docs.extend(list(db[coll_name].find({"_id": {"$in": oids}})))
+        if not docs:
+            return []
+        by_id = {str(d.get("_id")): d for d in docs}
+        ordered_docs = [by_id[i] for i in ids if i in by_id]
+        return bss.mongo_docs_to_api_businesses(ordered_docs, user_id, session_id or user_id)
+    except Exception:
+        logger.exception("chat_flow.reload_businesses_for_snapshot_failed")
+        return []
+
+
+_DIRECTORY_CONFIRM_TAIL = {
+    "en": "Here are the same listings from our directory:",
+    "es": "Aquí están los mismos listados de nuestro directorio:",
+    "pt": "Aqui estão os mesmos anúncios do nosso diretório:",
+}
+
+
 def _store_session_location(
     session_id: str,
     *,
@@ -2118,7 +2335,14 @@ def _format_known_facts(state: str, city: str, county: str, zip_code: str) -> st
     return "\n".join(parts) if parts else ""
 
 
-def _save_history(user_id: str, message: str, reply: str, intent: str, structured: dict):
+def _save_history(
+    user_id: str,
+    message: str,
+    reply: str,
+    intent: str,
+    structured: dict,
+    businesses: list | None = None,
+):
     try:
         if getattr(django_settings, "USE_MONGO", False):
             from chatbot.mongo_db import get_db
@@ -2127,25 +2351,31 @@ def _save_history(user_id: str, message: str, reply: str, intent: str, structure
             col = db.chat_history
             now = datetime.utcnow()
             for role, content in [("user", message), ("assistant", reply)]:
+                st = dict(structured or {})
+                if role == "assistant" and businesses:
+                    st["directory_listings_snapshot"] = _compact_directory_listings_for_history(businesses)
                 col.insert_one({
                     "external_id": user_id,
                     "role": role,
                     "content": content,
                     "intent": intent,
-                    "entities_json": json.dumps(structured) if structured else None,
+                    "entities_json": json.dumps(st) if st else None,
                     "created_at": now,
                 })
         else:
             user = get_or_create_user(user_id)
             if hasattr(user, "id"):
                 for role, content in [("user", message), ("assistant", reply)]:
+                    st = dict(structured or {})
+                    if role == "assistant" and businesses:
+                        st["directory_listings_snapshot"] = _compact_directory_listings_for_history(businesses)
                     ChatHistory.objects.create(
                         user=user,
                         external_id=user_id,
                         role=role,
                         content=content,
                         intent=intent,
-                        entities_json=json.dumps(structured) if structured else None,
+                        entities_json=json.dumps(st) if st else None,
                     )
     except Exception:
         logger.exception("chat_flow.save_history_failed user_id=%s intent=%s", user_id, intent)
@@ -2355,7 +2585,7 @@ def _lista_mongo_directory_response(
         "subcategory_en": sub_en,
     }
     lista_pag = _business_pagination_dict(lista_snap, lim, 0, businesses, lista_see_more)
-    _save_history(session_id, message, reply, "business_search", merged)
+    _save_history(session_id, message, reply, "business_search", merged, businesses=businesses)
     logger.info("chat_flow.lista_probe.hit user_id=%s n=%s", user_id, len(businesses))
     return _build_response(
         reply,
@@ -2588,6 +2818,18 @@ def process_message(
         user, user_id, session_id, message, message_detected_lang
     )
 
+    from chatbot.ellu.privacy_guard import PrivacyGuard
+    guard_action, guard_response = PrivacyGuard().check_incoming_message(message, detected_lang)
+    if guard_action == "BLOCK":
+        _save_history(
+            session_id,
+            message,
+            guard_response,
+            "privacy_block",
+            {"intent": "privacy_block", "detected_language": detected_lang},
+        )
+        return _build_response(guard_response, detected_lang, "privacy_block")
+
     # ------------------------------------------------------------------
     # TIER 0 — Casual intents  (intents.json, no OpenAI call needed)
     # get_casual_response() only fires for short, non-FAQ messages; see casual_intents.
@@ -2599,6 +2841,11 @@ def process_message(
             if has_api_key and detected_lang != "en"
             else casual_text
         )
+        from chatbot.ellu.persona import get_phrase
+        _is_first_turn = len(openai_chat_history) == 0
+        if _is_first_turn:
+            reply = f"{reply}\n\n{get_phrase('welcome_new', detected_lang)}"
+
         _save_history(session_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
         logger.info("chat_flow.tier0.casual user_id=%s lang=%s tag=%s", user_id, detected_lang, casual_tag)
         return _build_response(reply, detected_lang, "casual", user_name=user_name)
@@ -2614,6 +2861,66 @@ def process_message(
         _save_history(session_id, message, reply, "casual", meta_struct)
         logger.info("chat_flow.meta_capabilities user_id=%s lang=%s", user_id, detected_lang)
         return _build_response(reply, detected_lang, "casual", question_analysis=meta_struct, user_name=user_name)
+
+    # ------------------------------------------------------------------
+    # TIER 0b — Yes/no follow-up about the last directory rows (BBQ, Brazilian, …)
+    # ------------------------------------------------------------------
+    if getattr(django_settings, "USE_MONGO", False) and _is_directory_attribute_yes_no_followup(message):
+        snap = _last_directory_listings_snapshot_from_history(openai_chat_history)
+        if snap:
+            terms = _merge_terms_for_directory_confirmation(message)
+            if terms:
+                lead = _compose_directory_confirmation_reply(
+                    snapshot=snap,
+                    terms=terms,
+                    detected_lang=detected_lang,
+                )
+                tail = _DIRECTORY_CONFIRM_TAIL.get(detected_lang, _DIRECTORY_CONFIRM_TAIL["en"])
+                reply = f"{lead}\n\n{tail}".strip()
+                merged_bs = _reload_businesses_for_snapshot(snap, user_id, session_id)
+                persist_bs = merged_bs if merged_bs else [
+                    {
+                        "id": s.get("id"),
+                        "name": s.get("name") or "?",
+                        "tag_match_text": s.get("tag_match_text") or "",
+                        "category": s.get("category") or "",
+                        "subcategory": s.get("subcategory") or "",
+                        "state": "",
+                        "city": "",
+                        "county": "",
+                        "contact_info": None,
+                        "whatsapp_url": "",
+                    }
+                    for s in snap
+                ]
+                q_struct = {
+                    "intent": "business_search",
+                    "detected_language": detected_lang,
+                    "answer_source": "directory_attribute_confirmation",
+                }
+                _save_history(
+                    session_id,
+                    message,
+                    reply,
+                    "business_search",
+                    q_struct,
+                    businesses=persist_bs,
+                )
+                logger.info(
+                    "chat_flow.tier0b.directory_confirmation user_id=%s n_snap=%s n_reload=%s",
+                    user_id,
+                    len(snap),
+                    len(merged_bs or []),
+                )
+                return _build_response(
+                    reply,
+                    detected_lang,
+                    "business_search",
+                    businesses=persist_bs,
+                    see_more=False,
+                    question_analysis=q_struct,
+                    user_name=user_name,
+                )
 
     # ------------------------------------------------------------------
     # TIER 1a — Structured intent + location (before business DB and KB)
@@ -2658,6 +2965,26 @@ def process_message(
         _route.get("response_type"),
         _route.get("knowledge_before_directory"),
     )
+
+    _pg = PrivacyGuard()
+    if _pg.is_sensitive_topic(message):
+        from chatbot.ellu.persona import get_phrase as _ellu_phrase
+
+        sens_reply = _ellu_phrase("sensitive_topic", detected_lang)
+        sens_struct = {
+            "intent": "sensitive_topic_redirect",
+            "detected_language": detected_lang,
+            "model_intent": intent,
+        }
+        _save_history(session_id, message, sens_reply, "sensitive_topic_redirect", sens_struct)
+        logger.info("chat_flow.sensitive_topic_redirect user_id=%s", user_id)
+        return _build_response(
+            sens_reply,
+            detected_lang,
+            "sensitive_topic_redirect",
+            question_analysis=sens_struct,
+            user_name=user_name,
+        )
 
     # Merge structured extraction into location (message may mention state/ZIP not on profile)
     state = structured.get("state") or state
@@ -2778,14 +3105,24 @@ def process_message(
             )
 
     if directory_intent:
-        if not _has_business_location(state, city, county, zip_code, ulat, ulon):
-            reply = generate_clarifying_questions(
-                message,
-                detected_lang,
-                missing_location=True,
-                chat_history=openai_chat_history,
-                known_facts=known_facts,
-            )
+        from chatbot.ellu.what_where_gate import WhatWhereGate
+        gate = WhatWhereGate()
+        gate_res = gate.check(
+            message=message,
+            category=biz_cat or "",
+            subcategory=biz_sub or "",
+            city=city or "",
+            state=state or "",
+            zip_code=zip_code or "",
+            latitude=ulat,
+            longitude=ulon,
+            session_city=user_location.get("city", "") if user_location else "",
+            session_state=user_location.get("state", "") if user_location else "",
+            detected_language=detected_lang,
+            is_business_search=True,
+        )
+        if not gate_res.can_search:
+            reply = gate_res.clarification_needed
             _save_history(session_id, message, reply, "location_incomplete", structured)
             return _build_response(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
@@ -2934,7 +3271,7 @@ def process_message(
                 "extra_match_terms": snap_extra,
             }
             biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
-            _save_history(session_id, message, reply, "business_search", structured)
+            _save_history(session_id, message, reply, "business_search", structured, businesses=businesses)
             return _build_response(
                 reply,
                 detected_lang,
@@ -3275,7 +3612,14 @@ def process_message(
             loc_struct["agent_decision_route"] = _decision.route
             loc_struct["agent_validation_ok"] = _val_ag.is_valid
             loc_struct["agent_validation_issues"] = list(_val_ag.issues)
-            _save_history(session_id, message, reply, "location_business_search", loc_struct)
+            _save_history(
+                session_id,
+                message,
+                reply,
+                "location_business_search",
+                loc_struct,
+                businesses=db_discovery["businesses"],
+            )
             logger.info(
                 "chat_flow.location_llm.directory_first user_id=%s n=%s",
                 user_id,
@@ -3787,7 +4131,14 @@ def process_message(
             }
             biz_pag = _business_pagination_dict(biz_snap, limit, 0, businesses, see_more)
 
-        _save_history(session_id, message, reply, intent, structured)
+        _save_history(
+            session_id,
+            message,
+            reply,
+            intent,
+            structured,
+            businesses=businesses if businesses else None,
+        )
         return _build_response(
             reply, detected_lang, intent,
             businesses=businesses,
@@ -3912,7 +4263,14 @@ def process_message(
                     rescue_biz,
                     rescue.get("see_more", False),
                 )
-                _save_history(session_id, message, reply, "information_request", structured)
+                _save_history(
+                    session_id,
+                    message,
+                    reply,
+                    "information_request",
+                    structured,
+                    businesses=rescue_biz,
+                )
                 logger.info("chat_flow.tier4.business_rescue user_id=%s n=%s", user_id, len(rescue_biz))
                 return _build_response(
                     reply,
@@ -3997,10 +4355,32 @@ def _build_response(
     contact_details_message: str = None,
     business_pagination: dict | None = None,
 ) -> dict:
+    from chatbot.ellu.response_formatter import (
+        ElluResponseFormatter,
+        tag_businesses_as_braelo_directory,
+    )
+    from chatbot.ellu.privacy_guard import PrivacyGuard
+    from chatbot.ellu.persona import get_phrase
+
+    b_list = tag_businesses_as_braelo_directory(businesses or [])
+    final_resp = response
+
+    if b_list:
+        formatter = ElluResponseFormatter()
+        biz_text = formatter.format_business_results(
+            businesses=b_list,
+            source="mixed",
+            detected_language=detected_language,
+        )
+        final_resp = f"{final_resp}\n\n{biz_text}".strip()
+
+    if not PrivacyGuard().check_outgoing_response(final_resp):
+        final_resp = get_phrase("ask_next", detected_language)
+
     out = {
-        "response": response,
+        "response": final_resp,
         "detected_language": detected_language,
-        "businesses": businesses or [],
+        "businesses": b_list,
         "intent": intent,
         "see_more": see_more,
         "location_note": location_note,

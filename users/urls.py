@@ -83,7 +83,8 @@ urlpatterns = [
     path('device/token', SaveDeviceToken.as_view()),
     # Business Dashboard
     path('business/dashboard', BusinessDashboard.as_view()),
-    # Business Lisitng
+    # Business Lisitng (with and without trailing slash so POST is not redirected and Authorization is preserved)
+    path('business/', BussinessListing.as_view()),
     path('business', BussinessListing.as_view()),
     # fetch all Business
     path('business/fetch', FetchBusinesses.as_view()),

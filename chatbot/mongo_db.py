@@ -119,6 +119,10 @@ def ensure_indexes():
         db.businesses.create_index("state")
         db.businesses.create_index("zip_code")
         db.businesses.create_index("is_active")
+        # User-created listings mirrored from MongoEngine `business_listings` (sparse: Lista rows omit this field)
+        db.businesses.create_index(
+            [("user_listing_id", 1)], unique=True, sparse=True
+        )
     except Exception:
         logger.exception("mongo_db.ensure_indexes.businesses_failed")
     try:

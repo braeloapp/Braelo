@@ -6,7 +6,7 @@ Mongo business directory search for mixed schemas in the same collection:
 
 Queries use $or across both shapes; API rows are normalized for the chatbot.
 
-Optional cues (e.g. Brazilian, sushi) narrow matches to ``name`` / ``business_name`` / ``tags``;
+Optional cues (e.g. Brazilian, sushi) narrow matches to ``name`` / ``business_name`` / ``tags`` or ``TAGS``;
 generic queries skip that so full category+location results are returned.
 """
 from __future__ import annotations
@@ -447,7 +447,7 @@ _KNOWN_CITIES: tuple[str, ...] = (
     "scottsdale",
 )
 
-# Message cues → substrings we OR-match on listing ``name``, ``business_name``, and ``tags``.
+# Message cues → substrings we OR-match on listing ``name``, ``business_name``, ``tags``, ``TAGS``.
 # Only when a pattern hits do we narrow results; generic queries (e.g. “restaurants in Florida”) hit none → no extra filter.
 _LISTING_NAME_HINT_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = (
     (
@@ -469,9 +469,24 @@ _LISTING_NAME_HINT_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = (
     (re.compile(r"\bcuban\b|\bcuba\b", re.I), ("cuban", "cuba")),
     (re.compile(r"\bcolombian\b|\bcolombia\b", re.I), ("colombian", "colombia")),
     (re.compile(r"\bperuvian\b|\bperu\b", re.I), ("peruvian", "peru")),
-    (re.compile(r"\b(steak|steakhouse|churrasco|churrascaria)\b", re.I), ("steak", "steakhouse", "churrasco", "churrascaria")),
     (re.compile(r"\bseafood\b|\bmariscos\b|\bmarisqueiro\b", re.I), ("seafood", "mariscos", "marisqueiro")),
-    (re.compile(r"\b(bbq|barbecue|barbeque)\b", re.I), ("bbq", "barbecue", "barbeque")),
+    (
+        re.compile(
+            r"\b(bbq|barbecue|barbeque|steak|steakhouse|churrasco|churrascaria|churrasqueiros?)\b",
+            re.I,
+        ),
+        (
+            "bbq",
+            "barbecue",
+            "barbeque",
+            "steak",
+            "steakhouse",
+            "churrasco",
+            "churrascaria",
+            "churrasqueiro",
+            "churrasqueiros",
+        ),
+    ),
     (re.compile(r"\b(vegan|veggie|vegetarian|vegano|vegetariano)\b", re.I), ("vegan", "vegetarian", "vegano", "vegetariano")),
     (re.compile(r"\b(kosher|halal)\b", re.I), ("kosher", "halal")),
     (re.compile(r"\b(ethiopian|ethiopia)\b", re.I), ("ethiopian", "ethiopia")),
@@ -487,10 +502,72 @@ _LISTING_NAME_HINT_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = (
 )
 
 
+def _llm_expand_tag_search_tokens(message: str | None, base_terms: list[str]) -> list[str]:
+    """
+    Add Portuguese/English tokens that appear in Lista ``TAGS`` (e.g. Churrasqueiros) when the user
+    says BBQ, Brazilian, etc. Heuristic patterns stay the source of truth; this only adds synonyms.
+    """
+    if not getattr(settings, "TAG_SEARCH_LLM_EXPAND", True):
+        return []
+    msg = (message or "").strip()
+    if not msg:
+        return []
+    base_terms = base_terms or []
+    if not base_terms:
+        return []
+    try:
+        from chatbot.services import gpt_service
+
+        cli = getattr(gpt_service, "client", None)
+        if not cli:
+            return []
+        model = getattr(settings, "GPT_MODEL", "gpt-4o-mini")
+        sys = """You help search a MongoDB business directory. Each listing may have:
+- TAGS: Portuguese labels separated by | (example: "Churrascaria Brasileira|Churrasqueiros|Bar")
+- name in English or Portuguese
+
+Given the user message and the heuristic tokens we already extracted, output JSON only:
+{"tokens": ["...", ...]}
+
+Rules:
+- Add short tokens (2–40 chars) likely to appear in TAGS or names: Portuguese equivalents, demonyms, cuisine words (e.g. BBQ/barbecue → churrasco, churrascaria, churrasqueiros when relevant).
+- Do not repeat the obvious category word "restaurant" unless needed. Max 16 tokens. No full sentences."""
+        user = f"User message:\n{msg[:1200]}\n\nHeuristic tokens:\n{', '.join(base_terms[:22])}"
+        resp = cli.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=320,
+            temperature=0.15,
+            response_format={"type": "json_object"},
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        data = json.loads(raw)
+        arr = data.get("tokens")
+        if not isinstance(arr, list):
+            return []
+        out: list[str] = []
+        for x in arr:
+            s = str(x).strip()
+            if 2 <= len(s) <= 48:
+                out.append(s)
+        logger.info(
+            "business_search_service.tag_llm_expand n_heuristic=%s n_added=%s",
+            len(base_terms),
+            len(out),
+        )
+        return out[:16]
+    except Exception:
+        logger.exception("business_search_service.tag_token_llm_expand_failed")
+        return []
+
+
 def extract_listing_name_filter_terms(message: str | None) -> list[str]:
     """
     If the user names a cuisine/style (Brazilian, sushi, …), return tokens to match on listing
-    name/business_name/tags. Empty list → do not narrow (show all category+location matches).
+    name/business_name/tags/TAGS. Empty list → do not narrow (show all category+location matches).
     """
     if not message or not str(message).strip():
         return []
@@ -498,11 +575,14 @@ def extract_listing_name_filter_terms(message: str | None) -> list[str]:
     for pat, terms in _LISTING_NAME_HINT_GROUPS:
         if pat.search(message):
             out.update(terms)
-    return sorted(out)
+    base = sorted(out)
+    for t in _llm_expand_tag_search_tokens(message, base):
+        out.add(t)
+    return sorted(out)[:28]
 
 
 def _listing_text_hint_clause(terms: list[str]) -> dict | None:
-    """$or across name, business_name, tags (any term matches)."""
+    """$or across name, business_name, tags, TAGS (any term matches)."""
     if not terms:
         return None
     uniq = sorted({t.strip() for t in terms if t and str(t).strip()})
@@ -510,7 +590,14 @@ def _listing_text_hint_clause(terms: list[str]) -> dict | None:
         return None
     alt = "|".join(re.escape(t) for t in uniq)
     rx = {"$regex": alt, "$options": "i"}
-    return {"$or": [{"name": rx}, {"business_name": rx}, {"tags": rx}]}
+    return {
+        "$or": [
+            {"name": rx},
+            {"business_name": rx},
+            {"tags": rx},
+            {"TAGS": rx},
+        ]
+    }
 
 
 def tokenize_query(text: str) -> list[str]:
@@ -534,7 +621,7 @@ def _rx(val: str | None) -> dict | None:
 
 def _rx_tags_token(term: str | None) -> dict | None:
     """
-    Match a token inside Lista `tags` (space / comma / pipe separated) without substring false positives.
+    Match a token inside Lista ``tags`` or ``TAGS`` (space / comma / pipe separated) without substring false positives.
     """
     if not term or not str(term).strip():
         return None
@@ -542,12 +629,11 @@ def _rx_tags_token(term: str | None) -> dict | None:
     if len(t) < 2:
         return None
     esc = re.escape(t)
-    return {
-        "tags": {
-            "$regex": rf"(?:^|[\s,|])(?:{esc})(?:$|[\s,|])",
-            "$options": "i",
-        }
+    piece = {
+        "$regex": rf"(?:^|[\s,|])(?:{esc})(?:$|[\s,|])",
+        "$options": "i",
     }
+    return {"$or": [{"tags": piece}, {"TAGS": piece}]}
 
 
 def detect_document_schema(doc: dict | None) -> str:
@@ -1451,6 +1537,30 @@ def _normalize_contact_display(raw) -> str:
     return s
 
 
+def _mongo_tag_match_blob(doc: dict) -> str:
+    """Single lowercase-ish haystack for name + tags/TAGS + categories (directory confirmation / filters)."""
+    parts: list[str] = []
+    for k in (
+        "name",
+        "business_name",
+        "tags",
+        "TAGS",
+        "category",
+        "business_category",
+        "subcategory",
+        "business_subcategory",
+        "description",
+    ):
+        v = doc.get(k)
+        if v is None:
+            continue
+        if isinstance(v, list):
+            parts.append(" ".join(str(x) for x in v))
+        else:
+            parts.append(str(v))
+    return " ".join(parts).strip()
+
+
 def mongo_docs_to_api_businesses(
     docs: list[dict],
     external_id: str | None,
@@ -1486,6 +1596,7 @@ def mongo_docs_to_api_businesses(
             {
                 "id": bid,
                 "name": n["name"],
+                "tag_match_text": _mongo_tag_match_blob(b),
                 "category": n["category"],
                 "subcategory": n["subcategory"],
                 "state": n["state"],

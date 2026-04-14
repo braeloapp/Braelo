@@ -28,6 +28,7 @@ from helpers import (
 )
 from admin_panel.models import AdminBusinessBanner
 from admin_panel.serializers import BusinessBannerSerializer
+from users.services.businesses_directory_sync import upsert_businesses_directory_doc
 
 
 class BusinessSerailizer(serializers.DocumentSerializer):
@@ -110,6 +111,7 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         user.is_business = True
         user.previous_business = True
         user.save()
+        # Directory mirror: `users.api.business.BussinessListing.post` upserts after QR/url save.
         return listing
 
     def update(self, instance, validated_data):
@@ -163,6 +165,7 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         instance.save()
         banner_instance.updated_at = timezone.now()
         banner_instance.save()
+        upsert_businesses_directory_doc(instance)
         return instance
 
     def validate(self, data):

@@ -164,6 +164,48 @@ def _matches_hybrid(m: str) -> bool:
     return any(p in m for p in _HYBRID_SUBSTRINGS)
 
 
+def _local_food_service_listing_with_place(m: str) -> bool:
+    """
+    Food/dining + geographic anchor → never KB-first; our directory should answer before RAG/LLM.
+    Catches phrases like “tell me about the best restaurants in Los Angeles” that would otherwise
+    match _GUIDANCE_SUBSTRINGS and skip Mongo entirely.
+    """
+    if not _LOCAL_FOOD_OR_DINING_RE.search(m):
+        return False
+    # Pure housing/rent education stays KB-first when it looks like guidance + location.
+    if _HOUSING_RENT_EDU_RE.search(m):
+        return False
+    if _GEO_ANCHOR_FOR_DIRECTORY_RE.search(m):
+        return True
+    if re.search(r"\b\d{5}(?:-\d{4})?\b", m):
+        return True
+    return False
+
+
+# Food / dining / local “where to eat” queries (not every service — keep narrow to avoid false positives).
+_LOCAL_FOOD_OR_DINING_RE = re.compile(
+    r"\b(restaurants?|restaurantes?|dining|eateries|food\s+scene|cafés?|cafes?|bakeries|gastronom|comida|"
+    r"churrasc|lanchonete|where\s+to\s+eat|best\s+restaurants|good\s+restaurants|any\s+restaurants|"
+    r"places\s+to\s+eat)\b",
+    re.I,
+)
+_HOUSING_RENT_EDU_RE = re.compile(
+    r"\b(how\s+do\s+i\s+rent|renting\s+an?\s+apartment|landlord|evict|lease\s+agreement|mortgage\b|"
+    r"tenant\s+rights|law\s+school|how\s+to\s+become)\b",
+    re.I,
+)
+# ZIP, “near me”, major US city phrases, or “in/near …” + place-like token sequence.
+_GEO_ANCHOR_FOR_DIRECTORY_RE = re.compile(
+    r"\b(?:in|near|around|at)\s+(?!the\s+world\b)(?:the\s+)?(?:zip\s*)?\d{5}(?:-\d{4})?\b"
+    r"|\bnear\s+me\b|\bin\s+my\s+area\b"
+    r"|\b(?:in|near|around)\s+(?:los\s+angeles|new\s+york|san\s+francisco|san\s+diego|las\s+vegas|"
+    r"miami|chicago|houston|phoenix|philadelphia|dallas|austin|denver|seattle|boston|atlanta|"
+    r"portland|orlando|detroit|nashville|charlotte)\b"
+    r"|\b(?:in|near|around)\s+[a-z][a-z\s,'\-\.]{3,55}(?:\s*,\s*[a-z]{2}\b)?",
+    re.I,
+)
+
+
 def should_preempt_directory_for_knowledge(
     message: str,
     intent: str,
@@ -175,6 +217,10 @@ def should_preempt_directory_for_knowledge(
     """
     m = (message or "").lower().strip()
     if not m:
+        return False
+
+    if _local_food_service_listing_with_place(m):
+        logger.info("intent_classifier.preempt_miss reason=local_food_listing_with_place")
         return False
 
     if _matches_hybrid(m):
