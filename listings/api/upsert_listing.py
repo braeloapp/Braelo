@@ -46,6 +46,36 @@ from listings.serializers import (
 )
 
 
+def _normalize_keywords(raw):
+    '''
+    Build a list[str] for ListField(StringField): split comma-separated text,
+    strip accidental wrapping quotes (e.g. 'abc' from Postman), coerce non-strings.
+    '''
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        parts = list(raw)
+    else:
+        text = str(raw).strip()
+        if not text:
+            return []
+        if (text.startswith("'") and text.endswith("'")) or (
+            text.startswith('"') and text.endswith('"')
+        ):
+            text = text[1:-1].strip()
+        parts = [s.strip() for s in text.split(',') if s.strip()]
+    out = []
+    for p in parts:
+        s = str(p).strip()
+        if len(s) >= 2 and (
+            (s[0] == s[-1] == "'") or (s[0] == s[-1] == '"')
+        ):
+            s = s[1:-1].strip()
+        if s:
+            out.append(s)
+    return out
+
+
 class Listing(generics.CreateAPIView):
     '''
     Base API endpoint to create a new listing for different categories.
@@ -118,11 +148,7 @@ class Listing(generics.CreateAPIView):
                 'yes',
             )
 
-        kw = mutable_data.get('keywords')
-        if isinstance(kw, str):
-            mutable_data['keywords'] = [
-                s.strip() for s in kw.split(',') if s.strip()
-            ] or [kw.strip()]
+        mutable_data['keywords'] = _normalize_keywords(mutable_data.get('keywords'))
         serializer = self.get_serializer(
             data=mutable_data, context={'request': request}
         )
