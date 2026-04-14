@@ -14,6 +14,7 @@ from django.urls import path
 
 from admin_panel.api.admin import (
     AllUsers,
+    ActiveUsers,
     AllFeedback,
     AllNotifications,
     ReportedUsers,
@@ -50,8 +51,12 @@ from listings.api import (
 )
 
 urlpatterns = [
-    # MongoDB collection names (admin tools)
+    # MongoDB collection names (admin tools); with/without trailing slash
+    path('collections/', AdminMongoCollections.as_view()),
     path('collections', AdminMongoCollections.as_view()),
+    # Active users only (some admin UIs call this path)
+    path('users/active/', ActiveUsers.as_view()),
+    path('users/active', ActiveUsers.as_view()),
     # Update api's
     path('jobs/<str:pk>', JobsUpdateAPI.as_view()),
     path('kids/<str:pk>', KidsUpdateAPI.as_view()),

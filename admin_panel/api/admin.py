@@ -90,6 +90,17 @@ class AllUsers(generics.ListAPIView):
     pagination_class = Pagination
 
 
+class ActiveUsers(generics.ListAPIView):
+    '''
+    GET /admin-panel/users/active — active users only (is_active=True).
+    '''
+
+    permission_classes = [IsAdminUser]
+    serializer_class = UserSerializer
+    queryset = User.objects.filter(is_active=True)
+    pagination_class = Pagination
+
+
 class AllFeedback(generics.ListAPIView):
     '''
     View that fetches user's feedbacks for admin panel
