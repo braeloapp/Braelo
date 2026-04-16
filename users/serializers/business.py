@@ -10,7 +10,6 @@ Fetch Business Serializers.
 ---------------------------------------------------
 '''
 
-from django.db import transaction
 from django.utils import timezone
 from rest_framework_mongoengine import serializers
 from rest_framework.exceptions import ValidationError
@@ -104,9 +103,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         validated_data['business_images'] = s3_image_urls
         validated_data['business_banner'] = s3_banner_urls
 
-        with transaction.atomic():
-            listing = Business.objects.create(**validated_data)
-            BusinessBannerSerializer.banner_save(validated_data)
+        # MongoEngine only here — avoid Django SQL atomic() around temp uploads / drivers.
+        listing = Business.objects.create(**validated_data)
+        BusinessBannerSerializer.banner_save(validated_data)
         # updating fields so normal user can become business user
         user.is_business = True
         user.previous_business = True

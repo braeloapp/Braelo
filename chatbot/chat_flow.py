@@ -907,6 +907,41 @@ def _normalize_hint_city(raw: str) -> str:
     return city
 
 
+def _sanitize_pipeline_city(city: str | None) -> str | None:
+    """
+    Drop garbage "city" values from bad client fields or convert_query echoing full prompts.
+    Real placenames are short; long sentences are never valid cities here.
+    """
+    if city is None:
+        return None
+    s = str(city).strip()
+    if not s:
+        return None
+    if len(s) > 48:
+        return None
+    low = s.lower()
+    padded = f" {low} "
+    junk_markers = (
+        " give ",
+        " show ",
+        " tell ",
+        " looking ",
+        " restaurants ",
+        " want ",
+        " only in ",
+        " me the ",
+        " the me ",
+        "listings",
+        "directory",
+        "businesses",
+    )
+    if any(m in padded for m in junk_markers):
+        return None
+    if len(s.split()) > 4:
+        return None
+    return s
+
+
 def _implausible_hint_city_fragment(low: str) -> bool:
     """Reject regex-captured 'city' that is clearly prose (commas with state abbr false positives)."""
     if len(low) > 46:
@@ -994,7 +1029,9 @@ def _extract_location_hints_from_message(message: str) -> dict:
 
     parsed = bss.convert_query_to_portuguese_fields(text)
     ps = (parsed.get("state_en") or "").strip()
-    pc = _normalize_hint_city((parsed.get("city") or "").strip())
+    pc = _sanitize_pipeline_city(
+        (_normalize_hint_city((parsed.get("city") or "").strip()) or "").strip() or None
+    )
     pco = (parsed.get("county") or "").strip()
     if ps and not out.get("state"):
         out["state"] = ps
@@ -1907,14 +1944,9 @@ def _compose_directory_confirmation_reply(
         if n == 0:
             return ""
         if n_ok == n:
-            return (
-                "**Sim** — para a sua pergunta, todos esses anúncios batem com os termos "
-                "que verificamos (nome e TAGS)."
-            )
+            return "**Sim** — esses anúncios combinam com o que você perguntou."
         if n_ok == 0:
-            return (
-                "**Não** — nenhum desses anúncios bateu com os termos esperados (nome/TAGS) para esta pergunta."
-            )
+            return "**Não** — nenhum desses anúncios combinou bem com a sua pergunta."
         yes_ix = [labels[i] for i in range(n) if flags[i]]
         no_ix = [labels[i] for i in range(n) if not flags[i]]
         return (
@@ -1927,12 +1959,9 @@ def _compose_directory_confirmation_reply(
         if n == 0:
             return ""
         if n_ok == n:
-            return (
-                "**Sí** — para tu pregunta, todos estos listados coinciden con los términos "
-                "que comprobamos (nombre y TAGS)."
-            )
+            return "**Sí** — estos listados encajan con lo que preguntaste."
         if n_ok == 0:
-            return "**No** — ninguno de estos listados coincide con los términos (nombre/TAGS) de tu pregunta."
+            return "**No** — ninguno de estos listados encajó del todo con tu pregunta."
         yes_ix = [labels[i] for i in range(n) if flags[i]]
         no_ix = [labels[i] for i in range(n) if not flags[i]]
         return (
@@ -1944,12 +1973,9 @@ def _compose_directory_confirmation_reply(
     if n == 0:
         return ""
     if n_ok == n:
-        return (
-            "**Yes** — for your question, all of these directory listings match the terms we check "
-            "(name and TAGS)."
-        )
+        return "**Yes** — these listings match what you asked for."
     if n_ok == 0:
-        return "**No** — none of these listings matched the expected terms for your question (name/TAGS)."
+        return "**No** — none of these listings lined up well with your question."
     yes_ix = [labels[i] for i in range(n) if flags[i]]
     no_ix = [labels[i] for i in range(n) if not flags[i]]
     return (
@@ -1997,13 +2023,6 @@ def _reload_businesses_for_snapshot(
     except Exception:
         logger.exception("chat_flow.reload_businesses_for_snapshot_failed")
         return []
-
-
-_DIRECTORY_CONFIRM_TAIL = {
-    "en": "Here are the same listings from our directory:",
-    "es": "Aquí están los mismos listados de nuestro directorio:",
-    "pt": "Aqui estão os mesmos anúncios do nosso diretório:",
-}
 
 
 def _store_session_location(
@@ -2103,7 +2122,7 @@ def _extract_location_from_chat_history(
             continue
         n += 1
         parsed = bss.convert_query_to_portuguese_fields(content)
-        ci = (parsed.get("city") or "").strip() or None
+        ci = _sanitize_pipeline_city((parsed.get("city") or "").strip() or None)
         st = (parsed.get("state_en") or "").strip() or None
         if ci or st:
             return {"city": ci, "state": st}
@@ -2118,7 +2137,7 @@ def _geo_from_last_directory_turn(chat_history: list | None) -> dict:
         if not isinstance(ent, dict):
             continue
         st = (ent.get("state") or ent.get("state_en") or "").strip() or None
-        ci = (ent.get("city") or "").strip() or None
+        ci = _sanitize_pipeline_city((ent.get("city") or "").strip() or None)
         co = (ent.get("county") or "").strip() or None
         z = (ent.get("zip_code") or "").strip() or None
         if st or ci or co or z:
@@ -2181,6 +2200,7 @@ def _initial_location_with_priority(
             if z:
                 zip_code = z
 
+    city = _sanitize_pipeline_city(city)
     _session_geo_log(
         "initial_location_result",
         session_id=session_id or "",
@@ -2666,6 +2686,8 @@ def _handle_business_load_more(
             strict_location=bool(snap.get("strict_location")),
             sort_mode=snap.get("sort_mode") or "fairness",
             extra_match_terms=snap.get("extra_match_terms") or None,
+            apply_gps_radius=bool(snap.get("apply_gps_radius", True)),
+            anchor_results_to_message_city=bool(snap.get("anchor_results_to_message_city", False)),
         )
     elif kind == "directory_discovery":
         result = search_business_directory_for_discovery(
@@ -2806,6 +2828,12 @@ def process_message(
         county=county,
         zip_code=zip_code,
     )
+    _msg_place_hints = _extract_location_hints_from_message(message)
+    _explicit_place_in_message = bool(
+        (_msg_place_hints.get("city") or "").strip() or (_msg_place_hints.get("zip_code") or "").strip()
+    )
+    _anchor_msg_city = bool((_msg_place_hints.get("city") or "").strip())
+    _apply_gps_radius = not _explicit_place_in_message
     known_facts_for_structured = _format_known_facts(state, city, county, zip_code)
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
@@ -2875,8 +2903,7 @@ def process_message(
                     terms=terms,
                     detected_lang=detected_lang,
                 )
-                tail = _DIRECTORY_CONFIRM_TAIL.get(detected_lang, _DIRECTORY_CONFIRM_TAIL["en"])
-                reply = f"{lead}\n\n{tail}".strip()
+                reply = lead.strip()
                 merged_bs = _reload_businesses_for_snapshot(snap, user_id, session_id)
                 persist_bs = merged_bs if merged_bs else [
                     {
@@ -3148,6 +3175,8 @@ def process_message(
             strict_location=True,
             sort_mode="fairness",
             extra_match_terms=_attr_terms or None,
+            apply_gps_radius=_apply_gps_radius,
+            anchor_results_to_message_city=_anchor_msg_city,
         )
         businesses = r1.get("businesses") or []
         loc_note = r1.get("location_note")
@@ -3172,6 +3201,8 @@ def process_message(
                 strict_location=False,
                 sort_mode="fairness",
                 extra_match_terms=_attr_terms or None,
+                apply_gps_radius=_apply_gps_radius,
+                anchor_results_to_message_city=_anchor_msg_city,
             )
             businesses = r2.get("businesses") or []
             loc_note = r2.get("location_note")
@@ -3196,6 +3227,8 @@ def process_message(
                 strict_location=False,
                 sort_mode="fairness",
                 extra_match_terms=None,
+                apply_gps_radius=_apply_gps_radius,
+                anchor_results_to_message_city=_anchor_msg_city,
             )
             businesses = r3.get("businesses") or []
             loc_note = r3.get("location_note")
@@ -3269,6 +3302,8 @@ def process_message(
                 "strict_location": snap_strict,
                 "sort_mode": "fairness",
                 "extra_match_terms": snap_extra,
+                "apply_gps_radius": _apply_gps_radius,
+                "anchor_results_to_message_city": _anchor_msg_city,
             }
             biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
             _save_history(session_id, message, reply, "business_search", structured, businesses=businesses)
@@ -4013,6 +4048,8 @@ def process_message(
             strict_location=True,
             sort_mode="fairness",
             extra_match_terms=_attr_biz or None,
+            apply_gps_radius=_apply_gps_radius,
+            anchor_results_to_message_city=_anchor_msg_city,
         )
         businesses = result.get("businesses") or []
         see_more = result.get("see_more", False)
@@ -4037,6 +4074,8 @@ def process_message(
                 strict_location=False,
                 sort_mode="fairness",
                 extra_match_terms=_attr_biz or None,
+                apply_gps_radius=_apply_gps_radius,
+                anchor_results_to_message_city=_anchor_msg_city,
             )
             businesses = result.get("businesses") or []
             see_more = result.get("see_more", False)
@@ -4061,6 +4100,8 @@ def process_message(
                 strict_location=False,
                 sort_mode="fairness",
                 extra_match_terms=None,
+                apply_gps_radius=_apply_gps_radius,
+                anchor_results_to_message_city=_anchor_msg_city,
             )
             businesses = result.get("businesses") or []
             see_more = result.get("see_more", False)
@@ -4128,6 +4169,8 @@ def process_message(
                 "strict_location": snap_strict,
                 "sort_mode": "fairness",
                 "extra_match_terms": snap_extra,
+                "apply_gps_radius": _apply_gps_radius,
+                "anchor_results_to_message_city": _anchor_msg_city,
             }
             biz_pag = _business_pagination_dict(biz_snap, limit, 0, businesses, see_more)
 
@@ -4206,6 +4249,8 @@ def process_message(
                 strict_location=False,
                 sort_mode="fairness",
                 extra_match_terms=_rescue_attr or None,
+                apply_gps_radius=_apply_gps_radius,
+                anchor_results_to_message_city=_anchor_msg_city,
             )
             rescue_biz = rescue.get("businesses") or []
             if not rescue_biz and _rescue_attr:
@@ -4227,6 +4272,8 @@ def process_message(
                     strict_location=False,
                     sort_mode="fairness",
                     extra_match_terms=None,
+                    apply_gps_radius=_apply_gps_radius,
+                    anchor_results_to_message_city=_anchor_msg_city,
                 )
                 rescue_biz = rescue.get("businesses") or []
             if rescue_biz:
@@ -4255,6 +4302,8 @@ def process_message(
                     "strict_location": False,
                     "sort_mode": "fairness",
                     "extra_match_terms": rescue_snap_extra,
+                    "apply_gps_radius": _apply_gps_radius,
+                    "anchor_results_to_message_city": _anchor_msg_city,
                 }
                 rescue_pag = _business_pagination_dict(
                     rescue_snap,
@@ -4367,10 +4416,13 @@ def _build_response(
 
     if b_list:
         formatter = ElluResponseFormatter()
+        qa = question_analysis or {}
+        _skip_curated_lead = qa.get("answer_source") == "directory_attribute_confirmation"
         biz_text = formatter.format_business_results(
             businesses=b_list,
             source="mixed",
             detected_language=detected_language,
+            include_curated_lead=not _skip_curated_lead,
         )
         final_resp = f"{final_resp}\n\n{biz_text}".strip()
 

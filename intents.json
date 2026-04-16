@@ -2,7 +2,7 @@
     "intents": [{
             "tag": "greetings",
             "patterns": ["hi there", "hello","haroo","yaw","wassup", "hi", "hey", "holla", "hello"],
-            "responses": ["hi there, how can i help you"],
+            "responses": ["hi there i am Éllu, how can i help you"],
             "context": [""]
         },
         {

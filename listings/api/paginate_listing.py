@@ -6,7 +6,8 @@ Author:         Hamid
 ---------------------------------------------------
 
 Description:
-Pagination of Listing endpoints.
+Pagination of Listing endpoints. ``category`` on each view must match a key
+in ``helpers.constants.CATEGORIES``; ``model_class`` is the MongoEngine doc.
 ---------------------------------------------------
 '''
 
@@ -14,7 +15,6 @@ from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import ValidationError
-
 
 from helpers import response
 from helpers import CATEGORIES
@@ -45,10 +45,6 @@ from listings.serializers import (
 
 
 class Pagination(PageNumberPagination):
-    '''
-    Listing pagination configurations.
-    '''
-
     page_size = 10
     page_size_query_param = 'page_size'
     max_page_size = 50
@@ -64,11 +60,8 @@ class Pagination(PageNumberPagination):
 
 class QueryFilter(generics.ListAPIView):
     '''
-    Subclasses must set ``category`` (for CATEGORIES validation) and
-    ``model_class`` (MongoEngine document for this listing type).
-
-    Previously each subclass overrode ``get_queryset()`` with only
-    ``Model.objects.all()``, which skipped subcategory filtering entirely.
+    Subclasses set ``category`` (CATEGORIES key) and ``model_class`` (document).
+    Optional ``?subcategory=`` filters by exact subcategory string.
     '''
 
     model_class = None
@@ -99,10 +92,6 @@ class QueryFilter(generics.ListAPIView):
 
 
 class PaginateVehicle(QueryFilter):
-    '''
-    Endpoint to retrieve the latest vehicle listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = VehicleSerializer
@@ -111,70 +100,46 @@ class PaginateVehicle(QueryFilter):
 
 
 class PaginateRealEstate(QueryFilter):
-    '''
-    Endpoint to retrieve the latest real estate listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = RealEstateSerializer
-    category = 'Real Estate'
+    category = 'realestate'
     model_class = RealEstateListing
 
 
 class PaginateElectronics(QueryFilter):
-    '''
-    Endpoint to retrieve the latest electronics listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = ElectronicsSerializer
-    category = 'Electronics'
+    category = 'electronics'
     model_class = ElectronicsListing
 
 
 class PaginateEvents(QueryFilter):
-    '''
-    Endpoint to retrieve the latest events listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = EventsSerializer
-    category = 'Events'
+    category = 'events'
     model_class = EventsListing
 
 
 class PaginateFashion(QueryFilter):
-    '''
-    Endpoint to retrieve the latest fashion listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = FashionSerializer
-    category = 'Fashion'
+    category = 'fashion'
     model_class = FashionListing
 
 
 class PaginateJobs(QueryFilter):
-    '''
-    Endpoint to retrieve the latest jobs listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = JobsSerializer
-    category = 'Jobs'
+    category = 'jobs'
     model_class = JobsListing
 
 
 class PaginateServices(QueryFilter):
-    '''
-    Endpoint to retrieve the latest services listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = ServicesSerializer
@@ -183,36 +148,24 @@ class PaginateServices(QueryFilter):
 
 
 class PaginateSportsHobby(QueryFilter):
-    '''
-    Endpoint to retrieve the latest sports and hobby listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = SportsHobbySerializer
-    category = 'Sports & Hobby'
+    category = 'sportsandhobby'
     model_class = SportsHobbyListing
 
 
 class PaginateKids(QueryFilter):
-    '''
-    Endpoint to retrieve the latest kids listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = KidsSerializer
-    category = 'Kids'
+    category = 'kids'
     model_class = KidsListing
 
 
 class PaginateFurniture(QueryFilter):
-    '''
-    Endpoint to retrieve the latest furniture listings with pagination.
-    '''
-
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = Pagination
     serializer_class = FurnitureSerializer
-    category = 'Furniture'
+    category = 'furniture'
     model_class = FurnitureListing

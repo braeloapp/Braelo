@@ -789,13 +789,21 @@ def _mongo_apply_strict_location(
     user_lat,
     user_lon,
     radius_miles: float,
+    *,
+    apply_gps_radius: bool = True,
 ) -> list:
     """Strict: match provided address fields; if GPS + listing coords, also require distance <= radius."""
     out = []
     for n in norms:
         if not _norm_row_matches_user_location(n, state, city, county, zip_code):
             continue
-        if user_lat is not None and user_lon is not None and n["lat"] is not None and n["lon"] is not None:
+        if (
+            apply_gps_radius
+            and user_lat is not None
+            and user_lon is not None
+            and n["lat"] is not None
+            and n["lon"] is not None
+        ):
             d = _distance_miles(user_lat, user_lon, n["lat"], n["lon"])
             if d is None or d > radius_miles:
                 continue
@@ -877,6 +885,8 @@ def _get_top_businesses_mongo(
     extra_match_terms: list[str] | None = None,
     *,
     broad_location_only: bool = False,
+    apply_gps_radius: bool = True,
+    anchor_results_to_message_city: bool = False,
 ) -> dict:
     from django.conf import settings
 
@@ -964,10 +974,37 @@ def _get_top_businesses_mongo(
     region_note = None
     if strict_location:
         norms = _mongo_apply_strict_location(
-            norms, state, city, county, zip_code, user_lat, user_lon, radius_miles
+            norms,
+            state,
+            city,
+            county,
+            zip_code,
+            user_lat,
+            user_lon,
+            radius_miles,
+            apply_gps_radius=apply_gps_radius,
         )
     else:
         norms, region_note, _ = _prefilter_mongo_by_region(norms, state, county, zip_code, user_lat, user_lon)
+        if anchor_results_to_message_city and (city or "").strip():
+            cstrip = (city or "").strip()
+            sstrip = (state or "").strip()
+            anchored = [
+                n
+                for n in norms
+                if _mongo_locale_text_matches(cstrip, n.get("city"))
+                and (not sstrip or _mongo_state_matches(sstrip, n.get("state")))
+            ]
+            if anchored:
+                norms = anchored
+                region_note = None
+            else:
+                norms = []
+                region_note = (
+                    f"No directory matches in {cstrip}"
+                    + (f", {sstrip}" if sstrip else "")
+                    + " for that search — try a nearby city or a broader term."
+                )
 
     pkg_prio = _ad_package_priority_map(db)
 
@@ -1091,6 +1128,8 @@ def get_top_businesses(
     extra_match_terms: list[str] | None = None,
     *,
     broad_location_only: bool = False,
+    apply_gps_radius: bool = True,
+    anchor_results_to_message_city: bool = False,
 ) -> dict:
     from django.conf import settings
     if not broad_location_only and not (str(category or "").strip() or str(subcategory or "").strip()):
@@ -1118,6 +1157,8 @@ def get_top_businesses(
             sort_mode=sort_mode,
             extra_match_terms=extra_match_terms,
             broad_location_only=broad_location_only,
+            apply_gps_radius=apply_gps_radius,
+            anchor_results_to_message_city=anchor_results_to_message_city,
         )
 
     from chatbot.models import Business, AdPackage, ImpressionsLog

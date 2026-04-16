@@ -362,6 +362,13 @@ DATABASES = {
     }
 }
 
+# Multipart: in-memory threshold before Django streams to disk (TemporaryUploadedFile).
+# Slightly higher default keeps typical business images in RAM and avoids Windows
+# temp-file teardown quirks; override with FILE_UPLOAD_MAX_MEMORY_SIZE in .env.
+FILE_UPLOAD_MAX_MEMORY_SIZE = _env_int(
+    "FILE_UPLOAD_MAX_MEMORY_SIZE", 8 * 1024 * 1024
+)
+
 # ---------------------------------------------------------------------------
 # MongoDB (mongoengine + chatbot pymongo share these env vars)
 # ---------------------------------------------------------------------------
@@ -567,8 +574,9 @@ GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 # When True (default), directory name/TAGS narrowing may ask the LLM for extra PT/EN substrings (e.g. BBQ ↔ churrasco).
 TAG_SEARCH_LLM_EXPAND = os.getenv('TAG_SEARCH_LLM_EXPAND', 'true').lower() in ('true', '1', 'yes', 'on')
 # Google Places (Nearby / Text / Details) — server-side only; set in .env (not VITE_).
+# Also used by helpers/google_geocoding.py for Geocoding API (enable Geocoding API on the same key in GCP).
 GOOGLE_PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY', '')
-# Optional: Geocoding API key (reverse geocode lat/lng → state/city/county). Defaults to GOOGLE_PLACES_API_KEY if unset.
+# Optional fallback if GOOGLE_PLACES_API_KEY is empty (rare); geocoding prefers PLACES key first.
 GOOGLE_MAPS_GEOCODING_API_KEY = os.getenv('GOOGLE_MAPS_GEOCODING_API_KEY', '').strip()
 # When true: log full `businesses` mirror payload and print to stdout (local testing only).
 BUSINESS_DIRECTORY_SYNC_DEBUG = os.getenv(

@@ -154,7 +154,84 @@ KEYWORD_TO_BOTH_SCHEMAS: dict[str, tuple[str | None, str | None, str | None, str
     "turismo": ("Turismo", None, "tourism", None),
     "cleaning": ("Serviços", "Serviços Domésticos", "services", "cleaning"),
     "limpeza": ("Serviços", "Serviços Domésticos", "services", "cleaning"),
+    # Admin panel (EN/ES) + helpers.constants.meta — extra phrases so mirrored rows match Lista/EN queries
+    "homemade food": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    "farm & fresh food": ("Gastronomia", "Mercado", "food", "grocery"),
+    "catering": ("Gastronomia", "Eventos", "food", "catering"),
+    "chef": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    "consultancy": ("Serviços", "Consultoria", "services", "consulting"),
+    "consulting": ("Serviços", "Consultoria", "services", "consulting"),
+    "immigration and visa": ("Serviços", "Jurídico", "legal", "immigration"),
+    "event services": ("Serviços", "Eventos", "services", "event_planning"),
+    "movers & packers": ("Serviços", "Transportes", "services", "moving"),
+    "transport services": ("Serviços", "Transportes", "services", "transport"),
+    "ac services": ("Serviços", "Reformas e Reparos", "construction", "repair"),
+    "personal trainer": ("Serviços", "Academias", "health", "gym"),
+    "finger food": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    "buffet": ("Gastronomia", "Eventos", "food", "catering"),
+    "video & photography": ("Serviços", "Fotografia", "services", "photography"),
+    "interior design": ("Serviços", "Design de Interiores", "services", "design"),
+    "home care (health)": ("Saúde", "Medicina", "health", "doctor"),
+    "insurance services": ("Serviços", "Agências de Seguros", "services", "insurance"),
+    "networking events": ("Serviços", "Eventos", "services", "event_planning"),
+    "classes & courses": ("Educação", None, "education", None),
+    "home automation": ("Serviços", "Tecnologia da Informação (TI)", "technology", None),
+    "services": ("Serviços", None, "services", None),
+    "servicios": ("Serviços", None, "services", None),
+    "serviços": ("Serviços", None, "services", None),
+    # helpers.constants.meta client slugs + common bad LLM/typo phrases (e.g. rent a car)
+    "partsandaccessories": ("Veículos", "Parts and Accessories", "vehicles", "parts"),
+    "rentals": ("Veículos", "Rentals", "vehicles", "rental"),
+    "car_rental": ("Veículos", "Rentals", "vehicles", "rental"),
+    "rent a car": ("Veículos", "Rentals", "vehicles", "rental"),
+    "networkingevents": ("Serviços", "Eventos", "services", "event_planning"),
+    "sportsequipment": ("Comércio", "Lojas", "retail", "store"),
+    "musicalinstruments": ("Educação", "Escolas de Dança", "education", "dance"),
+    "collecteditems": ("Comércio", "Lojas", "retail", "store"),
+    "outdooractivities": ("Sports", "Outdoor", "services", None),
+    "beautyproducts": ("Serviços", "Beleza e Estética", "services", "beauty"),
+    "schooloffices": ("Educação", None, "education", None),
+    "afterschoolprogram": ("Educação", None, "education", None),
+    "customfurniture": ("Comércio", "Lojas", "retail", "store"),
+    "servicesandparts": ("Electronics", "Services and Parts", "electronics", "parts"),
+    "mobilehome": ("Serviços", "Imobiliário", "housing", "real_estate_agent"),
+    "vacationhome": ("Serviços", "Imobiliário", "housing", "real_estate_agent"),
+    "fastfood": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    "fine_dining": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    "foodtruck": ("Gastronomia", "Restaurantes", "food", "restaurant"),
 }
+
+
+def collect_directory_search_tokens_from_listing_text(*parts: str | None) -> list[str]:
+    """
+    Scan listing text for KEYWORD_TO_BOTH_SCHEMAS hits; return Lista + English seed tokens.
+    Used when syncing admin/user listings to Mongo so EN/ES labels match chatbot directory queries.
+    """
+    hay = " ".join(str(p or "").strip() for p in parts if p and str(p).strip())
+    if not hay:
+        return []
+    hay_lower = " ".join(hay.lower().split())
+    collected: set[str] = set()
+    for kw in sorted(KEYWORD_TO_BOTH_SCHEMAS.keys(), key=len, reverse=True):
+        kw_lower = kw.lower()
+        if " " in kw:
+            if kw_lower not in hay_lower:
+                continue
+        else:
+            if len(kw) < 3:
+                continue
+            if not re.search(
+                r"(?<![a-z0-9áàâãéêíóôõúüçñ])"
+                + re.escape(kw_lower)
+                + r"(?![a-z0-9áàâãéêíóôõúüçñ])",
+                hay_lower,
+            ):
+                continue
+        for t in KEYWORD_TO_BOTH_SCHEMAS[kw]:
+            if t and str(t).strip():
+                collected.add(str(t).strip())
+    return list(collected)
+
 
 STATE_NORMALIZE_TO_ENGLISH: dict[str, str] = {
     "florida": "Florida",
@@ -348,6 +425,43 @@ def message_mentions_us_country(text: str | None) -> bool:
     return bool(_US_COUNTRY_PHRASES.search(text))
 
 
+def _strip_redundant_state_from_city_label(city: str | None, state_en: str | None) -> str | None:
+    """
+    convert_query often yields city='Orlando Florida' while Mongo stores city='Orlando'.
+    Regex `^Orlando\\s*Florida$` then matches nothing; geo tiers empty and we fall back to state-only.
+    Strip a trailing state token when it duplicates the resolved state (name or 2-letter abbr).
+    """
+    c = (city or "").strip()
+    if not c:
+        return None
+    st = normalize_state_for_db(state_en) if (state_en or "").strip() else None
+    if not st:
+        return c
+    words = c.split()
+    st_words = st.split()
+    st_l = st.lower()
+    # Trailing multi-word state (e.g. ... North Carolina)
+    if len(st_words) >= 1 and len(words) > len(st_words):
+        tail = " ".join(words[-len(st_words) :]).lower()
+        if tail == st_l:
+            rest = " ".join(words[: -len(st_words)]).strip()
+            return rest or c
+    # Single-word state name (Florida) as last token
+    if len(st_words) == 1 and len(words) >= 2 and words[-1].lower() == st_words[0].lower():
+        return " ".join(words[:-1]).strip() or c
+    # Trailing USPS-style abbreviation (Miami FL) when state is known
+    last = words[-1].lower().rstrip(".")
+    for abbr, full in STATE_ABBR_TO_ENGLISH.items():
+        if len(str(abbr)) != 2:
+            continue
+        if full.lower() != st_l:
+            continue
+        if last == str(abbr).lower():
+            return " ".join(words[:-1]).strip() or c
+        break
+    return c
+
+
 def _merge_caller_and_message_geo(
     city: str | None,
     county: str | None,
@@ -355,24 +469,39 @@ def _merge_caller_and_message_geo(
     parsed: dict,
 ) -> tuple[str | None, str | None, str | None]:
     """
-    Message wins over profile for state. If the message names a state but no city (e.g. “in Florida”),
-    do not apply profile city/county — that produced impossible ANDs (e.g. Miami + Florida listings).
+    State: message / parse wins over profile when set (see _apply_message_location upstream).
+
+    City/county: **caller** (pipeline: regex hints + profile merge) wins over parse blobs like
+    'Orlando Florida' so Mongo city regex matches a single placename.
+
+    If the message names only a state (parse has state_en, no city), drop city/county so we do not
+    AND a stale profile city with the new state.
     """
     msg_city = (parsed.get("city") or "").strip() or None
     msg_county = (parsed.get("county") or "").strip() or None
     msg_state = (parsed.get("state_en") or "").strip() or None
 
-    st_raw = msg_state or (state or "").strip() or None
+    caller_city = (city or "").strip() or None
+    caller_county = (county or "").strip() or None
+    caller_state = (state or "").strip() or None
 
-    if msg_city:
+    st_raw = msg_state or caller_state or None
+
+    if caller_city:
+        city_s = caller_city
+        county_s = caller_county or msg_county
+    elif msg_city:
         city_s = msg_city
-        county_s = msg_county or (county or "").strip() or None
+        county_s = msg_county or caller_county
     elif msg_state:
         city_s = None
         county_s = None
     else:
-        city_s = (city or "").strip() or None
-        county_s = (county or "").strip() or None
+        city_s = None
+        county_s = caller_county or msg_county
+
+    if city_s and st_raw:
+        city_s = _strip_redundant_state_from_city_label(city_s, st_raw)
 
     return city_s, county_s, st_raw
 
@@ -1205,6 +1334,9 @@ def _execute_directory_mongo_levels(
     if has_precise_geo:
         _run_bucket(levels_local)
         if out:
+            return out[:lim]
+        # User named a city: do not pad with state-only or national rows (wrong metro).
+        if (city or "").strip():
             return out[:lim]
         _run_bucket(levels_regional)
         if out:

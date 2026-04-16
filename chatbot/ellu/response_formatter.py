@@ -51,6 +51,8 @@ class ElluResponseFormatter:
         user_name: str = "",
         location_context: str = "",
         show_cta: bool = True,
+        *,
+        include_curated_lead: bool = True,
     ) -> str:
         """
         Formats business search results in Éllu's style.
@@ -82,10 +84,11 @@ class ElluResponseFormatter:
         # ── Internal results with Braelo Curated badge ────────────
         if internal:
             badge = phrases["braelo_curated_badge"]
-            lines.append(
-                get_phrase("found_curated", lang)
-            )
-            lines.append("")
+            if include_curated_lead:
+                lines.append(
+                    get_phrase("found_curated", lang)
+                )
+                lines.append("")
             for i, biz in enumerate(internal, 1):
                 lines.extend(
                     self._format_single_business(

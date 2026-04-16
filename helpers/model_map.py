@@ -6,7 +6,7 @@ Author:         Faizan
 ---------------------------------------------------
 
 Description:
-Model Map file.
+Model Map file. Keys must match helpers.constants.CATEGORIES.
 ---------------------------------------------------
 '''
 
@@ -24,14 +24,14 @@ from listings.models import (
 )
 
 MODEL_MAP = {
-    'Vehicles': VehicleListing,
-    'Real Estate': RealEstateListing,
-    'Services': ServicesListing,
-    'Events': EventsListing,
-    'Jobs': JobsListing,
-    'Electronics': ElectronicsListing,
-    'Furniture': FurnitureListing,
-    'Fashion': FashionListing,
-    'Kids': KidsListing,
-    'Sports & Hobby': SportsHobbyListing,
+    "Vehicles": VehicleListing,
+    "Services": ServicesListing,
+    "realestate": RealEstateListing,
+    "electronics": ElectronicsListing,
+    "events": EventsListing,
+    "jobs": JobsListing,
+    "furniture": FurnitureListing,
+    "fashion": FashionListing,
+    "kids": KidsListing,
+    "sportsandhobby": SportsHobbyListing,
 }

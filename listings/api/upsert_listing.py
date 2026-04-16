@@ -259,7 +259,7 @@ class JobsAPI(Listing):
 
 class ServicesAPI(Listing):
     '''
-    API endpoint to create a new vehicle listings.
+    API endpoint to create service-class listings (ServicesListing).
     '''
 
     serializer_class = ServicesSerializer

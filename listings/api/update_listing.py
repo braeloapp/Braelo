@@ -167,7 +167,7 @@ class JobsUpdateAPI(UpdateListing):
 
 class ServicesUpdateAPI(UpdateListing):
     '''
-    API endpoint to update a new vehicle listings.
+    API endpoint to update service-class listings.
     '''
 
     serializer_class = ServicesUpdateSerializer

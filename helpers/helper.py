@@ -15,6 +15,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.files.uploadedfile import UploadedFile
 
 
+def _is_file_like(value):
+    if isinstance(value, UploadedFile):
+        return True
+    # Temp file wrappers may not match UploadedFile in all edge cases
+    return hasattr(value, 'read') and hasattr(value, 'name') and callable(getattr(value, 'read', None))
+
+
 def get_error_details(error_info):
     '''
     Gets error message through exceptions.
@@ -50,8 +57,8 @@ def response(status, message, data, error=None):
     '''
 
     def _sanitize_for_json(value):
-        if isinstance(value, UploadedFile):
-            return value.name
+        if isinstance(value, UploadedFile) or _is_file_like(value):
+            return getattr(value, 'name', None) or '<upload>'
         if isinstance(value, (list, tuple)):
             return [_sanitize_for_json(v) for v in value]
         if isinstance(value, dict):
