@@ -18,7 +18,6 @@ from rest_framework.exceptions import ValidationError
 
 from helpers import response
 from helpers import CATEGORIES
-from helpers.model_map import MODEL_MAP
 from listings.models import (
     VehicleListing,
     RealEstateListing,
@@ -64,16 +63,30 @@ class Pagination(PageNumberPagination):
 
 
 class QueryFilter(generics.ListAPIView):
+    '''
+    Subclasses must set ``category`` (for CATEGORIES validation) and
+    ``model_class`` (MongoEngine document for this listing type).
+
+    Previously each subclass overrode ``get_queryset()`` with only
+    ``Model.objects.all()``, which skipped subcategory filtering entirely.
+    '''
+
+    model_class = None
 
     def get_queryset(self):
-        '''
-        filtering query based on subcategory
-        '''
+        if self.model_class is None:
+            raise ValidationError(
+                {'configuration': 'Paginate view is missing model_class.'}
+            )
+        qs = self.model_class.objects.all()
         category = getattr(self, 'category', None)
         subcategory = self.request.GET.get('subcategory')
 
+        if not category:
+            return qs
+
         if not subcategory or subcategory in ('ALL', 'all'):
-            return super().get_queryset()
+            return qs
 
         if subcategory not in CATEGORIES.get(category, []):
             raise ValidationError(
@@ -82,8 +95,7 @@ class QueryFilter(generics.ListAPIView):
                 }
             )
 
-        model = MODEL_MAP.get(category)
-        return model.objects.filter(subcategory=subcategory)
+        return qs.filter(subcategory=subcategory)
 
 
 class PaginateVehicle(QueryFilter):
@@ -95,9 +107,7 @@ class PaginateVehicle(QueryFilter):
     pagination_class = Pagination
     serializer_class = VehicleSerializer
     category = 'Vehicles'
-
-    def get_queryset(self):
-        return VehicleListing.objects.all()
+    model_class = VehicleListing
 
 
 class PaginateRealEstate(QueryFilter):
@@ -109,9 +119,7 @@ class PaginateRealEstate(QueryFilter):
     pagination_class = Pagination
     serializer_class = RealEstateSerializer
     category = 'Real Estate'
-
-    def get_queryset(self):
-        return RealEstateListing.objects.all()
+    model_class = RealEstateListing
 
 
 class PaginateElectronics(QueryFilter):
@@ -123,9 +131,7 @@ class PaginateElectronics(QueryFilter):
     pagination_class = Pagination
     serializer_class = ElectronicsSerializer
     category = 'Electronics'
-
-    def get_queryset(self):
-        return ElectronicsListing.objects.all()
+    model_class = ElectronicsListing
 
 
 class PaginateEvents(QueryFilter):
@@ -137,9 +143,7 @@ class PaginateEvents(QueryFilter):
     pagination_class = Pagination
     serializer_class = EventsSerializer
     category = 'Events'
-
-    def get_queryset(self):
-        return EventsListing.objects.all()
+    model_class = EventsListing
 
 
 class PaginateFashion(QueryFilter):
@@ -151,9 +155,7 @@ class PaginateFashion(QueryFilter):
     pagination_class = Pagination
     serializer_class = FashionSerializer
     category = 'Fashion'
-
-    def get_queryset(self):
-        return FashionListing.objects.all()
+    model_class = FashionListing
 
 
 class PaginateJobs(QueryFilter):
@@ -165,9 +167,7 @@ class PaginateJobs(QueryFilter):
     pagination_class = Pagination
     serializer_class = JobsSerializer
     category = 'Jobs'
-
-    def get_queryset(self):
-        return JobsListing.objects.all()
+    model_class = JobsListing
 
 
 class PaginateServices(QueryFilter):
@@ -179,9 +179,7 @@ class PaginateServices(QueryFilter):
     pagination_class = Pagination
     serializer_class = ServicesSerializer
     category = 'Services'
-
-    def get_queryset(self):
-        return ServicesListing.objects.all()
+    model_class = ServicesListing
 
 
 class PaginateSportsHobby(QueryFilter):
@@ -193,9 +191,7 @@ class PaginateSportsHobby(QueryFilter):
     pagination_class = Pagination
     serializer_class = SportsHobbySerializer
     category = 'Sports & Hobby'
-
-    def get_queryset(self):
-        return SportsHobbyListing.objects.all()
+    model_class = SportsHobbyListing
 
 
 class PaginateKids(QueryFilter):
@@ -207,9 +203,7 @@ class PaginateKids(QueryFilter):
     pagination_class = Pagination
     serializer_class = KidsSerializer
     category = 'Kids'
-
-    def get_queryset(self):
-        return KidsListing.objects.all()
+    model_class = KidsListing
 
 
 class PaginateFurniture(QueryFilter):
@@ -221,6 +215,4 @@ class PaginateFurniture(QueryFilter):
     pagination_class = Pagination
     serializer_class = FurnitureSerializer
     category = 'Furniture'
-
-    def get_queryset(self):
-        return FurnitureListing.objects.all()
+    model_class = FurnitureListing
