@@ -37,9 +37,9 @@ class InterestListCreateView(generics.ListCreateAPIView):
         :param request: request object. (dict)
         :return: user's interest status. (json)
         '''
-        data = request.data
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
         data['user_id'] = request.user.id
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         resp = serializer.save()
         if not resp:

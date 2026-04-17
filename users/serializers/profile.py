@@ -9,6 +9,9 @@ Serializer file for users based endpoints
 ---------------------------------------------------
 '''
 
+import re
+import unicodedata
+
 from mongoengine import DoesNotExist
 from rest_framework import serializers
 from rest_framework.serializers import ValidationError
@@ -17,24 +20,63 @@ from helpers import INTERESTS
 from users.models import Interest, User
 
 
+def _interest_lookup_key(label):
+    if not isinstance(label, str):
+        return ''
+    s = unicodedata.normalize('NFKC', label).replace('\u00a0', ' ')
+    s = re.sub(r'&', ' and ', s, flags=re.IGNORECASE)
+    s = s.casefold().strip()
+    s = re.sub(r'[^a-z0-9]+', '', s)
+    return s
+
+
+_INTEREST_BY_LOOKUP_KEY = {}
+for _canon in INTERESTS:
+    _k = _interest_lookup_key(_canon)
+    if _k and _k not in _INTEREST_BY_LOOKUP_KEY:
+        _INTEREST_BY_LOOKUP_KEY[_k] = _canon
+
+_INTERESTS_EXACT = frozenset(INTERESTS)
+
+
+def _resolve_interest_tag(tag):
+    if tag in _INTERESTS_EXACT:
+        return tag
+    k = _interest_lookup_key(tag)
+    if k in _INTEREST_BY_LOOKUP_KEY:
+        return _INTEREST_BY_LOOKUP_KEY[k]
+    return None
+
+
 class InterestSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=True)
-    tags = serializers.ListField(
-        child=serializers.CharField(),
-        required=False,
-        default=list,
-    )
+    tags = serializers.JSONField(required=False, default=list)
 
     def validate_tags(self, tags):
         '''
         Check if the provided tags are correct.
-        :param tags: tags from request. (list)
-        :return: return tags If it exists | exception. (list)
+        Resolves display labels (e.g. "Real estate") to INTERESTS canonical values (e.g. "realestate").
         '''
+        if tags is None:
+            return []
+        if isinstance(tags, str):
+            tags = [p for p in tags.split(',') if p and str(p).strip()]
+        if isinstance(tags, dict):
+            raise ValidationError('Incorrect tag.')
+        if not isinstance(tags, (list, tuple)):
+            raise ValidationError('Incorrect tag.')
+        resolved = []
+        seen = set()
         for tag in tags:
-            if tag not in INTERESTS:
+            if not isinstance(tag, str):
                 raise ValidationError('Incorrect tag.')
-        return tags
+            canon = _resolve_interest_tag(tag.strip())
+            if canon is None:
+                raise ValidationError('Incorrect tag.')
+            if canon not in seen:
+                seen.add(canon)
+                resolved.append(canon)
+        return resolved
 
     def validate_user_id(self, user_id):
         '''

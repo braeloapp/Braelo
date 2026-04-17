@@ -3,6 +3,8 @@
 INTERESTS = [
     'Vehicles',
     'Services',
+    'Rent',
+    'Finance',
     'realestate',
     'electronics',
     'events',
