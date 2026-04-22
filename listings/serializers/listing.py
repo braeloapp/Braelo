@@ -26,6 +26,7 @@ from helpers.constants import (
     USER_LISTINGS_THRESHOLD,
     KEYWORDS_LIMIT,
 )
+from helpers.normalize import resolve_category, resolve_subcategory
 from helpers.listsync import ListSynchronize
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from listings.models import (
@@ -222,17 +223,24 @@ class Serializer(serializers.DocumentSerializer):
                 raise ValidationError({'Listings': 'Normal User Limit Reached'})
             user_status.listings_count += 1
             user_status.save()
-        # Validate category and subcategory
-        if category != self.Meta.category:
+        # Validate category and subcategory (case/format-insensitive)
+        canonical_category = resolve_category(category)
+        if canonical_category != self.Meta.category:
             raise ValidationError(
                 {'category': f'categories should be {self.Meta.category}'}
             )
-        if subcategory and subcategory not in CATEGORIES.get(category, []):
-            raise ValidationError(
-                {
-                    'subcategory': f'subcategories should be {CATEGORIES[category]}'
-                }
-            )
+        category = canonical_category
+        data['category'] = canonical_category
+        if subcategory:
+            canonical_subcategory = resolve_subcategory(category, subcategory)
+            if canonical_subcategory is None:
+                raise ValidationError(
+                    {
+                        'subcategory': f'subcategories should be {CATEGORIES[category]}'
+                    }
+                )
+            subcategory = canonical_subcategory
+            data['subcategory'] = canonical_subcategory
         if year:
             current_year = timezone.now().year
             if year < 1886 or year > current_year:

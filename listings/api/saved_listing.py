@@ -27,6 +27,7 @@ from listings.api.upsert_listing import Listing
 from listings.serializers import SavedItemSerializer
 from helpers.constants import USER_LISTINGS_THRESHOLD
 from helpers import handle_exceptions, response, ListSynchronize
+from helpers.normalize import resolve_category
 
 from notifications.serializers.events import EventNotificationSerializer
 
@@ -114,13 +115,15 @@ class FlipListingStatus(generics.CreateAPIView):
                 'Category and listing_id are required parameters.'
             )
 
-        # Validate category
-        if category not in MODEL_MAP:
+        # Validate category (case/format-insensitive)
+        canonical_category = resolve_category(category)
+        if canonical_category is None or canonical_category not in MODEL_MAP:
             raise ValidationError(
                 {
                     'category': f'Invalid category. Choose from {list(MODEL_MAP.keys())}.'
                 }
             )
+        category = canonical_category
         listing_limit = User.objects.filter(id=user_id).first()
         if not listing_limit.is_business and listing_status:
             if listing_limit.listings_count == USER_LISTINGS_THRESHOLD:
@@ -175,12 +178,14 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
                 }
             )
 
-        if category not in MODEL_MAP:
+        canonical_category = resolve_category(category)
+        if canonical_category is None or canonical_category not in MODEL_MAP:
             raise ValidationError(
                 {
                     'category': f'Invalid category. Choose from {list(MODEL_MAP.keys())}.'
                 }
             )
+        category = canonical_category
 
         # Check if the user is an admin
         admin = request.path.startswith(admin_path) and (

@@ -26,6 +26,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from users.models import User, Business
 from helpers.constants import CATEGORIES
+from helpers.normalize import resolve_category
 from helpers import upload_pictures, BUSSINESS_EVENT_DATA
 from helpers import response, handle_exceptions
 from admin_panel.models import AdminBusinessBanner
@@ -305,10 +306,12 @@ class BusinessBanner(generics.ListCreateAPIView):
         user_id = self.request.user.id
         category = self.request.GET.get('category')
         try:
-            if category and category in CATEGORIES:
-                return AdminBusinessBanner.objects.filter(
-                    business_category=category, is_active=True
-                )
+            if category:
+                canonical_category = resolve_category(category)
+                if canonical_category in CATEGORIES:
+                    return AdminBusinessBanner.objects.filter(
+                        business_category=canonical_category, is_active=True
+                    )
             interests = get_user_recommendations(user_id)
             if not interests:
                 return AdminBusinessBanner.objects.filter(is_active=True)

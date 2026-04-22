@@ -20,6 +20,7 @@ from rest_framework.permissions import IsAuthenticatedOrReadOnly
 
 from helpers import ListSync
 from helpers.model_map import MODEL_MAP
+from helpers.normalize import resolve_category
 from listings.api.paginate_listing import Pagination
 from listings.models import SavedItem
 from helpers import handle_exceptions, response
@@ -191,13 +192,15 @@ class LookupListing(generics.CreateAPIView):
                     'Category and listing_id are required parameters.'
                 )
 
-            # Validate category
-            if category not in MODEL_MAP:
+            # Validate category (case/format-insensitive)
+            canonical_category = resolve_category(category)
+            if canonical_category is None or canonical_category not in MODEL_MAP:
                 raise ValidationError(
                     {
                         'category': f'Invalid category. Choose from {list(MODEL_MAP.keys())}.'
                     }
                 )
+            category = canonical_category
 
             # Fetch the corresponding model
             model = MODEL_MAP[category]

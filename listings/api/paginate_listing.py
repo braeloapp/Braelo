@@ -18,6 +18,7 @@ from rest_framework.exceptions import ValidationError
 
 from helpers import response
 from helpers import CATEGORIES
+from helpers.normalize import resolve_subcategory, is_all_token
 from listings.models import (
     VehicleListing,
     RealEstateListing,
@@ -78,17 +79,18 @@ class QueryFilter(generics.ListAPIView):
         if not category:
             return qs
 
-        if not subcategory or subcategory in ('ALL', 'all'):
+        if not subcategory or is_all_token(subcategory):
             return qs
 
-        if subcategory not in CATEGORIES.get(category, []):
+        canonical_subcategory = resolve_subcategory(category, subcategory)
+        if canonical_subcategory is None:
             raise ValidationError(
                 {
                     'subcategory': f'subcategories should be {CATEGORIES[category]}'
                 }
             )
 
-        return qs.filter(subcategory=subcategory)
+        return qs.filter(subcategory=canonical_subcategory)
 
 
 class PaginateVehicle(QueryFilter):

@@ -15,6 +15,7 @@ from rest_framework_mongoengine import serializers
 from rest_framework.exceptions import ValidationError
 
 from helpers.constants import CATEGORIES
+from helpers.normalize import resolve_category, resolve_subcategory
 from users.models.business import Business
 from admin_panel.models import AdminBusinessBanner
 from helpers import upload_pictures, email_validation, validate_image
@@ -36,16 +37,24 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
 
         email_validation(email, 'Enter a valid business email address')
         validate_image(business_banner, 'Banner')
-        if business_category not in CATEGORIES:
+        canonical_business_category = resolve_category(business_category)
+        if canonical_business_category is None:
             raise ValidationError(
                 {'Business category': f'Type must be in {list(CATEGORIES)}.'}
             )
-        if business_subcategory not in CATEGORIES.get(business_category, []):
+        business_category = canonical_business_category
+        data['business_category'] = canonical_business_category
+        canonical_business_subcategory = resolve_subcategory(
+            business_category, business_subcategory
+        )
+        if canonical_business_subcategory is None:
             raise ValidationError(
                 {
                     'Business subcategory': f'Type must be in {CATEGORIES[business_category]}.'
                 }
             )
+        business_subcategory = canonical_business_subcategory
+        data['business_subcategory'] = canonical_business_subcategory
 
         business = Business.objects.filter(
             business_name=business_name,

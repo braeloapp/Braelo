@@ -25,6 +25,7 @@ from helpers import (
     validate_phone,
     email_validation,
 )
+from helpers.normalize import resolve_category, resolve_subcategory
 from admin_panel.models import AdminBusinessBanner
 from admin_panel.serializers import BusinessBannerSerializer
 from users.services.businesses_directory_sync import upsert_businesses_directory_doc
@@ -193,17 +194,25 @@ class BusinessSerailizer(serializers.DocumentSerializer):
             user = self.context['request'].user
             data['user_id'] = user.id
 
-        # validation checks for various fields of business
-        if business_category not in CATEGORIES:
+        # validation checks for various fields of business (case/format-insensitive)
+        canonical_business_category = resolve_category(business_category)
+        if canonical_business_category is None:
             raise ValidationError(
                 {'Business category': f'Type must be in {list(CATEGORIES)}.'}
             )
-        if business_subcategory not in CATEGORIES.get(business_category, []):
+        business_category = canonical_business_category
+        data['business_category'] = canonical_business_category
+        canonical_business_subcategory = resolve_subcategory(
+            business_category, business_subcategory
+        )
+        if canonical_business_subcategory is None:
             raise ValidationError(
                 {
                     'Business subcategory': f'Type must be in {CATEGORIES[business_category]}.'
                 }
             )
+        business_subcategory = canonical_business_subcategory
+        data['business_subcategory'] = canonical_business_subcategory
 
         if (
             not isinstance(business_coordinates, list)

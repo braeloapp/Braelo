@@ -23,6 +23,7 @@ from rest_framework.permissions import (
 
 from users.models import Business
 from helpers.constants import CATEGORIES
+from helpers.normalize import resolve_category, is_all_token
 from helpers import ListSync
 from helpers import response, handle_exceptions
 from listings.serializers import ListsyncSerializer
@@ -185,12 +186,17 @@ class ExploreBusiness(generics.ListAPIView):
                 'Invalid JSON format for coordinates.'
             ) from exc
 
-        if category not in CATEGORIES and category not in ('ALL', 'all'):
-            raise ValidationError(
-                {
-                    'category': f'Must be one of {list(CATEGORIES.keys())} OR "(ALL, all)"'
-                }
-            )
+        if is_all_token(category):
+            category = 'ALL'
+        else:
+            canonical_category = resolve_category(category)
+            if canonical_category is None:
+                raise ValidationError(
+                    {
+                        'category': f'Must be one of {list(CATEGORIES.keys())} OR "(ALL, all)"'
+                    }
+                )
+            category = canonical_category
 
         if not isinstance(coordinates, list) or len(coordinates) != 2:
             raise ValidationError(
@@ -220,7 +226,7 @@ class ExploreBusiness(generics.ListAPIView):
             'is_active': True,
         }
 
-        if category in CATEGORIES:
+        if category != 'ALL' and category in CATEGORIES:
             search_business['business_category'] = category
 
         nearby_business = Business.objects.filter(**search_business)

@@ -16,6 +16,7 @@ from bson.errors import InvalidId
 from django.utils import timezone
 from listings.models import SavedItem
 from helpers.constants import CATEGORIES
+from helpers.normalize import resolve_category, resolve_subcategory
 from rest_framework_mongoengine import serializers
 from rest_framework.exceptions import ValidationError
 from django.core.exceptions import ObjectDoesNotExist
@@ -45,22 +46,29 @@ class SavedItemSerializer(serializers.DocumentSerializer):
         user = self.context['request'].user
         data['user_id'] = user.id
 
-        # Validate category
+        # Validate category (case/format-insensitive)
         category = data.get('category')
         subcategory = data.get('subcategory')
         listing_id = data.get('listing_id')
-        if category not in CATEGORIES:
+        canonical_category = resolve_category(category)
+        if canonical_category is None:
             raise ValidationError(
                 {
-                    'category': f'Invalid category. Available categories: {CATEGORIES.keys()}'
+                    'category': f'Invalid category. Available categories: {list(CATEGORIES.keys())}'
                 }
             )
-        if subcategory and subcategory not in CATEGORIES.get(category, []):
-            raise ValidationError(
-                {
-                    'subcategory': f'subcategories should be {CATEGORIES[category]}'
-                }
-            )
+        category = canonical_category
+        data['category'] = canonical_category
+        if subcategory:
+            canonical_subcategory = resolve_subcategory(category, subcategory)
+            if canonical_subcategory is None:
+                raise ValidationError(
+                    {
+                        'subcategory': f'subcategories should be {CATEGORIES[category]}'
+                    }
+                )
+            subcategory = canonical_subcategory
+            data['subcategory'] = canonical_subcategory
 
         # Ensure the listing exists
         validation_data = {
