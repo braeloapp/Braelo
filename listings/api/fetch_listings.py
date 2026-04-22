@@ -23,7 +23,7 @@ from helpers.model_map import MODEL_MAP
 from listings.api.paginate_listing import Pagination
 from listings.models import SavedItem
 from helpers import handle_exceptions, response
-from users.models import Interest
+from users.models import Interest, User
 from rest_framework.exceptions import ValidationError
 from listings.serializers import (
     SavedItemSerializer,
