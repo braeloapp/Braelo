@@ -36,6 +36,7 @@ from chatbot.services.gpt_service import (
 )
 from chatbot.services.knowledge_service import search_knowledge
 from chatbot.services.business_matching import (
+    _filter_mongo_docs_brazilian_vs_portuguese,
     extract_directory_attribute_terms,
     get_top_businesses,
     mongo_comparison_query,
@@ -1572,6 +1573,79 @@ def _directory_ui_intro(
     return head
 
 
+def _directory_first_page_limit() -> int:
+    """Cap directory rows on first response (client UX: avoid dumping 10+ cards at once)."""
+    cap = int(getattr(django_settings, "CHATBOT_DIRECTORY_FIRST_PAGE_SIZE", 8))
+    mx = int(getattr(django_settings, "MAX_BUSINESS_RESULTS", 20))
+    return max(1, min(cap, mx))
+
+
+def _directory_client_followup_block(
+    language: str,
+    *,
+    zip_code: str | None,
+    city: str | None,
+    state: str | None,
+    see_more: bool,
+    n_shown: int,
+) -> str:
+    """Intent confirmation + refinement (after directory hits)."""
+    lang = (language or "en").lower()[:2]
+    loc_bits = [p for p in [city, state, zip_code] if p and str(p).strip()]
+    loc_label = ", ".join(loc_bits) if loc_bits else None
+    if lang == "es":
+        loc_phrase = loc_label or "esa zona"
+        lines = [
+            f"Mostré las primeras {n_shown} opciones en {loc_phrase}.",
+            "¿Quieres que sigamos solo con negocios brasileños, o ampliemos a ciudades cercanas?",
+            "También puedes pedirme que acorte la lista (por ejemplo solo restaurantes) o que muestre más resultados.",
+        ]
+        if see_more:
+            lines.append('Di “mostrar más” o usa “Ver más” en la app para el siguiente grupo.')
+        return "\n".join(lines)
+    if lang == "pt":
+        loc_phrase = loc_label or "essa região"
+        lines = [
+            f"Mostrei as primeiras {n_shown} opções em {loc_phrase}.",
+            "Quer que eu continue só com negócios brasileiros, ou amplie para cidades próximas?",
+            "Você também pode pedir para eu enxugar a lista (por exemplo só restaurantes) ou mostrar mais resultados.",
+        ]
+        if see_more:
+            lines.append('Diga “mostrar mais” ou use “Ver mais” no app para o próximo grupo.')
+        return "\n".join(lines)
+    loc_phrase = loc_label or "that area"
+    lines = [
+        f"Here are the first {n_shown} matches for {loc_phrase}.",
+        "Would you like me to keep this to Brazilian-owned or Brazilian-style businesses only, or widen to nearby towns?",
+        "You can also ask me to narrow the list (for example only sit-down restaurants) or to show more results.",
+    ]
+    if see_more:
+        lines.append('Say “show more” or use “See more” in the app for the next batch.')
+    return "\n".join(lines)
+
+
+def _location_external_links_followup(language: str) -> str:
+    """Explains web links after Google / LLM location fallback (client: no silent redirect)."""
+    lang = (language or "en").lower()[:2]
+    if lang == "es":
+        return (
+            "Nota: los enlaces siguientes son búsquedas web (Google) para explorar; no son filas internas "
+            "del directorio de Braelo. Si quieres, dime otra categoría o un radio más amplio y vuelvo a "
+            "buscar primero en nuestra base."
+        )
+    if lang == "pt":
+        return (
+            "Observação: os links abaixo são buscas na web (Google) para você explorar; não são registros "
+            "internos do diretório Braelo. Se quiser, diga outra categoria ou um raio maior e eu tento "
+            "de novo primeiro na nossa base."
+        )
+    return (
+        "Note: the links below open general web searches (Google) so you can explore further; they are "
+        "not Braelo directory listings. If you tell me another category or a wider area, I can search "
+        "our directory again first."
+    )
+
+
 # ---------------------------------------------------------------------------
 # KB answer + local provider suggestions (uses same Business table / Mongo collections)
 # ---------------------------------------------------------------------------
@@ -2518,7 +2592,7 @@ def _lista_mongo_directory_response(
     if not _has_business_location(s_state, s_city, s_county, zip_code, ulat, ulon):
         logger.info("chat_flow.lista_probe.skip_no_location user_id=%s", user_id)
         return None
-    lim = int(getattr(django_settings, "MAX_BUSINESS_RESULTS", 20))
+    lim = _directory_first_page_limit()
     logger.info(
         "chat_flow.lista_probe.search user_id=%s cat_pt=%s sub_pt=%s state=%s city=%s county=%s",
         user_id,
@@ -2543,6 +2617,9 @@ def _lista_mongo_directory_response(
         caller_geo_only=caller_geo_only,
     )
     docs = search_res.get("businesses") or []
+    docs = _filter_mongo_docs_brazilian_vs_portuguese(
+        message, extract_directory_attribute_terms(message), docs
+    )
     lista_see_more = bool(search_res.get("see_more"))
     if not docs:
         logger.info("chat_flow.lista_probe.empty user_id=%s", user_id)
@@ -2579,6 +2656,18 @@ def _lista_mongo_directory_response(
         category=(cat_pt or cat_en or ""),
         subcategory=(sub_pt or sub_en or ""),
         location_note=None,
+    )
+    reply = (
+        reply.rstrip()
+        + "\n\n"
+        + _directory_client_followup_block(
+            detected_lang,
+            zip_code=zip_code,
+            city=s_city,
+            state=s_state,
+            see_more=lista_see_more,
+            n_shown=len(businesses),
+        )
     )
     require_contact = False
     contact_msg = None
@@ -2661,7 +2750,7 @@ def _handle_business_load_more(
             see_more=False,
         )
 
-    page_size = int(business_page_size or getattr(django_settings, "MAX_BUSINESS_RESULTS", 20))
+    page_size = int(business_page_size or _directory_first_page_limit())
     page_size = max(1, min(page_size, 100))
     off = max(0, int(business_offset or 0))
     lang = (snap.get("language") or "en").strip()[:2] or "en"
@@ -2688,6 +2777,7 @@ def _handle_business_load_more(
             extra_match_terms=snap.get("extra_match_terms") or None,
             apply_gps_radius=bool(snap.get("apply_gps_radius", True)),
             anchor_results_to_message_city=bool(snap.get("anchor_results_to_message_city", False)),
+            source_message=snap.get("source_message"),
         )
     elif kind == "directory_discovery":
         result = search_business_directory_for_discovery(
@@ -3154,7 +3244,7 @@ def process_message(
             return _build_response(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
-        lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        lim = _directory_first_page_limit()
         _attr_terms = extract_directory_attribute_terms(message)
         snap_strict = True
         snap_extra = _attr_terms or None
@@ -3177,6 +3267,7 @@ def process_message(
             extra_match_terms=_attr_terms or None,
             apply_gps_radius=_apply_gps_radius,
             anchor_results_to_message_city=_anchor_msg_city,
+            source_message=message,
         )
         businesses = r1.get("businesses") or []
         loc_note = r1.get("location_note")
@@ -3203,6 +3294,7 @@ def process_message(
                 extra_match_terms=_attr_terms or None,
                 apply_gps_radius=_apply_gps_radius,
                 anchor_results_to_message_city=_anchor_msg_city,
+                source_message=message,
             )
             businesses = r2.get("businesses") or []
             loc_note = r2.get("location_note")
@@ -3229,6 +3321,7 @@ def process_message(
                 extra_match_terms=None,
                 apply_gps_radius=_apply_gps_radius,
                 anchor_results_to_message_city=_anchor_msg_city,
+                source_message=message,
             )
             businesses = r3.get("businesses") or []
             loc_note = r3.get("location_note")
@@ -3249,6 +3342,18 @@ def process_message(
                 category=biz_cat or "",
                 subcategory=biz_sub or "",
                 location_note=loc_note,
+            )
+            reply = (
+                reply.rstrip()
+                + "\n\n"
+                + _directory_client_followup_block(
+                    detected_lang,
+                    zip_code=zip_code,
+                    city=city,
+                    state=state,
+                    see_more=see_more,
+                    n_shown=len(businesses),
+                )
             )
             structured["answer_source"] = "business_database"
             structured["state"] = state or structured.get("state")
@@ -3304,6 +3409,7 @@ def process_message(
                 "extra_match_terms": snap_extra,
                 "apply_gps_radius": _apply_gps_radius,
                 "anchor_results_to_message_city": _anchor_msg_city,
+                "source_message": message,
             }
             biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
             _save_history(session_id, message, reply, "business_search", structured, businesses=businesses)
@@ -3574,7 +3680,7 @@ def process_message(
             _t2_cat, _t2_sub = None, None
             logger.info("chat_flow.tier2a0.sanitize_category dropped garbage biz_cat")
 
-        lim_db = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        lim_db = _directory_first_page_limit()
         _search_ag = ServiceSearchAgent().run(
             message=message,
             category=_t2_cat,
@@ -3612,6 +3718,18 @@ def process_message(
                 route_label=_decision.route,
             )
             reply = _resp_ag.response_text
+            reply = (
+                reply.rstrip()
+                + "\n\n"
+                + _directory_client_followup_block(
+                    detected_lang,
+                    zip_code=resolved_zip,
+                    city=resolved_city,
+                    state=resolved_state,
+                    see_more=db_discovery.get("see_more", False),
+                    n_shown=len(db_discovery["businesses"]),
+                )
+            )
             _val_ag = ValidationAgent().run(
                 response_text=reply,
                 source=_resp_ag.source,
@@ -3666,6 +3784,7 @@ def process_message(
                 "intent": "location_business_search",
                 "language": detected_lang,
                 "message": message,
+                "source_message": message,
                 "category": biz_cat,
                 "subcategory": biz_sub,
                 "category_hint": category_hint,
@@ -3731,6 +3850,7 @@ def process_message(
                 reply = ""
 
         if reply:
+            reply = _location_external_links_followup(detected_lang).strip() + "\n\n" + reply.strip()
             loc_struct = dict(structured or {})
             loc_struct["intent"] = "location_business_search"
             loc_struct["detected_language"] = detected_lang
@@ -3977,16 +4097,10 @@ def process_message(
                 strict_location=bool(_kb_loc["strict_location"]),
                 sort_mode="fairness",
                 extra_match_terms=extract_directory_attribute_terms(message) or None,
+                source_message=message,
             )
             kb_suggest_businesses = prov.get("businesses") or []
             if kb_suggest_businesses:
-                reply = reply.rstrip() + "\n\n" + _format_businesses_recommendation_engine(
-                    kb_suggest_businesses,
-                    detected_lang,
-                    category=structured.get("category") or "",
-                    subcategory=structured.get("subcategory") or "",
-                    location_note=prov.get("location_note"),
-                )
                 logger.info(
                     "chat_flow.kb_provider_suggest user_id=%s category=%s subcategory=%s n=%s",
                     user_id,
@@ -4024,7 +4138,7 @@ def process_message(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
 
-        limit = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+        limit = _directory_first_page_limit()
         bc = inf_cat or _st_cat
         bs = inf_sub or _st_sub
         _city_for_biz = structured.get("city") or city
@@ -4050,6 +4164,7 @@ def process_message(
             extra_match_terms=_attr_biz or None,
             apply_gps_radius=_apply_gps_radius,
             anchor_results_to_message_city=_anchor_msg_city,
+            source_message=message,
         )
         businesses = result.get("businesses") or []
         see_more = result.get("see_more", False)
@@ -4076,6 +4191,7 @@ def process_message(
                 extra_match_terms=_attr_biz or None,
                 apply_gps_radius=_apply_gps_radius,
                 anchor_results_to_message_city=_anchor_msg_city,
+                source_message=message,
             )
             businesses = result.get("businesses") or []
             see_more = result.get("see_more", False)
@@ -4102,6 +4218,7 @@ def process_message(
                 extra_match_terms=None,
                 apply_gps_radius=_apply_gps_radius,
                 anchor_results_to_message_city=_anchor_msg_city,
+                source_message=message,
             )
             businesses = result.get("businesses") or []
             see_more = result.get("see_more", False)
@@ -4125,6 +4242,18 @@ def process_message(
                 category=bc or "",
                 subcategory=bs or "",
                 location_note=location_note,
+            )
+            reply = (
+                reply.rstrip()
+                + "\n\n"
+                + _directory_client_followup_block(
+                    detected_lang,
+                    zip_code=zip_code,
+                    city=_city_for_biz,
+                    state=state,
+                    see_more=see_more,
+                    n_shown=len(businesses),
+                )
             )
         else:
             structured = dict(structured or {})
@@ -4171,6 +4300,7 @@ def process_message(
                 "extra_match_terms": snap_extra,
                 "apply_gps_radius": _apply_gps_radius,
                 "anchor_results_to_message_city": _anchor_msg_city,
+                "source_message": message,
             }
             biz_pag = _business_pagination_dict(biz_snap, limit, 0, businesses, see_more)
 
@@ -4229,7 +4359,7 @@ def process_message(
             and (rescue_cat or rescue_sub)
             and _has_business_location(state, city, county, zip_code, ulat, ulon)
         ):
-            lim = getattr(django_settings, "MAX_BUSINESS_RESULTS", 20)
+            lim = _directory_first_page_limit()
             _rescue_attr = extract_directory_attribute_terms(message)
             rescue_snap_extra = _rescue_attr or None
             rescue = get_top_businesses(
@@ -4251,6 +4381,7 @@ def process_message(
                 extra_match_terms=_rescue_attr or None,
                 apply_gps_radius=_apply_gps_radius,
                 anchor_results_to_message_city=_anchor_msg_city,
+                source_message=message,
             )
             rescue_biz = rescue.get("businesses") or []
             if not rescue_biz and _rescue_attr:
@@ -4274,6 +4405,7 @@ def process_message(
                     extra_match_terms=None,
                     apply_gps_radius=_apply_gps_radius,
                     anchor_results_to_message_city=_anchor_msg_city,
+                    source_message=message,
                 )
                 rescue_biz = rescue.get("businesses") or []
             if rescue_biz:
@@ -4282,6 +4414,18 @@ def process_message(
                     category=rescue_cat or "",
                     subcategory=rescue_sub or "",
                     location_note=rescue.get("location_note"),
+                )
+                reply = (
+                    reply.rstrip()
+                    + "\n\n"
+                    + _directory_client_followup_block(
+                        detected_lang,
+                        zip_code=zip_code,
+                        city=city,
+                        state=state,
+                        see_more=rescue.get("see_more", False),
+                        n_shown=len(rescue_biz),
+                    )
                 )
                 structured["category"] = rescue_cat
                 structured["subcategory"] = rescue_sub
@@ -4304,6 +4448,7 @@ def process_message(
                     "extra_match_terms": rescue_snap_extra,
                     "apply_gps_radius": _apply_gps_radius,
                     "anchor_results_to_message_city": _anchor_msg_city,
+                    "source_message": message,
                 }
                 rescue_pag = _business_pagination_dict(
                     rescue_snap,
@@ -4404,27 +4549,14 @@ def _build_response(
     contact_details_message: str = None,
     business_pagination: dict | None = None,
 ) -> dict:
-    from chatbot.ellu.response_formatter import (
-        ElluResponseFormatter,
-        tag_businesses_as_braelo_directory,
-    )
+    from chatbot.ellu.response_formatter import tag_businesses_as_braelo_directory
     from chatbot.ellu.privacy_guard import PrivacyGuard
     from chatbot.ellu.persona import get_phrase
 
     b_list = tag_businesses_as_braelo_directory(businesses or [])
-    final_resp = response
-
-    if b_list:
-        formatter = ElluResponseFormatter()
-        qa = question_analysis or {}
-        _skip_curated_lead = qa.get("answer_source") == "directory_attribute_confirmation"
-        biz_text = formatter.format_business_results(
-            businesses=b_list,
-            source="mixed",
-            detected_language=detected_language,
-            include_curated_lead=not _skip_curated_lead,
-        )
-        final_resp = f"{final_resp}\n\n{biz_text}".strip()
+    # When businesses are returned for structured cards, do not duplicate them in `response`
+    # (numbered list + WhatsApp lines); the client renders the same data as cards.
+    final_resp = (response or "").strip()
 
     if not PrivacyGuard().check_outgoing_response(final_resp):
         final_resp = get_phrase("ask_next", detected_language)

@@ -603,6 +603,12 @@ RAG_EMBEDDING_MIN_FOR_MATCH = float(os.getenv('RAG_EMBEDDING_MIN_FOR_MATCH', '0.
 # DOCX knowledge base: set DOCX_DATA_DIR in .env to your folder (can be outside braelo). Default: parent folder / documents
 DOCX_DATA_DIR = Path(os.getenv('DOCX_DATA_DIR', str(BASE_DIR.parent / 'documents')))
 MAX_BUSINESS_RESULTS = int(os.getenv('MAX_BUSINESS_RESULTS', '20'))
+# First directory response: how many listings to return before "See more" / load-more (client UX).
+CHATBOT_DIRECTORY_FIRST_PAGE_SIZE = int(os.getenv('CHATBOT_DIRECTORY_FIRST_PAGE_SIZE', '8'))
+# When user asks for Brazilian businesses/food, drop Portuguese-only listings (name/tags) that lack Brazilian cues.
+CHATBOT_BRAZILIAN_EXCLUDE_PORTUGUESE_ONLY = os.getenv(
+    'CHATBOT_BRAZILIAN_EXCLUDE_PORTUGUESE_ONLY', 'true'
+).lower() in ('true', '1', 'yes', 'on')
 BUSINESS_RADIUS_MILES = float(os.getenv('BUSINESS_RADIUS_MILES', '25'))
 BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES', '50'))
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))

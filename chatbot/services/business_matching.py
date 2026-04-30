@@ -386,6 +386,68 @@ _MONGO_DIRECTORY_TEXT_FIELDS = (
 )
 
 
+def _user_requests_brazilian_corpus(
+    message: str | None, extra_match_terms: list[str] | None
+) -> bool:
+    """
+    True when the user is clearly asking for Brazilian (food/business) and not Portuguese-only.
+    Used to drop listings that read as Portuguese-only (e.g. Portugal / Portuguese restaurant)
+    when the query is explicitly Brazilian.
+    """
+    m = (message or "").strip().lower()
+    if re.search(r"\bportuguese\b|\bportuguês\b|\bportugues\b", m):
+        return False
+    if re.search(r"\bbrazilian\b|\bbrasileir", m):
+        return True
+    terms = {str(t).strip().lower() for t in (extra_match_terms or []) if str(t).strip()}
+    if terms & {"brazil", "brasil", "brasileir", "brasileira", "brasileño", "brasileno"}:
+        return True
+    return False
+
+
+def _doc_haystack_for_cuisine_filter(doc: dict) -> str:
+    parts = []
+    for k in _MONGO_DIRECTORY_TEXT_FIELDS:
+        v = doc.get(k)
+        if v is None:
+            continue
+        parts.append(str(v))
+    return " ".join(parts).lower()
+
+
+def _filter_mongo_docs_brazilian_vs_portuguese(
+    message: str | None,
+    extra_match_terms: list[str] | None,
+    docs: list,
+) -> list:
+    """Remove Portuguese-only rows when the user asked for Brazilian (see client QA TAGS)."""
+    from django.conf import settings as _settings
+
+    if (
+        not docs
+        or not getattr(_settings, "CHATBOT_BRAZILIAN_EXCLUDE_PORTUGUESE_ONLY", True)
+    ):
+        return docs
+    if not _user_requests_brazilian_corpus(message, extra_match_terms):
+        return docs
+    port_re = re.compile(
+        r"\b(portugal|português|portugues|portuguese|portuguesa|"
+        r"restaurante\s+português|restaurante\s+portugues|cozinha\s+portuguesa)\b",
+        re.I,
+    )
+    br_re = re.compile(
+        r"\b(brazil|brasil|brasileir|brasileño|brasileno|churrasc|açaí|acai)\b",
+        re.I,
+    )
+    out = []
+    for d in docs:
+        hay = _doc_haystack_for_cuisine_filter(d)
+        if port_re.search(hay) and not br_re.search(hay):
+            continue
+        out.append(d)
+    return out
+
+
 def extract_directory_attribute_terms(message: str | None) -> list[str]:
     """
     Split cues like “Brazilian restaurant” or “sushi in Florida” into tokens for Mongo $regex
@@ -887,6 +949,7 @@ def _get_top_businesses_mongo(
     broad_location_only: bool = False,
     apply_gps_radius: bool = True,
     anchor_results_to_message_city: bool = False,
+    source_message: str | None = None,
 ) -> dict:
     from django.conf import settings
 
@@ -957,6 +1020,10 @@ def _get_top_businesses_mongo(
     except Exception:
         logger.exception("business_matching.mongo.query_failed")
         return {"businesses": [], "see_more": False, "location_note": None}
+
+    all_rows = _filter_mongo_docs_brazilian_vs_portuguese(
+        source_message, extra_match_terms, all_rows
+    )
 
     norms = []
     for b in all_rows:
@@ -1130,6 +1197,7 @@ def get_top_businesses(
     broad_location_only: bool = False,
     apply_gps_radius: bool = True,
     anchor_results_to_message_city: bool = False,
+    source_message: str | None = None,
 ) -> dict:
     from django.conf import settings
     if not broad_location_only and not (str(category or "").strip() or str(subcategory or "").strip()):
@@ -1159,6 +1227,7 @@ def get_top_businesses(
             broad_location_only=broad_location_only,
             apply_gps_radius=apply_gps_radius,
             anchor_results_to_message_city=anchor_results_to_message_city,
+            source_message=source_message,
         )
 
     from chatbot.models import Business, AdPackage, ImpressionsLog
@@ -1597,6 +1666,7 @@ def search_business_directory_for_discovery(
                     sort_mode="default",
                     extra_match_terms=attr_terms or None,
                     broad_location_only=True,
+                    source_message=message,
                 )
             return {"businesses": [], "see_more": False, "location_note": None}
         return get_top_businesses(
@@ -1616,6 +1686,7 @@ def search_business_directory_for_discovery(
             strict_location=False,
             sort_mode="default",
             extra_match_terms=attr_terms or None,
+            source_message=message,
         )
 
     if not has_text_loc:

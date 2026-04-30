@@ -1599,13 +1599,14 @@ def generate_business_not_found_response(
 The user is looking for: {display_category}
 Location context: {location_str}
 
-Give a SHORT, genuinely helpful reply (under 140 words):
-1. Acknowledge what they asked for in a warm tone.
-2. Suggest 3–5 practical ways to find {display_category} in {location_str} (Google Maps, Yelp, local Facebook/WhatsApp groups, asking neighbors, etc.).
-3. {lang_instruction}
-4. Do NOT start with "I don't have" or "No listings found" or "nothing in our database".
-5. Do NOT say you searched an internal directory or database.
-6. No closing salesy sign-off."""
+Braelo's internal partner directory returned no rows for this category + location.
+
+Give a SHORT reply (under 160 words):
+1. Say clearly (first sentence) that there were no matches in Braelo's directory for that request, so you are giving general guidance — not hidden listings.
+2. Ask if they want you to try again with a wider area (nearby city/ZIP) or a slightly different category wording before they leave the chat.
+3. Then suggest 2–4 practical ways to explore {display_category} in {location_str} (Google Maps, official licensing or bar referral pages, local community groups, etc.). Do not invent phone numbers or addresses.
+4. {lang_instruction}
+5. Avoid salesy sign-offs; you may end with one short follow-up question."""
 
     try:
         from chatbot.services import gpt_service
@@ -1630,17 +1631,20 @@ Give a SHORT, genuinely helpful reply (under 140 words):
 
     if lang == "es":
         return (
-            f"Para encontrar {display_category} en {location_str}, prueba Google Maps o Yelp, "
-            f"grupos locales en Facebook o WhatsApp, y recomendaciones de personas de tu zona."
+            f"No encontré coincidencias en el directorio de Braelo para {display_category} en {location_str}. "
+            f"¿Quieres que pruebe un área más amplia o otra palabra clave? Mientras tanto, puedes buscar en Google Maps, "
+            f"en páginas oficiales del estado o en grupos locales de confianza."
         )
     if lang == "pt":
         return (
-            f"Para achar {display_category} em {location_str}, use o Google Maps ou Yelp, "
-            f"grupos locais no Facebook ou WhatsApp, e recomendações de quem mora na região."
+            f"Não encontrei correspondências no diretório da Braelo para {display_category} em {location_str}. "
+            f"Quer que eu tente uma área maior ou outra palavra-chave? Enquanto isso, use o Google Maps, "
+            f"sites oficiais do estado ou grupos locais de confiança."
         )
     return (
-        f"To find {display_category} in {location_str}, try Google Maps or Yelp, "
-        f"local Facebook or WhatsApp groups, and tips from people in your neighborhood."
+        f"I did not find matches in Braelo's directory for {display_category} in {location_str}. "
+        f"Want me to try a wider area or a different keyword? Meanwhile you can search Google Maps, "
+        f"official state pages, or trusted local community groups."
     )
 
 

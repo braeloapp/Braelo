@@ -4,6 +4,24 @@
     <meta charset="utf-8">
     <title>Braelo Chatbot</title>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+    <style>
+        .bot-message-wrap { position: relative; margin: 12px 0; max-width: 100%; }
+        .bot-message-wrap .copy-btn {
+            position: absolute;
+            right: 6px;
+            bottom: 6px;
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            background: #fff;
+            cursor: pointer;
+            color: #333;
+        }
+        .bot-message-wrap .copy-btn:hover { background: #f0f0f0; }
+        .bot-message-wrap .copy-btn.copied { border-color: #4caf50; color: #2e7d32; }
+        .botText { margin: 0; padding: 10px 72px 10px 10px; background: #e8f4fc; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
+    </style>
 </head>
 <body>
     <div class="row">
@@ -13,7 +31,10 @@
                 {% csrf_token %}
                 <div id="chatbox">
                     <div class="col-md-8 ml-auto mr-auto">
-                        <p class="botText"><span>Hi! I'm Braelo. Ask me about living in the USA or finding local businesses.</span></p>
+                        <div class="bot-message-wrap">
+                            <p class="botText" data-copy-text="Hi! I'm Braelo. Ask me about living in the USA or finding local businesses.">Hi! I'm Braelo. Ask me about living in the USA or finding local businesses.</p>
+                            <button type="button" class="copy-btn" aria-label="Copy message">Copy</button>
+                        </div>
                     </div>
                 </div>
                 <div id="userInput" class="row">
@@ -26,11 +47,42 @@
         </div>
     </div>
     <script>
-        $(document).ready(function() {
-            $("form").on("submit", function(event) {
+        function wireCopyButtons(root) {
+            $(root).find(".copy-btn").off("click").on("click", function () {
+                var wrap = $(this).closest(".bot-message-wrap");
+                var p = wrap.find(".botText");
+                var text = p.data("copy-text") || p.text() || "";
+                var btn = $(this);
+                function ok() {
+                    btn.addClass("copied").text("Copied");
+                    setTimeout(function () { btn.removeClass("copied").text("Copy"); }, 2000);
+                }
+                function fail() {
+                    btn.text("Select text");
+                    setTimeout(function () { btn.text("Copy"); }, 2000);
+                }
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(ok).catch(fail);
+                } else {
+                    var ta = $("<textarea>").css({ position: "fixed", left: "-9999px" }).val(text).appendTo("body");
+                    ta[0].select();
+                    try {
+                        document.execCommand("copy");
+                        ok();
+                    } catch (e) {
+                        fail();
+                    }
+                    ta.remove();
+                }
+            });
+        }
+        wireCopyButtons(document);
+
+        $(document).ready(function () {
+            $("form").on("submit", function (event) {
                 event.preventDefault();
                 var rawText = $("#text").val();
-                var userHtml = '<p class="userText"><span>' + rawText + "</span></p>";
+                var userHtml = '<p class="userText"><span>' + $("<div>").text(rawText).html() + "</span></p>";
                 $("#text").val("");
                 $("#chatbox").append(userHtml);
                 document.getElementById("userInput").scrollIntoView({ block: "start", behavior: "smooth" });
@@ -39,11 +91,24 @@
                     contentType: "application/json",
                     type: "POST",
                     url: "/chatbot/api/chat",
-                }).done(function(data) {
-                    var botHtml = '<p class="botText"><span>' + (data.response || data.error || "") + "</span></p>";
-                    $("#chatbox").append($.parseHTML(botHtml));
-                }).fail(function() {
-                    $("#chatbox").append('<p class="botText"><span>Sorry, something went wrong.</span></p>');
+                }).done(function (data) {
+                    var reply = (data.response || data.error || "");
+                    var $wrap = $('<div class="bot-message-wrap">');
+                    var $p = $('<p class="botText">').text(reply);
+                    $p.attr("data-copy-text", reply);
+                    $wrap.append($p);
+                    $wrap.append($('<button type="button" class="copy-btn" aria-label="Copy message">Copy</button>'));
+                    $("#chatbox").append($wrap);
+                    wireCopyButtons($wrap);
+                }).fail(function () {
+                    var err = "Sorry, something went wrong.";
+                    var $wrap = $('<div class="bot-message-wrap">');
+                    var $p = $('<p class="botText">').text(err);
+                    $p.attr("data-copy-text", err);
+                    $wrap.append($p);
+                    $wrap.append($('<button type="button" class="copy-btn" aria-label="Copy message">Copy</button>'));
+                    $("#chatbox").append($wrap);
+                    wireCopyButtons($wrap);
                 });
             });
         });
