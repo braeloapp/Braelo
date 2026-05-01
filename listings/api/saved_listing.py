@@ -168,11 +168,13 @@ class FlipListingStatus(generics.CreateAPIView):
             status=listing_status,
             model=model,
             user_id=owner_user_id,
+            admin=admin,
         )
         ListSynchronize.flip_status(
             listing_id=listing_id,
             status=listing_status,
             user_id=owner_user_id,
+            admin=admin,
         )
         # Updates listings_count for the listing owner (not the admin acting user).
         if listing_status:

@@ -20,9 +20,13 @@ class ListSynchronize:
     '''
 
     @staticmethod
-    def flip_status(listing_id, status, user_id, model=None):
+    def flip_status(listing_id, status, user_id, model=None, admin=False):
         '''
         flip status for certain list.
+
+        When admin is True the user_id filter is dropped so staff/superuser
+        can flip any listing or listsync row regardless of ownership drift
+        between the category collection and the listsync collection.
         '''
         from helpers import ListSync
 
@@ -30,23 +34,34 @@ class ListSynchronize:
         filter_by = 'listing_id' if model == ListSync else 'id'
 
         try:
-            filter_by = 'listing_id' if model == ListSync else 'id'
-            # if category or user_id or listing _id is not correct
-            active_status = model.objects(
-                **{filter_by: listing_id, 'user_id': user_id}
-            ).first()
+            query = {filter_by: listing_id}
+            if not admin:
+                query['user_id'] = user_id
+
+            active_status = model.objects(**query).first()
 
             if not active_status:
                 if model == ListSync:
-                    detail = (
-                        'No ListSync row for this listing_id and your user. '
-                        'The listing may need to be re-saved or synced to listsync.'
-                    )
+                    if admin:
+                        detail = (
+                            f'No ListSync row found for listing_id {listing_id}. '
+                            'The listing may need to be re-saved or backfilled to listsync.'
+                        )
+                    else:
+                        detail = (
+                            'No ListSync row for this listing_id and your user. '
+                            'The listing may need to be re-saved or synced to listsync.'
+                        )
                 else:
-                    detail = (
-                        'No listing in this category for this id and your user. '
-                        'You must be logged in as the listing owner (user_id on the listing).'
-                    )
+                    if admin:
+                        detail = (
+                            f'No {model.__name__} listing found for id {listing_id}.'
+                        )
+                    else:
+                        detail = (
+                            'No listing in this category for this id and your user. '
+                            'You must be logged in as the listing owner (user_id on the listing).'
+                        )
                 raise ValidationError({'Listings': detail})
             if active_status.is_active == status:
                 raise ValidationError(
