@@ -184,24 +184,41 @@ class FlipUserStatus(generics.CreateAPIView):
                 {'Status': 'Status must be either "user" or "business".'}
             )
 
-        # Handle 'business' status cases
+        # Handle 'business' status cases — prefer Mongo ``Business`` over SQL flags:
+        # ``previous_business`` can be False if creation partially failed or data drifted.
         if user_status == 'business':
-            if user.previous_business and Business.objects(
+            active_business = Business.objects(
                 user_id=user_id, is_active=True
-            ):
-                user.is_business = True
-                user.save()
+            ).first()
+            if active_business:
+                update_fields = []
+                if not user.is_business:
+                    user.is_business = True
+                    update_fields.append('is_business')
+                if not user.previous_business:
+                    user.previous_business = True
+                    update_fields.append('previous_business')
+                if update_fields:
+                    user.save(update_fields=update_fields)
                 return response(
                     status=status.HTTP_200_OK,
                     message='Business Already Exists for User',
                     data={'user_status': user.is_business},
                 )
-            if Business.objects(user_id=user_id, is_active=False).first():
+
+            inactive_business = Business.objects(
+                user_id=user_id, is_active=False
+            ).first()
+            if inactive_business:
                 return response(
                     status=status.HTTP_409_CONFLICT,
-                    message='Business Already Exists for User. Business is Deactivated, Please Activate.',
+                    message=(
+                        'Business Already Exists for User. '
+                        'Business is Deactivated, Please Activate.'
+                    ),
                     data={},
                 )
+
             if not user.previous_business:
                 return response(
                     status=status.HTTP_406_NOT_ACCEPTABLE,
