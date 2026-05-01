@@ -64,11 +64,12 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Apply migrations
-        run: python manage.py migrate
+      # Do NOT migrate here: CI has no WEBSITE_SITE_NAME, so SQLite would be repo-local
+      # and not the production file under /home/data. Migrations run in startup.sh on Azure.
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'Braelo-V1'
           package: .
+          startup-command: 'bash /home/site/wwwroot/startup.sh'

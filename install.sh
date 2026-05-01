@@ -27,8 +27,8 @@ if [ -n "${SQLITE_DATABASE_PATH:-}" ]; then
   mkdir -p "$(dirname "${SQLITE_DATABASE_PATH}")"
 fi
 
-# Run Django migrations
-python3 manage.py migrate
+# Run Django migrations against the same DB the app uses (see config/settings.py)
+python3 manage.py migrate --noinput
 
 # Collect static files
 python3 manage.py collectstatic --noinput
@@ -40,8 +40,8 @@ if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser(username='admin', password='admin')
 " | python3 manage.py shell
 
-echo "Setup complete. Starting Gunicorn..."
+echo "Setup complete. Starting Daphne (ASGI, Channels)…"
 
-# Start Gunicorn on Azure port
+# manage:application is invalid — use config.asgi (see startup.sh)
 PORT=${PORT:-8000}
-gunicorn --bind=0.0.0.0:$PORT manage:application
+exec python3 -m daphne -b 0.0.0.0 -p "$PORT" config.asgi:application
