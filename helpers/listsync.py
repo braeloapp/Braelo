@@ -37,7 +37,17 @@ class ListSynchronize:
             ).first()
 
             if not active_status:
-                raise ValidationError({'Listings': 'No listings found'})
+                if model == ListSync:
+                    detail = (
+                        'No ListSync row for this listing_id and your user. '
+                        'The listing may need to be re-saved or synced to listsync.'
+                    )
+                else:
+                    detail = (
+                        'No listing in this category for this id and your user. '
+                        'You must be logged in as the listing owner (user_id on the listing).'
+                    )
+                raise ValidationError({'Listings': detail})
             if active_status.is_active == status:
                 raise ValidationError(
                     {'Status': f'The status is already set to {status}'}
