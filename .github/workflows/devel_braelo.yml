@@ -72,4 +72,6 @@ jobs:
         with:
           app-name: 'Braelo-V1'
           package: .
-          startup-command: 'bash /home/site/wwwroot/startup.sh'
+          # Oryx extracts the app to /tmp/…; only an archive stays under wwwroot. Use a
+          # relative path so the script runs from the extracted app root (same dir as manage.py).
+          startup-command: 'bash startup.sh'

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Run on Azure Linux App Service before the web server.
-# Ensures the *production* SQLite file (see SQLITE_DATABASE_PATH / /home/data/…) is migrated.
-# GitHub Actions "migrate" on the runner does NOT touch this database — do not rely on it.
+# Azure Oryx extracts the build to /tmp/… and runs this from that directory (not /home/site/wwwroot).
+# Portal / workflow startup command must be:  bash startup.sh
+# Do not use: bash /home/site/wwwroot/startup.sh  → "No such file" after extract.
+#
+# Ensures the *production* SQLite file (see settings: /home/data/…) is migrated.
 
 set -euo pipefail
 
