@@ -19,6 +19,12 @@ import os
 def home(request):
     return HttpResponse("Braelo is running.")
 
+
+def azure_load_probe(request):
+    """Azure may request this path during instance health checks."""
+    return HttpResponse("", content_type="text/plain")
+
+
 def test_env(request):
     return HttpResponse({
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
@@ -27,7 +33,9 @@ def test_env(request):
     })
 
 urlpatterns = [
+    path("", home),
     path("home/", home),
+    path("robots933456.txt", azure_load_probe),
     path("test-env/", test_env),
     path('admin/', admin.site.urls),
     path('auth/', include('users.urls')),
