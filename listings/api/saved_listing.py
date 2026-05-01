@@ -106,7 +106,7 @@ class FlipListingStatus(generics.CreateAPIView):
     @handle_exceptions
     def post(self, request, **kwargs):
         req = request.data
-        user_id = request.user.id
+        request_user_id = request.user.id
         listing_status = req.get('status')
         category = req.get('category')
         listing_id = req.get('listing_id')
@@ -124,24 +124,57 @@ class FlipListingStatus(generics.CreateAPIView):
                 }
             )
         category = canonical_category
-        listing_limit = User.objects.filter(id=user_id).first()
-        if not listing_limit.is_business and listing_status:
-            if listing_limit.listings_count == USER_LISTINGS_THRESHOLD:
-                raise ValidationError(
-                    {'Listing Limit': 'Cannot Exceed 10 For Normal User'}
-                )
-
         model = MODEL_MAP[category]
+        listing_doc = model.objects.filter(id=listing_id).first()
+        if not listing_doc:
+            raise ValidationError(
+                {
+                    'Listings': (
+                        'No listing found for this listing_id and category.'
+                    )
+                }
+            )
+
+        owner_user_id = listing_doc.user_id
+        admin_path = '/admin-panel'
+        admin = request.path.startswith(admin_path) and (
+            request.user.is_staff or request.user.is_superuser
+        )
+        if not admin and owner_user_id != request_user_id:
+            raise ValidationError(
+                {
+                    'Permission': (
+                        'You can only flip listings that belong to your account.'
+                    )
+                }
+            )
+
+        listing_limit = User.objects.filter(id=owner_user_id).first()
+        if not listing_limit:
+            raise ValidationError({'User': 'Listing owner account not found.'})
+
+        if (
+            not admin
+            and not listing_limit.is_business
+            and listing_status
+            and listing_limit.listings_count == USER_LISTINGS_THRESHOLD
+        ):
+            raise ValidationError(
+                {'Listing Limit': 'Cannot Exceed 10 For Normal User'}
+            )
+
         ListSynchronize.flip_status(
             listing_id=listing_id,
             status=listing_status,
             model=model,
-            user_id=user_id,
+            user_id=owner_user_id,
         )
         ListSynchronize.flip_status(
-            listing_id=listing_id, status=listing_status, user_id=user_id
+            listing_id=listing_id,
+            status=listing_status,
+            user_id=owner_user_id,
         )
-        #  updates the listings count for business & user
+        # Updates listings_count for the listing owner (not the admin acting user).
         if listing_status:
             listing_limit.listings_count += 1
         elif not listing_limit.is_business and listing_limit.listings_count > 0:

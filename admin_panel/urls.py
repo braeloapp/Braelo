@@ -48,6 +48,7 @@ from listings.api import (
     SavedListing,
     UserListing,
     DeleteListing,
+    FlipListingStatus,
 )
 
 urlpatterns = [
@@ -80,6 +81,8 @@ urlpatterns = [
     path('login', LoginWithEmail.as_view()),
     # Delete Listings
     path('delete', DeleteListing.as_view()),
+    # Flip listing active/inactive (staff/superuser; any owner's listing)
+    path('listing/flip/status', FlipListingStatus.as_view()),
     # Get saved listings for Admin
     path('get-save', SavedListing.as_view()),
     # Account creation by admin
