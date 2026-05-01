@@ -10,6 +10,8 @@ Update profile api.
 ---------------------------------------------------
 '''
 
+import logging
+
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
@@ -23,6 +25,38 @@ from users.serializers import (
 )
 from helpers import handle_exceptions, response, ListSync
 from users.models.business import Business
+
+
+logger = logging.getLogger(__name__)
+
+
+def _find_user_business(user_id):
+    '''
+    Locate the Mongo ``Business`` doc for a user, defending against legacy
+    rows where ``user_id`` was persisted as a string instead of int.
+
+    Returns the most-recently-created match (active preferred) or ``None``.
+    '''
+    candidates = [user_id]
+    try:
+        candidates.append(int(user_id))
+    except (TypeError, ValueError):
+        pass
+    candidates.append(str(user_id))
+    # de-dupe while preserving order
+    seen = set()
+    user_id_values = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        user_id_values.append(candidate)
+
+    return (
+        Business.objects(__raw__={'user_id': {'$in': user_id_values}})
+        .order_by('-is_active', '-created_at')
+        .first()
+    )
 
 
 class UpdateProfile(generics.CreateAPIView):
@@ -184,20 +218,23 @@ class FlipUserStatus(generics.CreateAPIView):
                 {'Status': 'Status must be either "user" or "business".'}
             )
 
-        # Handle 'business' status cases — prefer Mongo ``Business`` over SQL flags:
-        # ``previous_business`` can be False if creation partially failed or data drifted.
+        # Mongo is the source of truth. The lookup is tolerant of legacy
+        # ``user_id`` values stored as strings (schema drift) so it stays in
+        # sync with ``auth/business/fetch-single``.
+        existing_business = _find_user_business(user_id)
+
+        if existing_business is not None and not user.previous_business:
+            # Self-heal: prior creation succeeded in Mongo but the SQL flag
+            # was never persisted (e.g. partial failure / direct insert).
+            user.previous_business = True
+            user.save(update_fields=['previous_business'])
+
         if user_status == 'business':
-            active_business = Business.objects(
-                user_id=user_id, is_active=True
-            ).first()
-            if active_business:
+            if existing_business is not None and existing_business.is_active:
                 update_fields = []
                 if not user.is_business:
                     user.is_business = True
                     update_fields.append('is_business')
-                if not user.previous_business:
-                    user.previous_business = True
-                    update_fields.append('previous_business')
                 if update_fields:
                     user.save(update_fields=update_fields)
                 return response(
@@ -206,10 +243,7 @@ class FlipUserStatus(generics.CreateAPIView):
                     data={'user_status': user.is_business},
                 )
 
-            inactive_business = Business.objects(
-                user_id=user_id, is_active=False
-            ).first()
-            if inactive_business:
+            if existing_business is not None and not existing_business.is_active:
                 return response(
                     status=status.HTTP_409_CONFLICT,
                     message=(
@@ -220,6 +254,12 @@ class FlipUserStatus(generics.CreateAPIView):
                 )
 
             if not user.previous_business:
+                logger.info(
+                    'flip_status.no_business user_id=%s is_business=%s previous_business=%s',
+                    user_id,
+                    user.is_business,
+                    user.previous_business,
+                )
                 return response(
                     status=status.HTTP_406_NOT_ACCEPTABLE,
                     message='Please Create Business First',
