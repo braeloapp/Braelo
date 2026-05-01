@@ -18,6 +18,11 @@ python3 -m pip install --upgrade pip --target=/home/site/wwwroot/.python_package
 # Install/update requirements
 python3 -m pip install --upgrade -r /home/site/wwwroot/requirements.txt --target=/home/site/wwwroot/.python_packages/lib/site-packages
 
+# Persist SQLite outside wwwroot (set SQLITE_DATABASE_PATH in App Settings), so deploys do not remove it
+if [ -n "${SQLITE_DATABASE_PATH:-}" ]; then
+  mkdir -p "$(dirname "${SQLITE_DATABASE_PATH}")"
+fi
+
 # Run Django migrations
 python3 manage.py migrate
 
@@ -29,7 +34,7 @@ echo "
 from users.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser(username='admin', password='admin')
-" | python manage.py shell
+" | python3 manage.py shell
 
 echo "Setup complete. Starting Gunicorn..."
 

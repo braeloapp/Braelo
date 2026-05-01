@@ -354,11 +354,23 @@ ASGI_APPLICATION = 'config.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+#
+# Default: db.sqlite3 next to the repo (local dev). Hosts that replace the app tree on
+# each deploy (e.g. Azure Web Apps zip deploy) wipe that path. Set
+# SQLITE_DATABASE_PATH to a path on persistent disk. On Azure Linux App Service,
+# /home is retained across deployments—use e.g. /home/data/braelo.sqlite3 (this
+# script creates the parent dir when SQLITE_DATABASE_PATH is set).
+
+_sqlite_path_env = os.getenv('SQLITE_DATABASE_PATH', '').strip()
+if _sqlite_path_env:
+    _sqlite_db_name = str(Path(_sqlite_path_env).expanduser())
+else:
+    _sqlite_db_name = os.path.join(BASE_DIR, 'db.sqlite3')
 
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),  # relative to your repo
+        'NAME': _sqlite_db_name,
     }
 }
 
