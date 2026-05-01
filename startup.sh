@@ -24,7 +24,8 @@ for _venv in "$APP_ROOT/antenv" "$APP_ROOT/.venv"; do
 done
 unset _venv
 
-export PYTHONPATH="${PYTHONPATH:-}:${APP_ROOT}/.python_packages/lib/site-packages"
+# Oryx only puts antenv on PYTHONPATH; project root must be importable as "config", "chats", etc.
+export PYTHONPATH="${APP_ROOT}:${PYTHONPATH:-}:${APP_ROOT}/.python_packages/lib/site-packages"
 
 echo "startup.sh: migrate → production DB (not CI runner)"
 python manage.py migrate --noinput
