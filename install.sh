@@ -18,7 +18,11 @@ python3 -m pip install --upgrade pip --target=/home/site/wwwroot/.python_package
 # Install/update requirements
 python3 -m pip install --upgrade -r /home/site/wwwroot/requirements.txt --target=/home/site/wwwroot/.python_packages/lib/site-packages
 
-# Persist SQLite outside wwwroot (set SQLITE_DATABASE_PATH in App Settings), so deploys do not remove it
+# SQLite on Azure Linux defaults to /home/data/braelo.sqlite3 (see config/settings.py).
+# /home persists across zip deploy; /home/site/wwwroot does not.
+if [ -n "${WEBSITE_SITE_NAME:-}" ]; then
+  mkdir -p /home/data
+fi
 if [ -n "${SQLITE_DATABASE_PATH:-}" ]; then
   mkdir -p "$(dirname "${SQLITE_DATABASE_PATH}")"
 fi
