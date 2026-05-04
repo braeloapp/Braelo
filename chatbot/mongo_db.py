@@ -123,6 +123,13 @@ def ensure_indexes():
         db.businesses.create_index(
             [("user_listing_id", 1)], unique=True, sparse=True
         )
+        # Marketplace listings (vehicle_listing, …) mirrored with `listing_source` set
+        db.businesses.create_index(
+            [("user_listing_id", 1), ("listing_source", 1)],
+            unique=True,
+            partialFilterExpression={"listing_source": {"$exists": True, "$type": "string"}},
+        )
+        db.businesses.create_index("listing_source")
     except Exception:
         logger.exception("mongo_db.ensure_indexes.businesses_failed")
     try:

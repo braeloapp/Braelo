@@ -44,6 +44,7 @@ from listings.models import (
 )
 
 from users.models import Business
+from users.services.listings_directory_sync import upsert_listing_directory_doc
 
 
 class Serializer(serializers.DocumentSerializer):
@@ -103,6 +104,7 @@ class Serializer(serializers.DocumentSerializer):
         with transaction.atomic():
             listing = self.Meta.model.objects.create(**validated_data)
             ListSynchronize.listsync(validated_data, listing.id)
+        upsert_listing_directory_doc(listing)
         return listing
 
     def update(self, instance, validated_data):
@@ -158,6 +160,7 @@ class Serializer(serializers.DocumentSerializer):
         ListSynchronize.listsync(
             validated_data, instance.id, update=True, admin=admin
         )
+        upsert_listing_directory_doc(instance)
         return instance
 
     def validate(self, data):

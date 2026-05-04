@@ -593,6 +593,15 @@ elif _use_mongo_env in ("true", "1", "yes", "on"):
 else:
     USE_MONGO = bool(_mongo_uri_valid(MONGO_URI))
 # MONGO_URI / MONGO_DB_NAME are defined above (shared with mongoengine)
+# Mirror marketplace listings (vehicle_listing, …) into Mongo `businesses` for directory search.
+# Default on; set LISTINGS_DIRECTORY_MIRROR_ENABLED=false to skip (e.g. local without Atlas).
+_listing_mirror_env = os.getenv("LISTINGS_DIRECTORY_MIRROR_ENABLED", "").strip().lower()
+if _listing_mirror_env in ("false", "0", "no", "off"):
+    LISTINGS_DIRECTORY_MIRROR_ENABLED = False
+elif _listing_mirror_env in ("true", "1", "yes", "on"):
+    LISTINGS_DIRECTORY_MIRROR_ENABLED = True
+else:
+    LISTINGS_DIRECTORY_MIRROR_ENABLED = bool(_mongo_uri_valid(MONGO_URI))
 
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 # When True (default), directory name/TAGS narrowing may ask the LLM for extra PT/EN substrings (e.g. BBQ ↔ churrasco).

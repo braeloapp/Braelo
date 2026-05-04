@@ -13,6 +13,11 @@ from django.db.models import F, Q
 
 logger = logging.getLogger(__name__)
 
+# Structured intent uses these when the LLM cannot pick a Lista bucket; do not require the literal word "other" on listings (e.g. kids listings mirrored into `businesses`).
+_GENERIC_INTENT_CATEGORY_LABELS = frozenset(
+    {"other", "general", "misc", "miscellaneous", "unknown", "any"}
+)
+
 # Shared haystack for TAGS/name confirmation (same fields as directory search).
 from chatbot.services.business_search_service import _mongo_tag_match_blob  # noqa: E402
 
@@ -243,6 +248,21 @@ _BUSINESS_CATEGORY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
             "servicos",
             "serviço",
             "servico",
+        }
+    ),
+    # Kids / childcare (marketplace `kids` category + LLM "babysitting" vs stored "babysitter")
+    frozenset(
+        {
+            "babysitter",
+            "babysitting",
+            "baby sitting",
+            "baby-sitter",
+            "nanny",
+            "nannies",
+            "daycare",
+            "day care",
+            "childcare",
+            "child care",
         }
     ),
 )
@@ -535,9 +555,18 @@ def _mongo_category_clause_from_labels(category: str, subcategory: str) -> dict:
     """
     Prefer Lista PT + seed EN in one $or (business_search_service), then fall back to
     legacy $and expansion. Fixes mixed-schema collections where AND across PT/EN misses one shape.
+
+    When structured intent uses category "other" (etc.), **must** match on subcategory/tags only
+    before the Lista dual-schema path — otherwise `dual` matches real-estate Lista buckets and
+    excludes marketplace rows mirrored into `businesses` (e.g. category=kids, subcategory=babysitter).
     """
     c = (category or "").strip()
     s = (subcategory or "").strip()
+
+    if c and s and c.lower() in _GENERIC_INTENT_CATEGORY_LABELS:
+        # Match subcategory (and tags) only — avoids excluding marketplace rows like category=kids when intent says category=other.
+        return _mongo_category_filter("", s)
+
     synthetic = f"{c} {s}".strip()
     try:
         from chatbot.services.business_search_service import (

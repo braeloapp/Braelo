@@ -30,6 +30,11 @@ from helpers import handle_exceptions, response, ListSynchronize
 from helpers.normalize import resolve_category
 
 from notifications.serializers.events import EventNotificationSerializer
+from users.services.listings_directory_sync import (
+    listing_source_for_model,
+    remove_listing_directory_doc,
+    upsert_listing_directory_doc,
+)
 
 
 class SaveListing(generics.CreateAPIView):
@@ -183,6 +188,10 @@ class FlipListingStatus(generics.CreateAPIView):
             listing_limit.listings_count -= 1
         listing_limit.save()
 
+        updated_listing = model.objects.filter(id=listing_id).first()
+        if updated_listing:
+            upsert_listing_directory_doc(updated_listing)
+
         return response(
             status=status.HTTP_200_OK,
             message='Flipped listing status successfully',
@@ -243,6 +252,7 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
                 {'Error': 'You cannot delete someone else listing'}
             )
 
+        listing_src = listing_source_for_model(MODEL_MAP[category])
         with transaction.atomic():
             deleted_category_count = (
                 MODEL_MAP[category].objects.filter(id=listing_id).delete()
@@ -262,6 +272,8 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
             User.objects.filter(id=listing_owner_id, is_business=False).update(
                 listings_count=F('listings_count') - 1
             )
+
+        remove_listing_directory_doc(str(listing_id), listing_src)
 
         return response(
             status=status.HTTP_200_OK,
