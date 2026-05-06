@@ -43,6 +43,15 @@ class Notification(Document):
         ],
     }
 
+    def save(self, *args, **kwargs):
+        # Ensure `created_at` is always populated on first save so that the
+        # `-created_at` ordering on admin listings reflects newest-first.
+        # We avoid overwriting an existing value so calls like
+        # `mark_as_read` / `mark_as_sent` don't reset the creation time.
+        if not self.created_at:
+            self.created_at = timezone.now()
+        return super(Notification, self).save(*args, **kwargs)
+
     def mark_as_sent(self):
         self.sent = True
         self.sent_at = timezone.now()

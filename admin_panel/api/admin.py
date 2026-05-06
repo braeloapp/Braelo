@@ -124,7 +124,10 @@ class AllNotifications(generics.ListAPIView):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
-        return Notification.objects.all()
+        # Order newest-first. `-id` is a tiebreaker for legacy records that
+        # were created without a `created_at` value (Mongo ObjectId is
+        # monotonic by insertion time).
+        return Notification.objects.all().order_by('-created_at', '-id')
 
 
 class ReportedUsers(generics.ListCreateAPIView):
