@@ -144,17 +144,73 @@ def is_location_based_query(message: str) -> bool:
     return any(trigger in msg for trigger in LOCATION_QUERY_TRIGGERS)
 
 
+def is_pending_location_clarification_followup(message: str, chat_history: list | None) -> bool:
+    """
+    True when the user sends a short location answer (city/state/ZIP) after the bot asked for
+    area/ZIP for a nearby-business search. Phrases like \"in miami?\" do not match
+    LOCATION_QUERY_TRIGGERS, so Tier 2a0 must still run.
+    """
+    msg = (message or "").strip()
+    if not msg or len(msg) > 180:
+        return False
+    hints = _extract_location_hints_from_message(message)
+    loc = extract_location_from_message(message)
+    has_place = bool(
+        hints.get("city")
+        or hints.get("zip_code")
+        or hints.get("state")
+        or hints.get("county")
+        or loc.get("city")
+        or loc.get("state")
+    )
+    if not has_place:
+        return False
+    for m in reversed(chat_history or []):
+        if m.get("role") != "assistant":
+            continue
+        intent = (m.get("intent") or "").strip()
+        if intent in ("location_search_needs_zip", "location_incomplete"):
+            logger.info("chat_flow.location_followup matched intent=%s", intent)
+            return True
+        content = (m.get("content") or "").lower()
+        if any(
+            phrase in content
+            for phrase in (
+                "zip code",
+                "zipcode",
+                "código postal",
+                "codigo postal",
+                "cod postal",
+                "postal code",
+                "share your zip",
+                "share your area",
+                "compartir tu código",
+                "most relevant options in your area",
+                "opciones más relevantes",
+                "opções mais relevantes",
+            )
+        ):
+            logger.info("chat_flow.location_followup matched assistant_zip_prompt")
+            return True
+        break
+    return False
+
+
 def _skip_tier2a0_for_kb_precedence(
     message: str,
     intent: str,
     confidence: float,
     matches: list | None,
     kb_over_directory: bool,
+    *,
+    force_tier2a0: bool = False,
 ) -> bool:
     """
     LOCATION_QUERY_TRIGGERS include bare phrases like 'in florida', which match many
     information_request turns that already have KB hits. Skip Tier 2a0 so Tier 2 (exact KB / RAG) runs.
     """
+    if force_tier2a0:
+        return False
     if kb_over_directory:
         logger.info("chat_flow.tier2a0.skip reason=kb_over_directory")
         return True
@@ -404,13 +460,14 @@ def extract_location_from_message(message: str) -> dict:
         result["state"] = found_state
 
     city_pattern = re.search(
-        r"\bin\s+([A-Z][a-zA-Z\s]{2,25}?)(?:\s*,|\s*\?|$|\s+[A-Z]{2}\b)",
+        r"\bin\s+([A-Za-z][a-zA-Z\s]{2,25}?)(?:\s*,|\s*\?|$|\s+[A-Z]{2}\b)",
         message or "",
+        re.IGNORECASE,
     )
     if city_pattern:
         potential_city = city_pattern.group(1).strip()
         if potential_city.lower() not in US_STATES:
-            result["city"] = potential_city
+            result["city"] = potential_city.title() if potential_city.islower() else potential_city
 
     return result
 
@@ -1356,6 +1413,93 @@ def _infer_service_category_from_text(message: str) -> tuple:
         if len(raw) >= 2:
             return (raw, None)
     return (None, None)
+
+
+def _infer_category_from_prior_user_turns(chat_history: list | None) -> tuple:
+    """Merge recent user messages and infer food/legal/etc. (for location-only follow-ups)."""
+    if not chat_history:
+        return None, None
+    parts = []
+    for m in chat_history[-14:]:
+        if m.get("role") == "user":
+            parts.append((m.get("content") or "").strip())
+    blob = " ".join(x for x in parts if x)
+    return _infer_service_category_from_text(blob)
+
+
+def _llm_category_smells_like_location_noise(cat: str | None, message: str) -> bool:
+    """Structured model sometimes puts the whole utterance (e.g. 'in Los Angeles?') in category."""
+    if not cat:
+        return False
+    c = cat.strip()
+    if len(c) > 80:
+        return True
+    if "?" in c:
+        return True
+    cl = c.lower()
+    if cl.startswith(("in ", "near ", "around ", "at ")):
+        return True
+    msg_l = (message or "").strip().lower()
+    if msg_l and cl == msg_l:
+        return True
+    return False
+
+
+def _looks_like_location_only_followup(message: str) -> bool:
+    """Short reply that names a place but does not repeat the service (e.g. 'in Los Angeles?')."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 120:
+        return False
+    ml = msg.lower()
+    if any(
+        x in ml
+        for x in (
+            "restaurant",
+            "restaurants",
+            "food ",
+            " dining",
+            "lawyer",
+            "doctor",
+            "plumber",
+            "dentist",
+            "hotel",
+            "shop",
+            "café",
+            "cafe",
+            "eat ",
+        )
+    ):
+        return False
+    if re.match(r"^\s*(in|near|around|at)\s+.+\??\s*$", msg, re.I):
+        return True
+    hints = _extract_location_hints_from_message(msg)
+    if (hints.get("city") or hints.get("state")) and len(msg) <= 70:
+        return True
+    return False
+
+
+def _sanitize_structured_category_for_followup(
+    message: str,
+    chat_history: list | None,
+    st_cat: str | None,
+    st_sub: str | None,
+) -> tuple[str | None, str | None]:
+    """
+    When the user only adds a city/region after discussing restaurants (etc.), the structured
+    extractor may stuff the whole message into category — strip that and inherit topic from history.
+    """
+    mc = (st_cat or "").strip() or None
+    ms = (st_sub or "").strip() or None
+    loc_only = _looks_like_location_only_followup(message)
+    garbage = _llm_category_smells_like_location_noise(mc, message)
+    if not (loc_only or garbage):
+        return mc, ms
+    ic, isub = _infer_category_from_prior_user_turns(chat_history)
+    if ic:
+        return ic, isub or ms
+    if garbage:
+        return None, ms
+    return mc, ms
 
 
 def _heuristic_business_discovery(message: str) -> bool:
@@ -3177,6 +3321,12 @@ def process_message(
     # to Google Places / generic LLM answers.
     _st_cat = (structured.get("category") or "").strip() or None
     _st_sub = (structured.get("subcategory") or "").strip() or None
+    _st_cat, _st_sub = _sanitize_structured_category_for_followup(
+        message, openai_chat_history, _st_cat, _st_sub
+    )
+    if isinstance(structured, dict):
+        structured["category"] = _st_cat
+        structured["subcategory"] = _st_sub
     biz_cat = inf_cat or _st_cat
     biz_sub = inf_sub or _st_sub
     directory_intent = _directory_lookup_intent(
@@ -3514,8 +3664,18 @@ def process_message(
     # TIER 2a0 — Location-based business search (OpenAI + GPS/ZIP/state), Google Maps–style list
     # Runs before OSM local_search; on failure or no API key, falls through to existing branches.
     # ------------------------------------------------------------------
-    if is_location_based_query(message) and not _skip_tier2a0_for_kb_precedence(
-        message, intent, confidence, matches, kb_over_directory
+    _tier2a0_location_followup = is_pending_location_clarification_followup(
+        message, openai_chat_history
+    )
+    if (
+        is_location_based_query(message) or _tier2a0_location_followup
+    ) and not _skip_tier2a0_for_kb_precedence(
+        message,
+        intent,
+        confidence,
+        matches,
+        kb_over_directory,
+        force_tier2a0=_tier2a0_location_followup,
     ):
         def _safe_coord(v):
             if v is None:

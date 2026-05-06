@@ -65,13 +65,28 @@ class PrivacyGuard:
         """
         Returns True if response is safe to send.
         Blocks if response accidentally contains forbidden data.
+        Short tokens (itin, pin, …) use word-boundary matching so words like "waiting"
+        do not false-positive on substring "itin".
         """
         resp_lower = response.lower()
+        short_whole_word = frozenset(
+            {"itin", "ein", "ssn", "pin", "cvv"}
+        )
         for keyword in FORBIDDEN_DATA_REQUESTS:
-            if keyword in resp_lower:
+            kw = (keyword or "").strip().lower()
+            if not kw:
+                continue
+            if kw in short_whole_word:
+                if re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", resp_lower):
+                    logger.error(
+                        "[PrivacyGuard] BLOCKED outgoing: contains whole-word '%s'",
+                        kw,
+                    )
+                    return False
+            elif kw in resp_lower:
                 logger.error(
-                    f"[PrivacyGuard] BLOCKED outgoing: "
-                    f"contains '{keyword}'"
+                    "[PrivacyGuard] BLOCKED outgoing: contains '%s'",
+                    kw,
                 )
                 return False
         return True
