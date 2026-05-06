@@ -18,6 +18,7 @@ class NotificationSerializer(serializers.DocumentSerializer):
     class Meta:
         model = Notification
         fields = [
+            'id',
             'user_id',
             'type',
             'title',
@@ -28,3 +29,4 @@ class NotificationSerializer(serializers.DocumentSerializer):
             'sent_at',
             'created_at',
         ]
+        read_only_fields = ['id']
