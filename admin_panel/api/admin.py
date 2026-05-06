@@ -11,6 +11,7 @@ API classes for admin_panel.
 '''
 
 from rest_framework import generics, status
+from rest_framework.views import APIView
 from helpers import response, handle_exceptions
 from rest_framework.permissions import IsAdminUser
 from rest_framework.exceptions import ValidationError
@@ -239,6 +240,38 @@ class SendAdminNotification(generics.CreateAPIView):
         return response(
             status=status.HTTP_200_OK,
             message='Notification Sent To All Users',
+            data={},
+        )
+
+
+class DeleteAdminNotification(APIView):
+    '''
+    Delete a notification by id (MongoDB document id).
+    '''
+
+    permission_classes = [IsAdminUser]
+
+    @handle_exceptions
+    def post(self, request, **kwargs):
+        '''
+        POST body: { "notification_id": "<mongo object id string>" }
+        '''
+        notification_id = request.data.get('notification_id')
+        if not notification_id:
+            raise ValidationError(
+                {'notification_id': 'notification id is required'}
+            )
+        notification = Notification.objects(id=notification_id).first()
+        if not notification:
+            return response(
+                status=status.HTTP_404_NOT_FOUND,
+                message='Notification not found',
+                data={},
+            )
+        notification.delete()
+        return response(
+            status=status.HTTP_200_OK,
+            message='Notification deleted successfully',
             data={},
         )
 

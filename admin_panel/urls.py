@@ -19,6 +19,7 @@ from admin_panel.api.admin import (
     AllNotifications,
     ReportedUsers,
     SendAdminNotification,
+    DeleteAdminNotification,
     AdminBanner,
 )
 from admin_panel.api.collections import AdminMongoCollections
@@ -109,4 +110,6 @@ urlpatterns = [
     path('business/deactivate', DeactivateBusiness.as_view()),
     # Send Admin notification
     path('notification/send', SendAdminNotification.as_view()),
+    # Delete notification by id
+    path('notification/delete', DeleteAdminNotification.as_view()),
 ]
