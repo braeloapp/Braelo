@@ -6,11 +6,15 @@ Author:         Hamid
 ---------------------------------------------------
 
 Description:
-ASGI config for Braelo project.
-It exposes an ASGI callable named ``application``.
+ASGI config for the Braelo project.
 
-Import order matters: call get_asgi_application() before importing routing/consumers,
-or Django/MongoEngine load before setup and Daphne crashes on import.
+Order is important:
+    1. Set DJANGO_SETTINGS_MODULE
+    2. Build the HTTP ASGI application (this triggers django.setup() and
+       loads INSTALLED_APPS so MongoEngine + ORM models are importable).
+    3. Only **then** import the Channels routing / consumers / our JWT
+       middleware. Importing them earlier raises
+       ``AppRegistryNotReady`` under Daphne / uvicorn.
 ---------------------------------------------------
 '''
 
@@ -18,23 +22,20 @@ import os
 
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
 django_asgi_app = get_asgi_application()
 
-# After setup: consumers and mongoengine models are safe to import.
-from channels.routing import ProtocolTypeRouter, URLRouter
-from django_channels_jwt_auth_middleware.auth import JWTAuthMiddlewareStack
+from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 
-from chats import routing
+from chats.routing import websocket_urlpatterns  # noqa: E402
+from config.middleware import JWTAuthMiddlewareStack  # noqa: E402
 
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
         "websocket": JWTAuthMiddlewareStack(
-            URLRouter(
-                routing.websocket_urlpatterns,
-            )
+            URLRouter(websocket_urlpatterns)
         ),
     }
 )
