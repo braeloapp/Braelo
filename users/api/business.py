@@ -46,7 +46,11 @@ class BusinessPagination(PageNumberPagination):
 
     def get_paginated_response(self, data):
         filtered_data = [
-            {'business_banner': obj.get('business_banner', [])} for obj in data
+            {
+                'id': obj.get('id'),
+                'business_banner': obj.get('business_banner', []),
+            }
+            for obj in data
         ]
         paginated_data = super().get_paginated_response(filtered_data).data
         return response(

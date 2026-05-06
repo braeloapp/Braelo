@@ -304,12 +304,19 @@ class BannerSearilizer(SQL_serializer.Serializer):
     Responsible for validating and serializing data related to business banners.
     '''
 
+    id = SQL_serializer.SerializerMethodField()
     user_id = SQL_serializer.IntegerField(required=False)
     business_email = SQL_serializer.CharField(required=True)
     business_name = SQL_serializer.CharField(required=True)
     business_banner = SQL_serializer.ListField(required=True)
     business_category = SQL_serializer.CharField(required=True)
     business_subcategory = SQL_serializer.CharField(required=True)
+
+    def get_id(self, obj):
+        # `AdminBusinessBanner` is a MongoEngine document, so `id` is an ObjectId.
+        # Return it as a string so it is JSON-serializable on the client.
+        banner_id = getattr(obj, 'id', None) if not isinstance(obj, dict) else obj.get('id')
+        return str(banner_id) if banner_id is not None else None
 
     def update(self, instance, validated_data):
         '''
