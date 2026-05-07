@@ -44,6 +44,7 @@ class WhatWhereGate:
         session_state: str,
         detected_language: str,
         is_business_search: bool,
+        session_ctx: dict | None = None,
     ) -> GateResult:
         """
         Returns GateResult.
@@ -93,6 +94,21 @@ class WhatWhereGate:
             or session_state
         )
 
+        if not has_where and session_ctx:
+            loc = (session_ctx.get("last_location") or {}) if isinstance(session_ctx, dict) else {}
+            scity = (loc.get("city") or "").strip()
+            sstate = (loc.get("state") or "").strip()
+            szip = (str(loc.get("zip_code") or "")).strip()
+            if scity or sstate or szip:
+                has_where = True
+                logger.info(
+                    "[WhatWhereGate] WHERE satisfied from session context "
+                    "city=%r state=%r zip=%r",
+                    scity,
+                    sstate,
+                    szip,
+                )
+
         resolved_where = (
             zip_code
             or city
@@ -101,6 +117,14 @@ class WhatWhereGate:
             or session_state
             or ""
         )
+        if not resolved_where and session_ctx:
+            loc2 = (session_ctx.get("last_location") or {}) if isinstance(session_ctx, dict) else {}
+            resolved_where = (
+                (str(loc2.get("zip_code") or "")).strip()
+                or (loc2.get("city") or "").strip()
+                or (loc2.get("state") or "").strip()
+                or ""
+            )
 
         logger.info(
             f"[WhatWhereGate] has_what={has_what} "

@@ -1561,6 +1561,7 @@ def generate_business_not_found_response(
     category_en: str | None = None,
     subcategory_en: str | None = None,
     detected_language: str = "en",
+    language_continuation_note: str = "",
 ) -> str:
     """
     After the directory search returns no rows: short, helpful guidance (LLM when available).
@@ -1607,6 +1608,9 @@ Give a SHORT reply (under 160 words):
 3. Then suggest 2–4 practical ways to explore {display_category} in {location_str} (Google Maps, official licensing or bar referral pages, local community groups, etc.). Do not invent phone numbers or addresses.
 4. {lang_instruction}
 5. Avoid salesy sign-offs; you may end with one short follow-up question."""
+
+    if (language_continuation_note or "").strip():
+        system_prompt = f"{system_prompt}\n\n{language_continuation_note.strip()[:1200]}"
 
     try:
         from chatbot.services import gpt_service

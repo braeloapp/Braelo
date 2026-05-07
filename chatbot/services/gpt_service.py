@@ -413,6 +413,7 @@ def generate_general_braelo_response(
     language: str,
     chat_history: list | None = None,
     known_facts: str = "",
+    continuation_note: str = "",
 ) -> str:
     """
     OpenAI answer when KB retrieval is empty or RAG refuses — use any US location the user names.
@@ -438,6 +439,8 @@ Optional profile hints: {location_hint}"""
         from chatbot.ellu.persona import get_system_prompt
         ellu_base = get_system_prompt(language or "pt")
         system_prompt = f"{ellu_base}\n\nYOUR TASK FOR THIS RESPONSE:\n{GENERAL_BRAELO_SYSTEM}"
+        if (continuation_note or "").strip():
+            system_prompt = f"{system_prompt}\n\n{continuation_note.strip()[:1500]}"
 
         resp = client.chat.completions.create(
             model=getattr(settings, "GPT_MODEL", "gpt-4o-mini"),
@@ -865,6 +868,7 @@ def generate_rag_response(
     language: str,
     chat_history: list | None = None,
     known_facts: str = "",
+    continuation_note: str = "",
 ) -> str:
     if not client:
         logger.info("gpt_service.rag.skip reason=no_openai_client")
@@ -913,6 +917,8 @@ Current user message:
     system_blocks = [system_prompt, kb_block]
     if facts_block:
         system_blocks.append(facts_block)
+    if (continuation_note or "").strip():
+        system_blocks.append(continuation_note.strip()[:1500])
 
     try:
         logger.info(
@@ -1299,6 +1305,7 @@ def generate_exact_kb_answer(
     language: str,
     chat_history: list | None = None,
     known_facts: str = "",
+    continuation_note: str = "",
 ) -> str:
     """
     Called when the top KB match has high similarity (strong / exact match).
@@ -1331,6 +1338,8 @@ STRICT RULES:
 3. Prefer flowing paragraphs. If the user explicitly asks for step-by-step or numbered steps and the KB answer contains distinct steps or bullet points, you MAY format those as a short numbered list (1, 2, 3) taken only from the KB text.
 4. Avoid salesy closings like "Let me know if I can help further."
 5. Be warm, clear, and concise. End with exactly one short follow-up question related to their topic so the conversation stays open."""
+    if (continuation_note or "").strip():
+        system = f"{system}\n\n{continuation_note.strip()[:1500]}"
 
     user_prompt = f"""Knowledge Base Entry:
 Question: {kb_question}

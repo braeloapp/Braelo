@@ -1483,6 +1483,7 @@ def _sanitize_structured_category_for_followup(
     chat_history: list | None,
     st_cat: str | None,
     st_sub: str | None,
+    session_ctx: dict | None = None,
 ) -> tuple[str | None, str | None]:
     """
     When the user only adds a city/region after discussing restaurants (etc.), the structured
@@ -1490,6 +1491,16 @@ def _sanitize_structured_category_for_followup(
     """
     mc = (st_cat or "").strip() or None
     ms = (st_sub or "").strip() or None
+    if (not mc and not ms) and session_ctx and _looks_like_directory_listing_followup_message(message):
+        lc = (session_ctx.get("last_category") or "").strip() or None
+        ls = (session_ctx.get("last_subcategory") or "").strip() or None
+        if lc or ls:
+            logger.info(
+                "[ContextRestore] category from session cat=%r sub=%r",
+                lc,
+                ls,
+            )
+            return lc, ls
     loc_only = _looks_like_location_only_followup(message)
     garbage = _llm_category_smells_like_location_noise(mc, message)
     if not (loc_only or garbage):
@@ -2061,6 +2072,251 @@ def _last_directory_listings_snapshot_from_history(chat_history: list | None) ->
     return None
 
 
+def _restore_session_context(chat_history: list | None) -> dict:
+    """Rebuild short-term session fields from recent assistant turns (entities_json / directory snapshot)."""
+    ctx: dict = {
+        "last_shown_business_ids": [],
+        "last_directory_snapshot": [],
+        "last_category": None,
+        "last_subcategory": None,
+        "last_location": {},
+        "last_language": None,
+        "user_name": None,
+        "external_suggested": False,
+        "turn_count": len(chat_history or []),
+    }
+    for item in reversed(chat_history or []):
+        if item.get("role") != "assistant":
+            continue
+        ent = item.get("entities")
+        if not isinstance(ent, dict):
+            continue
+        if not ctx["last_directory_snapshot"]:
+            snap = ent.get("directory_listings_snapshot")
+            if isinstance(snap, list) and snap:
+                ctx["last_directory_snapshot"] = snap
+                ctx["last_shown_business_ids"] = [
+                    str(x.get("id") or "").strip()
+                    for x in snap
+                    if x.get("id")
+                ]
+        if not ctx["last_category"]:
+            c = (ent.get("category") or "").strip()
+            s = (ent.get("subcategory") or "").strip()
+            if c or s:
+                ctx["last_category"] = c or None
+                ctx["last_subcategory"] = s or None
+        loc = ent.get("search_location")
+        if isinstance(loc, dict) and (
+            (loc.get("city") or "").strip()
+            or (loc.get("state") or "").strip()
+            or (str(loc.get("zip_code") or "")).strip()
+        ):
+            if not ctx["last_location"]:
+                ctx["last_location"] = {
+                    "city": (loc.get("city") or "").strip(),
+                    "state": (loc.get("state") or "").strip(),
+                    "zip_code": (str(loc.get("zip_code") or "")).strip(),
+                    "county": (loc.get("county") or "").strip(),
+                }
+        if not ctx["last_language"]:
+            ll = ent.get("last_language") or ent.get("detected_language")
+            if ll:
+                ctx["last_language"] = str(ll).strip().lower()[:2]
+        if ent.get("external_suggested"):
+            ctx["external_suggested"] = True
+    for item in reversed(chat_history or []):
+        ent = item.get("entities")
+        if isinstance(ent, dict) and ent.get("user_name"):
+            ctx["user_name"] = ent.get("user_name")
+            break
+    return ctx
+
+
+def _merge_session_location_into_current_retention(
+    state: str,
+    city: str,
+    county: str,
+    zip_code: str,
+    session_ctx: dict | None,
+    explicit_place_in_message: bool,
+) -> tuple:
+    """If this turn names no place but we already searched somewhere earlier, keep that area."""
+    if explicit_place_in_message:
+        return state, city, county, zip_code
+    loc = (session_ctx or {}).get("last_location") or {}
+    if city or state or zip_code or county:
+        return state, city, county, zip_code
+    icity = (loc.get("city") or "").strip()
+    istate = (loc.get("state") or "").strip()
+    izip = (str(loc.get("zip_code") or "")).strip()
+    icounty = (loc.get("county") or "").strip()
+    if not (icity or istate or izip or icounty):
+        return state, city, county, zip_code
+    logger.info(
+        "[LocationRetention] from session city=%r state=%r zip=%r county=%r",
+        icity,
+        istate,
+        izip,
+        icounty,
+    )
+    return (
+        istate or state or "",
+        icity or city or "",
+        icounty or county or "",
+        izip or zip_code or "",
+    )
+
+
+def _dedupe_businesses_session(businesses: list | None, already_shown_ids: list) -> list:
+    if not businesses or not already_shown_ids:
+        return businesses or []
+    sid = {str(x).strip() for x in already_shown_ids if x}
+    fresh = [
+        b
+        for b in businesses
+        if str(b.get("_id") or b.get("id") or "").strip() not in sid
+    ]
+    if fresh:
+        logger.info(
+            "[Deduplication] filtered shown ids: %s → %s",
+            len(businesses),
+            len(fresh),
+        )
+        return fresh
+    logger.info("[Deduplication] exhausted fresh ids — returning same ranking")
+    return businesses
+
+
+def _is_directory_more_results_request(message: str | None) -> bool:
+    ml = (message or "").lower()
+    return bool(
+        re.search(
+            r"\b(more options|more results|show more|other options|any others|different ones|"
+            r"another one|see more|load more|next page|mais op|outras op|más op)"
+            r"\b",
+            ml,
+        )
+    )
+
+
+def _should_skip_casual_for_session_continuity(message: str | None, chat_history: list | None) -> bool:
+    if not _last_directory_listings_snapshot_from_history(chat_history):
+        return False
+    ml = (message or "").lower()
+    return bool(
+        re.search(
+            r"\b(brazil|brasileir|cheapest|affordable|expensive|which one|which of|"
+            r"more option|show more|obrigad|thanks\b|thank you|whatsapp|qual\b|cuál\b|hay alg)\b",
+            ml,
+        )
+    )
+
+
+def _looks_like_directory_listing_followup_message(message: str | None) -> bool:
+    ml = (message or "").lower().strip()
+    if not ml or len(ml) > 320:
+        return False
+    refer = bool(
+        re.search(
+            r"\b(these|those|them|that one|this one|above|previous|listed|you showed|"
+            r"most affordable|least expensive|cheapest|cheaper|which\b|qual\b|cuál\b)\b",
+            ml,
+        )
+    )
+    more = bool(
+        re.search(
+            r"\b(more options|more results|show more|other options|any others|different ones|"
+            r"mais opç|outras op|más op)\b",
+            ml,
+        )
+    )
+    attr = bool(
+        re.search(
+            r"\b(whatsapp|phone|call\b|menu|hours|address|vegan|halal|kosher|"
+            r"brazil|brazilian|brasileir|churrasc)\b",
+            ml,
+        )
+    )
+    thanks_q = bool(re.search(r"\b(thanks|thank you|obrigad)\b", ml)) and "?" in ml
+    return refer or more or attr or thanks_q
+
+
+def _answer_directory_snapshot_followup_llm(
+    message: str,
+    snapshot: list[dict],
+    detected_language: str,
+    continuation_note: str = "",
+) -> str | None:
+    """Answer follow-ups about listings already shown (cheapest, Brazilian, etc.) without pretending context is unknown."""
+    from chatbot.services import gpt_service
+
+    cli = getattr(gpt_service, "client", None)
+    if not cli or not snapshot:
+        return None
+    lines: list[str] = []
+    for i, s in enumerate(snapshot[:14], 1):
+        nm = (s.get("name") or "?")[:120]
+        tags = (s.get("tag_match_text") or s.get("category") or "")[:400]
+        lines.append(f"{i}. {nm} — {tags}")
+    catalog = "\n".join(lines)
+    system = (
+        "You are Éllu/Braelo. The user is following up on LOCAL BUSINESS LISTINGS the assistant already showed.\n"
+        "Use ONLY the numbered list below for facts about which businesses exist. Do NOT say you don't know "
+        "what they are referring to.\n"
+        "If they ask price or 'cheapest' and you lack prices, give a cautious qualitative comparison from names/tags "
+        "or say to open the listing or contact for prices — still answer helpfully.\n"
+        "Respond in the user's language. End with at most ONE short follow-up question."
+    )
+    if (continuation_note or "").strip():
+        system += "\n\n" + continuation_note.strip()[:1200]
+    user = f"Listings already shown:\n{catalog}\n\nUser message:\n{(message or '')[:2000]}"
+    try:
+        resp = cli.chat.completions.create(
+            model=getattr(django_settings, "GPT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.35,
+            max_tokens=520,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out or None
+    except Exception:
+        logger.exception("chat_flow.directory_snapshot_followup_llm_failed")
+        return None
+
+
+def _ensure_single_cta(response: str, lang: str) -> str:
+    if not response:
+        return response
+    if response.count("?") <= 1:
+        return response
+    generic_ctas = {
+        "en": [
+            "Is there anything else I can help you with?",
+            "Can I help you with anything else?",
+            "Would you like anything else?",
+        ],
+        "pt": [
+            "Posso te ajudar com mais alguma coisa?",
+            "Há mais alguma coisa em que posso te ajudar?",
+            "Quer mais alguma coisa?",
+        ],
+        "es": [
+            "¿Puedo ayudarte con algo más?",
+            "¿Hay algo más en lo que pueda ayudarte?",
+            "¿Necesitas algo más?",
+        ],
+    }
+    out = response
+    for cta in generic_ctas.get(lang, generic_ctas["en"]):
+        if cta in out and out.count("?") > 1:
+            out = out.replace("\n\n" + cta, "").replace("\n" + cta, "").replace(cta, "")
+    return out.strip()
+
+
 def _is_directory_attribute_yes_no_followup(message: str | None) -> bool:
     t = (message or "").strip().lower()
     if len(t) < 10:
@@ -2580,6 +2836,7 @@ def _save_history(
     intent: str,
     structured: dict,
     businesses: list | None = None,
+    session_snapshot_meta: dict | None = None,
 ):
     try:
         if getattr(django_settings, "USE_MONGO", False):
@@ -2590,6 +2847,11 @@ def _save_history(
             now = datetime.utcnow()
             for role, content in [("user", message), ("assistant", reply)]:
                 st = dict(structured or {})
+                if role == "assistant" and session_snapshot_meta:
+                    for k, v in session_snapshot_meta.items():
+                        if v is None:
+                            continue
+                        st[k] = v
                 if role == "assistant" and businesses:
                     st["directory_listings_snapshot"] = _compact_directory_listings_for_history(businesses)
                 col.insert_one({
@@ -2605,6 +2867,11 @@ def _save_history(
             if hasattr(user, "id"):
                 for role, content in [("user", message), ("assistant", reply)]:
                     st = dict(structured or {})
+                    if role == "assistant" and session_snapshot_meta:
+                        for k, v in session_snapshot_meta.items():
+                            if v is None:
+                                continue
+                            st[k] = v
                     if role == "assistant" and businesses:
                         st["directory_listings_snapshot"] = _compact_directory_listings_for_history(businesses)
                     ChatHistory.objects.create(
@@ -2781,6 +3048,15 @@ def _lista_mongo_directory_response(
     merged["county"] = s_county or merged.get("county")
     if zip_code:
         merged["zip_code"] = zip_code
+    merged["last_language"] = (detected_lang or "en")[:2]
+    merged["search_location"] = {
+        "city": (s_city or "").strip(),
+        "state": (s_state or "").strip(),
+        "zip_code": (str(zip_code or "")).strip(),
+        "county": (s_county or "").strip(),
+    }
+    if user_name:
+        merged["user_name"] = user_name
     _store_session_location(
         session_id,
         city=s_city,
@@ -3030,6 +3306,7 @@ def process_message(
 
     _hist_cap = getattr(django_settings, "CHAT_HISTORY_MAX_DOCUMENTS", 200)
     openai_chat_history = _load_openai_chat_history(session_id, _hist_cap)
+    _session_ctx = _restore_session_context(openai_chat_history)
     _session_geo_log(
         "turn_start",
         session_id=session_id,
@@ -3068,6 +3345,15 @@ def process_message(
     )
     _anchor_msg_city = bool((_msg_place_hints.get("city") or "").strip())
     _apply_gps_radius = not _explicit_place_in_message
+    state, city, county, zip_code = _merge_session_location_into_current_retention(
+        state,
+        city,
+        county,
+        zip_code,
+        _session_ctx,
+        _explicit_place_in_message,
+    )
+    state = _backfill_state_from_major_us_city(state, city)
     known_facts_for_structured = _format_known_facts(state, city, county, zip_code)
 
     has_api_key = bool(getattr(django_settings, "OPENAI_API_KEY", None))
@@ -3080,6 +3366,46 @@ def process_message(
         user, user_id, session_id, message, message_detected_lang
     )
 
+    # Always answer in the language of the user's current message (en / es / pt),
+    # even when session lock or stored preference would choose another code.
+    _prompt_lang = _normalize_language_code(message_detected_lang)
+    if _prompt_lang in _SUPPORTED_LANGS and _prompt_lang != detected_lang:
+        logger.info(
+            "chat_flow.response_language.follow_message session_id=%s "
+            "resolved_lang=%s prompt_lang=%s",
+            session_id,
+            detected_lang,
+            _prompt_lang,
+        )
+        detected_lang = _prompt_lang
+        stored_pref = _normalize_language_code(getattr(user, "language_preference", "") or "")
+        if stored_pref != detected_lang:
+            _persist_user_language_preference(user, user_id, detected_lang)
+            setattr(user, "language_preference", detected_lang)
+
+    def _session_snapshot_meta():
+        meta = {
+            "last_language": (detected_lang or "en")[:2],
+            "search_location": {
+                "city": (city or "").strip(),
+                "state": (state or "").strip(),
+                "zip_code": (str(zip_code or "")).strip(),
+                "county": (county or "").strip(),
+            },
+        }
+        if user_name:
+            meta["user_name"] = user_name
+        return meta
+
+    _pl = (_session_ctx.get("last_language") or "").strip().lower()[:2]
+    _dl = (detected_lang or "en").strip().lower()[:2]
+    _lang_continuation_note = ""
+    if len(openai_chat_history) >= 2 and _pl and _pl != _dl:
+        _lang_continuation_note = (
+            "CONVERSATION CONTINUITY: The user switched writing language during this session. "
+            "Continue naturally in the response language. Do NOT greet again, restart, or repeat a welcome."
+        )
+
     from chatbot.ellu.privacy_guard import PrivacyGuard
     guard_action, guard_response = PrivacyGuard().check_incoming_message(message, detected_lang)
     if guard_action == "BLOCK":
@@ -3089,6 +3415,7 @@ def process_message(
             guard_response,
             "privacy_block",
             {"intent": "privacy_block", "detected_language": detected_lang},
+            session_snapshot_meta=_session_snapshot_meta(),
         )
         return _build_response(guard_response, detected_lang, "privacy_block")
 
@@ -3097,6 +3424,8 @@ def process_message(
     # get_casual_response() only fires for short, non-FAQ messages; see casual_intents.
     # ------------------------------------------------------------------
     casual_text, casual_tag = get_casual_response(message)
+    if casual_text and _should_skip_casual_for_session_continuity(message, openai_chat_history):
+        casual_text, casual_tag = None, None
     if casual_text:
         reply = (
             translate_verified_answer(casual_text, detected_lang)
@@ -3108,7 +3437,14 @@ def process_message(
         if _is_first_turn:
             reply = f"{reply}\n\n{get_phrase('welcome_new', detected_lang)}"
 
-        _save_history(session_id, message, reply, "casual", {"intent": "casual", "detected_language": detected_lang})
+        _save_history(
+            session_id,
+            message,
+            reply,
+            "casual",
+            {"intent": "casual", "detected_language": detected_lang},
+            session_snapshot_meta=_session_snapshot_meta(),
+        )
         logger.info("chat_flow.tier0.casual user_id=%s lang=%s tag=%s", user_id, detected_lang, casual_tag)
         return _build_response(reply, detected_lang, "casual", user_name=user_name)
 
@@ -3120,7 +3456,14 @@ def process_message(
             "detected_language": detected_lang,
             "meta_question": "assistant_capabilities",
         }
-        _save_history(session_id, message, reply, "casual", meta_struct)
+        _save_history(
+            session_id,
+            message,
+            reply,
+            "casual",
+            meta_struct,
+            session_snapshot_meta=_session_snapshot_meta(),
+        )
         logger.info("chat_flow.meta_capabilities user_id=%s lang=%s", user_id, detected_lang)
         return _build_response(reply, detected_lang, "casual", question_analysis=meta_struct, user_name=user_name)
 
@@ -3166,6 +3509,7 @@ def process_message(
                     "business_search",
                     q_struct,
                     businesses=persist_bs,
+                    session_snapshot_meta=_session_snapshot_meta(),
                 )
                 logger.info(
                     "chat_flow.tier0b.directory_confirmation user_id=%s n_snap=%s n_reload=%s",
@@ -3184,13 +3528,77 @@ def process_message(
                 )
 
     # ------------------------------------------------------------------
+    # TIER 0c — Follow-ups about the last directory rows (cheapest, Brazilian, show more, …)
+    # ------------------------------------------------------------------
+    if (
+        has_api_key
+        and openai_chat_history
+        and _looks_like_directory_listing_followup_message(message)
+        and not _is_directory_attribute_yes_no_followup(message)
+        and not _is_directory_more_results_request(message)
+    ):
+        snap_fu = _last_directory_listings_snapshot_from_history(openai_chat_history)
+        if snap_fu:
+            reply_fu = _answer_directory_snapshot_followup_llm(
+                message, snap_fu, detected_lang, _lang_continuation_note
+            )
+            if reply_fu:
+                merged_bs = _reload_businesses_for_snapshot(snap_fu, user_id, session_id)
+                persist_bs = merged_bs if merged_bs else [
+                    {
+                        "id": s.get("id"),
+                        "name": s.get("name") or "?",
+                        "tag_match_text": s.get("tag_match_text") or "",
+                        "category": s.get("category") or "",
+                        "subcategory": s.get("subcategory") or "",
+                        "state": "",
+                        "city": "",
+                        "county": "",
+                        "contact_info": None,
+                        "whatsapp_url": "",
+                    }
+                    for s in snap_fu
+                ]
+                fu_struct = {
+                    "intent": "business_search",
+                    "detected_language": detected_lang,
+                    "answer_source": "directory_listing_followup",
+                }
+                _save_history(
+                    session_id,
+                    message,
+                    reply_fu,
+                    "business_search",
+                    fu_struct,
+                    businesses=persist_bs,
+                    session_snapshot_meta=_session_snapshot_meta(),
+                )
+                logger.info(
+                    "chat_flow.tier0c.listing_followup user_id=%s n_snap=%s",
+                    user_id,
+                    len(snap_fu),
+                )
+                return _build_response(
+                    reply_fu,
+                    detected_lang,
+                    "business_search",
+                    businesses=persist_bs,
+                    see_more=False,
+                    question_analysis=fu_struct,
+                    user_name=user_name,
+                )
+
+    # ------------------------------------------------------------------
     # TIER 1a — Structured intent + location (before business DB and KB)
     # ------------------------------------------------------------------
     if has_api_key:
+        _kf_for_struct = known_facts_for_structured or ""
+        if _lang_continuation_note:
+            _kf_for_struct = (_kf_for_struct + "\n\n" + _lang_continuation_note).strip()
         structured = get_structured_output(
             message,
             chat_history=openai_chat_history,
-            known_facts=known_facts_for_structured,
+            known_facts=_kf_for_struct,
         )
     else:
         structured = {
@@ -3237,7 +3645,7 @@ def process_message(
             "detected_language": detected_lang,
             "model_intent": intent,
         }
-        _save_history(session_id, message, sens_reply, "sensitive_topic_redirect", sens_struct)
+        _save_history(session_id, message, sens_reply, "sensitive_topic_redirect", sens_struct, session_snapshot_meta=_session_snapshot_meta())
         logger.info("chat_flow.sensitive_topic_redirect user_id=%s", user_id)
         return _build_response(
             sens_reply,
@@ -3267,6 +3675,14 @@ def process_message(
         session_id=session_id,
         use_device_location_only=use_device_only,
         user_location=user_location,
+    )
+    state, city, county, zip_code = _merge_session_location_into_current_retention(
+        state,
+        city,
+        county,
+        zip_code,
+        _session_ctx,
+        _explicit_place_in_message,
     )
     state = _backfill_state_from_major_us_city(state, city)
     _session_geo_log(
@@ -3322,7 +3738,7 @@ def process_message(
     _st_cat = (structured.get("category") or "").strip() or None
     _st_sub = (structured.get("subcategory") or "").strip() or None
     _st_cat, _st_sub = _sanitize_structured_category_for_followup(
-        message, openai_chat_history, _st_cat, _st_sub
+        message, openai_chat_history, _st_cat, _st_sub, session_ctx=_session_ctx
     )
     if isinstance(structured, dict):
         structured["category"] = _st_cat
@@ -3387,10 +3803,18 @@ def process_message(
             session_state=user_location.get("state", "") if user_location else "",
             detected_language=detected_lang,
             is_business_search=True,
+            session_ctx=_session_ctx,
         )
         if not gate_res.can_search:
             reply = gate_res.clarification_needed
-            _save_history(session_id, message, reply, "location_incomplete", structured)
+            _save_history(
+                session_id,
+                message,
+                reply,
+                "location_incomplete",
+                structured,
+                session_snapshot_meta=_session_snapshot_meta(),
+            )
             return _build_response(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
@@ -3398,6 +3822,11 @@ def process_message(
         _attr_terms = extract_directory_attribute_terms(message)
         snap_strict = True
         snap_extra = _attr_terms or None
+        _dir_list_off = 0
+        if _is_directory_more_results_request(message):
+            _shown = _session_ctx.get("last_shown_business_ids") or []
+            if _shown:
+                _dir_list_off = len(_shown)
         r1 = get_top_businesses(
             category=biz_cat,
             subcategory=biz_sub,
@@ -3409,7 +3838,7 @@ def process_message(
             user_lon=ulon,
             language=detected_lang,
             limit=lim,
-            offset=0,
+            offset=_dir_list_off,
             external_id=user_id,
             session_id=session_id or user_id,
             strict_location=True,
@@ -3436,7 +3865,7 @@ def process_message(
                 user_lon=ulon,
                 language=detected_lang,
                 limit=lim,
-                offset=0,
+                offset=_dir_list_off,
                 external_id=user_id,
                 session_id=session_id or user_id,
                 strict_location=False,
@@ -3463,7 +3892,7 @@ def process_message(
                 user_lon=ulon,
                 language=detected_lang,
                 limit=lim,
-                offset=0,
+                offset=_dir_list_off,
                 external_id=user_id,
                 session_id=session_id or user_id,
                 strict_location=False,
@@ -3480,6 +3909,12 @@ def process_message(
                 "chat_flow.business_database_first user_id=%s name_hint_fallback_no_match n=%s",
                 user_id,
                 len(businesses),
+            )
+
+        if businesses:
+            businesses = _dedupe_businesses_session(
+                businesses,
+                _session_ctx.get("last_shown_business_ids") or [],
             )
 
         structured = dict(structured or {})
@@ -3562,7 +3997,7 @@ def process_message(
                 "source_message": message,
             }
             biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
-            _save_history(session_id, message, reply, "business_search", structured, businesses=businesses)
+            _save_history(session_id, message, reply, "business_search", structured, businesses=businesses, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(
                 reply,
                 detected_lang,
@@ -3614,8 +4049,9 @@ def process_message(
                 category_en=biz_cat,
                 subcategory_en=biz_sub,
                 detected_language=detected_lang,
+                language_continuation_note=_lang_continuation_note,
             )
-            _save_history(session_id, message, reply, "business_search", structured)
+            _save_history(session_id, message, reply, "business_search", structured, session_snapshot_meta=_session_snapshot_meta())
             logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=helpful_llm", user_id)
             return _build_response(
                 reply,
@@ -3647,7 +4083,7 @@ def process_message(
 
     if not matches and (intent == "off_topic" or _looks_off_topic(message)):
         reply = _off_topic_message(detected_lang)
-        _save_history(session_id, message, reply, "off_topic", structured)
+        _save_history(session_id, message, reply, "off_topic", structured, session_snapshot_meta=_session_snapshot_meta())
         logger.info(
             "chat_flow.off_topic.fallback user_id=%s lang=%s model_intent=%s hard_filter=%s",
             user_id,
@@ -3772,7 +4208,7 @@ def process_message(
             loc_struct = dict(structured or {})
             loc_struct["intent"] = "location_search_needs_zip"
             loc_struct["detected_language"] = detected_lang
-            _save_history(session_id, message, reply, "location_search_needs_zip", loc_struct)
+            _save_history(session_id, message, reply, "location_search_needs_zip", loc_struct, session_snapshot_meta=_session_snapshot_meta())
             logger.info("chat_flow.location_llm.needs_zip user_id=%s", user_id)
             return _build_response(
                 reply,
@@ -3932,6 +4368,7 @@ def process_message(
                 "location_business_search",
                 loc_struct,
                 businesses=db_discovery["businesses"],
+                session_snapshot_meta=_session_snapshot_meta(),
             )
             logger.info(
                 "chat_flow.location_llm.directory_first user_id=%s n=%s",
@@ -4015,7 +4452,7 @@ def process_message(
             loc_struct["intent"] = "location_business_search"
             loc_struct["detected_language"] = detected_lang
             loc_struct["location_llm_category"] = category_hint
-            _save_history(session_id, message, reply, "location_business_search", loc_struct)
+            _save_history(session_id, message, reply, "location_business_search", loc_struct, session_snapshot_meta=_session_snapshot_meta())
             logger.info("chat_flow.location_llm.success user_id=%s len=%s", user_id, len(reply))
             return _build_response(
                 reply,
@@ -4042,7 +4479,7 @@ def process_message(
                 "es": "Para buscar oficinas o restaurantes cercanos en el mapa, necesito acceso a tu ubicación o tu estado/ciudad/código postal.",
                 "pt": "Para buscar escritórios ou restaurantes próximos no mapa, preciso do acesso à sua localização ou do seu estado/cidade/CEP.",
             }.get(detected_lang, "To find nearby places on the map, I need your state/city/ZIP code.")
-            _save_history(session_id, message, reply, "location_required", structured)
+            _save_history(session_id, message, reply, "location_required", structured, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(reply, detected_lang, "location_required", question_analysis=structured, user_name=user_name)
 
         map_lat = user_location.get("latitude")
@@ -4073,7 +4510,7 @@ def process_message(
                 "es": "Puedo buscar en el mapa. Comparte al menos tu código postal o tu ciudad/estado.",
                 "pt": "Posso buscar no mapa. Compartilhe pelo menos seu CEP ou sua cidade/estado.",
             }.get(detected_lang, "Please share your ZIP code or city/state so I can search the map.")
-            _save_history(session_id, message, reply, "location_incomplete", structured)
+            _save_history(session_id, message, reply, "location_incomplete", structured, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name)
 
         if place_query:
@@ -4103,7 +4540,7 @@ def process_message(
             chat_history=openai_chat_history,
             known_facts=known_facts,
         )
-        _save_history(session_id, message, reply, "local_search", structured)
+        _save_history(session_id, message, reply, "local_search", structured, session_snapshot_meta=_session_snapshot_meta())
         logger.info(
             "chat_flow.local_search user_id=%s place=%s places=%s kb_snippets=%s",
             user_id,
@@ -4131,7 +4568,7 @@ def process_message(
             chat_history=openai_chat_history,
             known_facts=known_facts,
         )
-        _save_history(session_id, message, reply, "local_search", structured)
+        _save_history(session_id, message, reply, "local_search", structured, session_snapshot_meta=_session_snapshot_meta())
         logger.info(
             "chat_flow.local_dining user_id=%s query=%s places=%s kb_snippets=%s",
             user_id,
@@ -4170,6 +4607,7 @@ def process_message(
                 language=detected_lang,
                 chat_history=openai_chat_history,
                 known_facts=known_facts,
+                continuation_note=_lang_continuation_note,
             )
             logger.info(
                 "chat_flow.kb_response user_id=%s mode=exact_kb top_similarity=%.4f",
@@ -4186,6 +4624,7 @@ def process_message(
                 language=detected_lang,
                 chat_history=openai_chat_history,
                 known_facts=known_facts,
+                continuation_note=_lang_continuation_note,
             )
             logger.info(
                 "chat_flow.kb_response user_id=%s mode=rag top_similarity=%.4f context_items=%s",
@@ -4203,6 +4642,7 @@ def process_message(
                     detected_lang,
                     chat_history=openai_chat_history,
                     known_facts=known_facts,
+                    continuation_note=_lang_continuation_note,
                 )
                 structured = dict(structured or {})
                 structured["answer_source"] = "openai_general"
@@ -4269,7 +4709,7 @@ def process_message(
                     len(kb_suggest_businesses),
                 )
 
-        _save_history(session_id, message, reply, intent, structured)
+        _save_history(session_id, message, reply, intent, structured, session_snapshot_meta=_session_snapshot_meta())
         return _build_response(
             reply,
             detected_lang,
@@ -4293,7 +4733,7 @@ def process_message(
                 chat_history=openai_chat_history,
                 known_facts=known_facts,
             )
-            _save_history(session_id, message, reply, "location_incomplete", structured)
+            _save_history(session_id, message, reply, "location_incomplete", structured, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(
                 reply, detected_lang, "location_incomplete", question_analysis=structured, user_name=user_name
             )
@@ -4427,6 +4867,7 @@ def process_message(
                 category_en=bc,
                 subcategory_en=bs,
                 detected_language=detected_lang,
+                language_continuation_note=_lang_continuation_note,
             )
 
         # When we show business results (connecting user with providers), ask for email/phone if missing
@@ -4471,6 +4912,7 @@ def process_message(
             intent,
             structured,
             businesses=businesses if businesses else None,
+            session_snapshot_meta=_session_snapshot_meta(),
         )
         return _build_response(
             reply, detected_lang, intent,
@@ -4500,7 +4942,7 @@ def process_message(
             detected_lang,
             chat_history=openai_chat_history,
         )
-        _save_history(session_id, message, reply, intent, structured)
+        _save_history(session_id, message, reply, intent, structured, session_snapshot_meta=_session_snapshot_meta())
         return _build_response(reply, detected_lang, intent, question_analysis=structured, user_name=user_name)
 
     # ------------------------------------------------------------------
@@ -4624,6 +5066,7 @@ def process_message(
                     "information_request",
                     structured,
                     businesses=rescue_biz,
+                    session_snapshot_meta=_session_snapshot_meta(),
                 )
                 logger.info("chat_flow.tier4.business_rescue user_id=%s n=%s", user_id, len(rescue_biz))
                 return _build_response(
@@ -4646,9 +5089,10 @@ def process_message(
                 category_en=rescue_cat,
                 subcategory_en=rescue_sub,
                 detected_language=detected_lang,
+                language_continuation_note=_lang_continuation_note,
             )
             structured["answer_source"] = "directory_llm_fallback"
-            _save_history(session_id, message, reply, "information_request", structured)
+            _save_history(session_id, message, reply, "information_request", structured, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(
                 reply, detected_lang, "information_request", question_analysis=structured, user_name=user_name
             )
@@ -4663,10 +5107,11 @@ def process_message(
                 detected_lang,
                 chat_history=openai_chat_history,
                 known_facts=known_facts,
+                continuation_note=_lang_continuation_note,
             )
             structured["answer_source"] = "openai_general"
             out_intent = "information_request"
-            _save_history(session_id, message, reply, out_intent, structured)
+            _save_history(session_id, message, reply, out_intent, structured, session_snapshot_meta=_session_snapshot_meta())
             logger.info(
                 "chat_flow.general_knowledge user_id=%s reason=no_kb_matches prior_intent=%s",
                 user_id,
@@ -4681,14 +5126,14 @@ def process_message(
             chat_history=openai_chat_history,
             known_facts=known_facts,
         )
-        _save_history(session_id, message, reply, "kb_clarification", structured)
+        _save_history(session_id, message, reply, "kb_clarification", structured, session_snapshot_meta=_session_snapshot_meta())
         logger.info("chat_flow.kb_clarification user_id=%s reason=no_matches_no_openai intent=%s", user_id, intent)
         return _build_response(
             reply, detected_lang, "kb_clarification", question_analysis=structured, user_name=user_name
         )
 
     reply = _off_topic_message(detected_lang)
-    _save_history(session_id, message, reply, "off_topic", structured)
+    _save_history(session_id, message, reply, "off_topic", structured, session_snapshot_meta=_session_snapshot_meta())
     return _build_response(reply, detected_lang, "off_topic", question_analysis=structured, user_name=user_name)
 
 
@@ -4717,6 +5162,7 @@ def _build_response(
     # When businesses are returned for structured cards, do not duplicate them in `response`
     # (numbered list + WhatsApp lines); the client renders the same data as cards.
     final_resp = (response or "").strip()
+    final_resp = _ensure_single_cta(final_resp, detected_language or "en")
 
     if not PrivacyGuard().check_outgoing_response(final_resp):
         final_resp = get_phrase("ask_next", detected_language)

@@ -119,7 +119,7 @@ class ElluResponseFormatter:
             lines.append("")
             lines.append(get_phrase("ask_next", lang))
 
-        return "\n".join(lines)
+        return self._strip_trailing_cta("\n".join(lines), lang)
 
     def format_no_results(
         self,
@@ -171,7 +171,29 @@ class ElluResponseFormatter:
 
         lines.append("")
         lines.append(get_phrase("ask_next", lang))
-        return "\n".join(lines)
+        return self._strip_trailing_cta("\n".join(lines), lang)
+
+    def _strip_trailing_cta(self, text: str, lang: str) -> str:
+        """
+        If the body already ends with a specific question, drop a generic ask_next line
+        so we do not stack two questions.
+        """
+        if not text:
+            return text
+        lines = text.strip().split("\n")
+        non_empty = [l for l in lines if l.strip()]
+        if len(non_empty) < 2:
+            return text
+        body = " ".join(non_empty[:-1])
+        last = non_empty[-1]
+        ask_next = get_phrase("ask_next", lang)
+        if "?" in body and last.strip() == ask_next.strip():
+            trimmed = [l for l in lines if l.strip() != last.strip()]
+            while trimmed and not trimmed[-1].strip():
+                trimmed.pop()
+            if trimmed:
+                return "\n".join(trimmed).strip()
+        return text
 
     def format_clarification(
         self,
