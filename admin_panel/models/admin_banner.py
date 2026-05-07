@@ -29,6 +29,7 @@ class AdminBusinessBanner(Document):
     business_banner = ListField(required=True)
     business_category = StringField(required=True)
     business_subcategory = StringField(required=True)
+    url = StringField(required=False)
     created_at = DateTimeField()
     updated_at = DateTimeField()
     is_active = BooleanField(default=True)

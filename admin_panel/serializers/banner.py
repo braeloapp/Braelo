@@ -34,37 +34,38 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         business_category = data.get('business_category')
         business_subcategory = data.get('business_subcategory')
         business_banner = data.get('business_banner')
+        url = data.get('url')
 
         email_validation(email, 'Enter a valid business email address')
         validate_image(business_banner, 'Banner')
-        canonical_business_category = resolve_category(business_category)
-        if canonical_business_category is None:
-            raise ValidationError(
-                {'Business category': f'Type must be in {list(CATEGORIES)}.'}
-            )
-        business_category = canonical_business_category
-        data['business_category'] = canonical_business_category
-        canonical_business_subcategory = resolve_subcategory(
-            business_category, business_subcategory
+        # Admin creates banners for an existing business. Email is the most stable key.
+        # Category/subcategory/name can differ in casing/normalization between clients.
+        business = (
+            Business.objects.filter(business_email__iexact=email).first()
+            or Business.objects.filter(
+                business_email__iexact=email,
+                business_name__iexact=business_name,
+            ).first()
         )
-        if canonical_business_subcategory is None:
-            raise ValidationError(
-                {
-                    'Business subcategory': f'Type must be in {CATEGORIES[business_category]}.'
-                }
-            )
-        business_subcategory = canonical_business_subcategory
-        data['business_subcategory'] = canonical_business_subcategory
-
-        business = Business.objects.filter(
-            business_name=business_name,
-            business_email=email,
-            business_category=business_category,
-            business_subcategory=business_subcategory,
-        ).first()
 
         if not business:
             raise ValidationError({'Error': 'No business found'})
+
+        # Canonicalize using actual stored business fields.
+        business_category = business.business_category
+        business_subcategory = business.business_subcategory
+
+        # Validate category/subcategory if provided, but don't block if client casing differs.
+        if business_category:
+            canonical_business_category = resolve_category(business_category)
+            if canonical_business_category is not None:
+                business_category = canonical_business_category
+        if business_category and business_subcategory:
+            canonical_business_subcategory = resolve_subcategory(
+                business_category, business_subcategory
+            )
+            if canonical_business_subcategory is not None:
+                business_subcategory = canonical_business_subcategory
 
         s3_logo_url = upload_pictures(
             business_banner,
@@ -74,7 +75,13 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         )
 
         data['user_id'] = business.user_id
+        data['business_email'] = business.business_email
+        data['business_name'] = business.business_name
+        data['business_category'] = business_category
+        data['business_subcategory'] = business_subcategory
         data['business_banner'] = s3_logo_url
+        if url is not None:
+            data['url'] = url
         data['created_at'] = timezone.now()
         data['updated_at'] = timezone.now()
 

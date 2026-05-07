@@ -306,6 +306,17 @@ class BusinessBanner(generics.ListCreateAPIView):
     pagination_class = BusinessPagination
     serializer_class = BannerSearilizer
 
+    @handle_exceptions
+    def post(self, request, *args, **kwargs):
+        """
+        Admin delete route is wired to this view.
+        Some clients call it with POST instead of DELETE; support both.
+        """
+        admin_delete_path = '/admin-panel/business/banner/delete'
+        if self.request.path.startswith(admin_delete_path):
+            return self.delete(request)
+        return super().post(request, *args, **kwargs)
+
     def get_queryset(self):
         user_id = self.request.user.id
         category = self.request.GET.get('category')
