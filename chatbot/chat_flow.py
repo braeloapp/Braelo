@@ -1076,6 +1076,15 @@ def _extract_location_hints_from_message(message: str) -> dict:
             if cn and sk in _US_STATE_NAMES:
                 city_val, state_val = cn, _US_STATE_NAMES[sk]
 
+    # Fallback: allow bare "in miami?" without state abbreviations.
+    # Keep it conservative: only grab a short city token, and ignore known state names / blocklist.
+    if not city_val:
+        m = re.search(r"\b(?:and\s+)?(?:in|near|around|at)\s+([A-Za-z][A-Za-z'.-]{2,40})\b", text, re.I)
+        if m:
+            cn = _normalize_hint_city(m.group(1))
+            if cn and cn.lower() not in _US_STATE_NAMES and cn.upper() not in _US_STATE_ABBR:
+                city_val = cn
+
     if city_val:
         out["city"] = city_val
     if state_val:
@@ -1131,6 +1140,10 @@ def _apply_message_location_for_map(
         c = hints["city"]
         if not hints.get("county"):
             co = None
+        # City was explicitly set without a ZIP → don't carry a previous ZIP from profile/session.
+        # Otherwise follow-ups like "and in miami?" can accidentally keep an old ZIP (e.g. 85001).
+        if not hints.get("zip_code"):
+            z = None
     if hints.get("state"):
         st = hints["state"]
     if hints.get("county"):
@@ -1470,7 +1483,7 @@ def _looks_like_location_only_followup(message: str) -> bool:
         )
     ):
         return False
-    if re.match(r"^\s*(in|near|around|at)\s+.+\??\s*$", msg, re.I):
+    if re.match(r"^\s*(?:and\s+)?(in|near|around|at)\s+.+\??\s*$", msg, re.I):
         return True
     hints = _extract_location_hints_from_message(msg)
     if (hints.get("city") or hints.get("state")) and len(msg) <= 70:
@@ -1508,6 +1521,10 @@ def _sanitize_structured_category_for_followup(
     ic, isub = _infer_category_from_prior_user_turns(chat_history)
     if ic:
         return ic, isub or ms
+    # If this looks like a location-only follow-up but we couldn't infer a category,
+    # do NOT let the model's category echo ("and in miami") drive directory search.
+    if loc_only:
+        return None, None
     if garbage:
         return None, ms
     return mc, ms
@@ -3745,9 +3762,22 @@ def process_message(
         structured["subcategory"] = _st_sub
     biz_cat = inf_cat or _st_cat
     biz_sub = inf_sub or _st_sub
+
+    # Location-only follow-up (e.g. "and in miami?") should not enter directory-first routing,
+    # because the category is typically absent and fallbacks can accidentally treat the whole message
+    # as the "category". Let Tier 2a0 (broad local discovery) handle it instead.
+    _is_loc_only_followup = bool(openai_chat_history) and _looks_like_location_only_followup(message)
     directory_intent = _directory_lookup_intent(
         message, structured or {}, intent, confidence
     ) and not kb_over_directory
+    if _is_loc_only_followup:
+        directory_intent = False
+        logger.info(
+            "chat_flow.directory_intent.skip reason=location_only_followup user_id=%s city=%s state=%s",
+            user_id,
+            city,
+            state,
+        )
 
     if directory_intent:
         if not (biz_cat or biz_sub):
@@ -3788,6 +3818,15 @@ def process_message(
             )
 
     if directory_intent:
+        # Final guard: never pass sentence-like fragments as category.
+        if biz_cat and (_llm_category_smells_like_location_noise(biz_cat, message) or _looks_like_location_only_followup(message)):
+            logger.info(
+                "[CategorySanitize] clearing polluted category=%r message=%r",
+                biz_cat,
+                (message or "")[:80],
+            )
+            biz_cat, biz_sub = None, None
+
         from chatbot.ellu.what_where_gate import WhatWhereGate
         gate = WhatWhereGate()
         gate_res = gate.check(
@@ -4102,7 +4141,7 @@ def process_message(
     # ------------------------------------------------------------------
     _tier2a0_location_followup = is_pending_location_clarification_followup(
         message, openai_chat_history
-    )
+    ) or (bool(openai_chat_history) and _looks_like_location_only_followup(message))
     if (
         is_location_based_query(message) or _tier2a0_location_followup
     ) and not _skip_tier2a0_for_kb_precedence(
@@ -4220,7 +4259,11 @@ def process_message(
 
         hist = openai_chat_history or []
         recent_hist = hist[-4:] if len(hist) > 4 else list(hist)
-        category_hint = extract_category_from_message(message)
+
+        # For location-only follow-ups ("and in miami?"), never use the whole message as a category hint.
+        # We want a broad "local businesses" discovery query in the new place.
+        _loc_only_t2 = bool(openai_chat_history) and _looks_like_location_only_followup(message)
+        category_hint = "local businesses" if _loc_only_t2 else extract_category_from_message(message)
         reply = ""
 
         from chatbot.agents.decision_agent import DecisionAgent
@@ -4262,6 +4305,8 @@ def process_message(
         )
 
         _t2_cat, _t2_sub = biz_cat, biz_sub
+        if _loc_only_t2:
+            _t2_cat, _t2_sub = None, None
         _bad_cat = (_t2_cat or "").strip()
         _msg_l = (message or "").strip().lower()
         if (
@@ -4277,8 +4322,20 @@ def process_message(
             logger.info("chat_flow.tier2a0.sanitize_category dropped garbage biz_cat")
 
         lim_db = _directory_first_page_limit()
+        _hints_now = _extract_location_hints_from_message(message)
+        _msg_loc_now = extract_location_from_message(message)
+        _state_explicit_in_message = bool((_hints_now.get("state") or "").strip() or (_msg_loc_now.get("state") or "").strip())
+        _state_backfilled_from_city = bool(
+            (resolved_city or "").strip()
+            and (resolved_state or "").strip()
+            and not _state_explicit_in_message
+        )
+        # For broad local discovery, Mongo only enables broad_location_only when the message looks
+        # like a generic "local businesses" query. Location-only follow-ups ("and in miami?")
+        # should therefore use a generic discovery message for the DB step.
+        _db_discovery_message = "local businesses" if _loc_only_t2 else message
         _search_ag = ServiceSearchAgent().run(
-            message=message,
+            message=_db_discovery_message,
             category=_t2_cat,
             subcategory=_t2_sub,
             category_hint=category_hint,
@@ -4294,6 +4351,68 @@ def process_message(
             external_id=user_id,
             session_id=session_id or user_id,
         )
+        # If we inferred the state from the city name (not explicitly provided),
+        # the DB may have blank/mismatched state values — retry once without state filter
+        # before falling back to Google Places / GPT.
+        if (
+            not _search_ag.businesses
+            and (resolved_state or "").strip()
+            and _state_backfilled_from_city
+            and (resolved_zip or "").strip() == ""
+        ):
+            logger.info(
+                "chat_flow.tier2a0.retry_without_state city=%s inferred_state=%s",
+                resolved_city,
+                resolved_state,
+            )
+            _search_ag = ServiceSearchAgent().run(
+                message=_db_discovery_message,
+                category=_t2_cat,
+                subcategory=_t2_sub,
+                category_hint=category_hint,
+                state="",
+                city=resolved_city,
+                county=county,
+                zip_code=resolved_zip,
+                user_lat=resolved_lat,
+                user_lon=resolved_lng,
+                language=detected_lang,
+                limit=lim_db,
+                offset=0,
+                external_id=user_id,
+                session_id=session_id or user_id,
+            )
+        # Final DB-only fallback: if the user provided a city but we still got 0 rows,
+        # broaden to the state (directory) before falling back to Google / GPT.
+        # This prevents "web links only" when the directory has providers nearby.
+        if (
+            not _search_ag.businesses
+            and (resolved_state or "").strip()
+            and (resolved_city or "").strip()
+            and (resolved_zip or "").strip() == ""
+        ):
+            logger.info(
+                "chat_flow.tier2a0.retry_state_only city=%s state=%s",
+                resolved_city,
+                resolved_state,
+            )
+            _search_ag = ServiceSearchAgent().run(
+                message=_db_discovery_message,
+                category=_t2_cat,
+                subcategory=_t2_sub,
+                category_hint=category_hint,
+                state=resolved_state,
+                city="",
+                county=county,
+                zip_code=resolved_zip,
+                user_lat=resolved_lat,
+                user_lon=resolved_lng,
+                language=detected_lang,
+                limit=lim_db,
+                offset=0,
+                external_id=user_id,
+                session_id=session_id or user_id,
+            )
         _rank_ag = RankingAgent().run(
             _search_ag.businesses,
             message=message,
