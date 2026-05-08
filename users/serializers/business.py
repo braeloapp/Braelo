@@ -305,18 +305,47 @@ class BannerSearilizer(SQL_serializer.Serializer):
     '''
 
     id = SQL_serializer.SerializerMethodField()
-    user_id = SQL_serializer.IntegerField(required=False)
+    business_id = SQL_serializer.IntegerField(
+        source='user_id', read_only=True, allow_null=True
+    )
+    business_link = SQL_serializer.SerializerMethodField(read_only=True)
+    user_id = SQL_serializer.IntegerField(required=False, write_only=True)
     business_email = SQL_serializer.CharField(required=True)
     business_name = SQL_serializer.CharField(required=True)
     business_banner = SQL_serializer.ListField(required=True)
     business_category = SQL_serializer.CharField(required=True)
     business_subcategory = SQL_serializer.CharField(required=True)
+    url = SQL_serializer.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        write_only=True,
+    )
 
     def get_id(self, obj):
         # `AdminBusinessBanner` is a MongoEngine document, so `id` is an ObjectId.
         # Return it as a string so it is JSON-serializable on the client.
         banner_id = getattr(obj, 'id', None) if not isinstance(obj, dict) else obj.get('id')
         return str(banner_id) if banner_id is not None else None
+
+    def get_business_link(self, obj):
+        '''
+        Custom target from admin (`url`) or defaults for in-app routing with `business_id`.
+        '''
+        if isinstance(obj, dict):
+            custom = obj.get('url')
+        else:
+            custom = getattr(obj, 'url', None)
+        if custom:
+            return custom
+        return 'business_details'
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        payload = getattr(self, 'initial_data', None) or {}
+        if isinstance(payload, dict) and payload.get('business_link') is not None:
+            attrs['url'] = payload['business_link']
+        return attrs
 
     def update(self, instance, validated_data):
         '''
@@ -326,6 +355,7 @@ class BannerSearilizer(SQL_serializer.Serializer):
             'user_id', None
         )  # poped so it isnt updated in the process
         business_banner = validated_data.pop('business_banner', None)
+        url_update = validated_data.pop('url', None)
         update_media = BusinessSerailizer()
         validated_data['business_banner'] = update_media.update_media(
             instance.business_banner,
@@ -334,14 +364,17 @@ class BannerSearilizer(SQL_serializer.Serializer):
             instance.user_id,
             image_type='business_banner',
         )
+        allowed_update_attrs = frozenset({'business_banner', 'url'})
+        if url_update is not None:
+            validated_data['url'] = url_update
 
         # Update other fields
         for attr, value in validated_data.items():
             current_value = getattr(instance, attr, None)
             if current_value != value:
-                if attr != 'business_banner':
+                if attr not in allowed_update_attrs:
                     raise ValidationError(
-                        {'error': 'Only allowed to update business banner'}
+                        {'error': 'Only allowed to update business banner or link'}
                     )
                 setattr(instance, attr, value)
 

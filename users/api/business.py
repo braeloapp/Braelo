@@ -49,6 +49,8 @@ class BusinessPagination(PageNumberPagination):
             {
                 'id': obj.get('id'),
                 'business_banner': obj.get('business_banner', []),
+                'business_id': obj.get('business_id'),
+                'business_link': obj.get('business_link'),
             }
             for obj in data
         ]

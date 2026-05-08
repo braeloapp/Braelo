@@ -35,6 +35,8 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
         business_subcategory = data.get('business_subcategory')
         business_banner = data.get('business_banner')
         url = data.get('url')
+        if url is None and data.get('business_link') is not None:
+            url = data.get('business_link')
 
         email_validation(email, 'Enter a valid business email address')
         validate_image(business_banner, 'Banner')
