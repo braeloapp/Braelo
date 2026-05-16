@@ -67,7 +67,20 @@ class WhatWhereGate:
 
         # ── Check WHAT ───────────────────────────────────────────
         has_what = bool(category or subcategory)
-        
+
+        if not has_what and session_ctx:
+            lc = (session_ctx.get("last_category") or session_ctx.get("biz_cat") or "").strip()
+            ls = (session_ctx.get("last_subcategory") or session_ctx.get("biz_sub") or "").strip()
+            if lc or ls:
+                has_what = True
+                category = lc or category
+                subcategory = ls or subcategory
+                logger.info(
+                    "[WhatWhereGate] WHAT from session cat=%r sub=%r",
+                    category,
+                    subcategory,
+                )
+
         # Try to extract from message if not already known
         if not has_what:
             from chatbot.services.business_search_service import (

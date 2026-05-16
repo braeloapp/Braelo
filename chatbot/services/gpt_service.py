@@ -141,7 +141,9 @@ SCOPE: This chatbot helps with (1) practical life in the USA from the knowledge 
 
 Set intent to "information_request" for questions about driver's licenses, permits, DMV visits, tests, documents for driving, or any state-specific procedure that immigrants commonly need — these are IN SCOPE.
 
-Set intent to **"business_search"** (not "information_request") when the user wants to **find, hire, or get a recommendation** for a local professional or service provider — including phrases like "find a lawyer", "need a doctor near me", "any tax person in Phoenix", "immigration attorney in 85001", "plumber nearby", "recommend a realtor", "servicios legales cerca". Extract category, subcategory, and location fields precisely.
+Set intent to **"business_search"** (not "information_request") when the user wants to **find, hire, or get a recommendation** for a local professional or service provider — including phrases like "find a lawyer", "need a doctor near me", "any tax person in Phoenix", "immigration attorney in 85001", "plumber nearby", "recommend a realtor", "find a babysitter", "baby sitter in Los Angeles", "servicios legales cerca". Extract category, subcategory, and location fields precisely.
+
+For babysitter / nanny / daycare / childcare searches set category **"kids"** and subcategory **"babysitter"** (NOT food or restaurant).
 
 Set intent to "information_request" (not business_search) for **career or education** questions about a profession — e.g. "how to become a lawyer", "law school", "what does a CPA do" — with no request to find someone to hire.
 
@@ -151,8 +153,8 @@ If the user asks for anything OUTSIDE this scope, set intent to "off_topic". Exa
 
 Keys:
 - intent: One of "casual", "information_request", "business_search", "business_comparison", "unclear", "off_topic".
-- category: legal, tax, housing, immigration, health, job, education, other (or null).
-- subcategory: lawyer, tax_preparer, real_estate_agent, doctor, etc. (or null).
+- category: legal, tax, housing, immigration, health, job, education, kids, other (or null).
+- subcategory: lawyer, tax_preparer, real_estate_agent, doctor, babysitter, nanny, daycare, etc. (or null).
 - state: US state name or 2-letter code if mentioned or null.
 - city: city if mentioned or null.
 - county: county if mentioned or null.
@@ -510,10 +512,20 @@ def generate_business_directory_fallback_response(
         return _kb_clarification_fallback(language)
 
 
+BANNED_SUGGESTIONS_BLOCK = """
+CRITICAL — NEVER suggest:
+- "Visit libraries or community centers"
+- "Ask at city hall" or walk to government/social services for business listings
+- Bulletin boards, asking neighbors, or other offline-only generic advice
+
+Use Google Maps, Yelp, or category-specific apps/sites instead when you cannot name real businesses.
+"""
+
 LOCATION_SEARCH_SYSTEM = """You are Braelo, a helpful local business assistant for the US Latino and immigrant community.
 
 LOCATION CONTEXT:
 {location_context}
+{established_context_note}
 
 YOUR JOB:
 The user is asking to find businesses or services nearby. Respond like a knowledgeable local guide — give a clear,
@@ -526,15 +538,18 @@ FORMAT (IMPORTANT — one line per item, use an em dash between parts):
 
 After the list, add one short sentence suggesting they call ahead to confirm hours/availability.
 
+{BANNED_SUGGESTIONS_BLOCK}
+
 RULES:
 - {lang_instruction}
 - When GPS coordinates are given, derive the city and neighborhood from those coordinates only. Do not use a separate city/ZIP line from the user profile if it could disagree with the coordinates.
 - Be specific to the user's location. If you know the area from their ZIP/GPS, name real neighborhoods or nearby cities when reasonable.
-- If you don't know specific business names for that exact area, list the types of businesses they should search for.
+- If you don't know specific business names for that exact area, list the types of businesses they should search for on Google Maps/Yelp — not libraries or city hall.
 - Never make up phone numbers or street addresses or website URLs (links will be added automatically).
 - Keep the tone friendly and helpful, like a knowledgeable neighbor.
 - If the category is very specific (e.g., "Brazilian bakery"), acknowledge it and give the closest useful match.
 - Do not start by saying you are an AI or listing your limitations — begin helping directly.
+- Do NOT ask "what are you looking for?" if established context already names the category.
 """
 
 
@@ -636,6 +651,23 @@ def _places_search_keyword(category: str, query: str) -> str:
     return q[:120] if q else ""
 
 
+def _strip_banned_location_suggestions(text: str) -> str:
+    if not text:
+        return text
+    low = text.lower()
+    banned = (
+        "visit libraries",
+        "community centers for information",
+        "ask at city hall",
+        "bulletin board",
+        "ask neighbors",
+    )
+    if not any(b in low for b in banned):
+        return text
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(p for p in parts if not any(b in p.lower() for b in banned)).strip() or text
+
+
 def handle_location_search(
     query: str,
     detected_language: str = "en",
@@ -649,6 +681,7 @@ def handle_location_search(
     neighbourhood: str = None,
     category: str = None,
     chat_history: list = None,
+    established_context: dict | None = None,
 ) -> str:
     """
     Location-based business search: Google Places first (real listings), then GPT fallback.
@@ -791,9 +824,20 @@ def handle_location_search(
     }
     lang_instruction = lang_map.get((detected_language or "en").lower()[:2], lang_map["en"])
 
+    est_note = ""
+    est = established_context or {}
+    if est.get("biz_cat") or est.get("city") or est.get("state"):
+        est_note = (
+            f"ESTABLISHED CONTEXT: searching for {est.get('biz_cat') or category or 'local businesses'} "
+            f"in {est.get('city') or city_s or est.get('state') or state or zip_code or 'the user area'}. "
+            f"Do not ask what type of service they want."
+        )
+
     system_body = LOCATION_SEARCH_SYSTEM.format(
         location_context=location_context,
+        established_context_note=est_note,
         lang_instruction=lang_instruction,
+        BANNED_SUGGESTIONS_BLOCK=BANNED_SUGGESTIONS_BLOCK,
     )
     from chatbot.ellu.persona import get_system_prompt
     ellu_base = get_system_prompt(detected_language or "pt")
@@ -836,6 +880,7 @@ def handle_location_search(
             longitude=longitude,
             language=detected_language,
         )
+        out = _strip_banned_location_suggestions(out)
         logger.info("gpt_service.location_search.response len=%s", len(out or ""))
         return out
     except Exception:

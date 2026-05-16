@@ -199,6 +199,20 @@ KEYWORD_TO_BOTH_SCHEMAS: dict[str, tuple[str | None, str | None, str | None, str
     "fastfood": ("Gastronomia", "Restaurantes", "food", "restaurant"),
     "fine_dining": ("Gastronomia", "Restaurantes", "food", "restaurant"),
     "foodtruck": ("Gastronomia", "Restaurantes", "food", "restaurant"),
+    # Kids marketplace listings (Mongo: category=kids, subcategory=babysitter)
+    "baby sitter": (None, None, "kids", "babysitter"),
+    "baby-sitter": (None, None, "kids", "babysitter"),
+    "babysitter": (None, None, "kids", "babysitter"),
+    "babysitting": (None, None, "kids", "babysitter"),
+    "babysitters": (None, None, "kids", "babysitter"),
+    "nanny": (None, None, "kids", "babysitter"),
+    "nannies": (None, None, "kids", "babysitter"),
+    "day care": (None, None, "kids", "babysitter"),
+    "daycare": (None, None, "kids", "babysitter"),
+    "child care": (None, None, "kids", "babysitter"),
+    "childcare": (None, None, "kids", "babysitter"),
+    "au pair": (None, None, "kids", "babysitter"),
+    "kids": (None, None, "kids", None),
 }
 
 
@@ -1549,6 +1563,40 @@ def search_businesses_in_mongodb(
     return {"businesses": page, "see_more": see_more}
 
 
+BANNED_SUGGESTIONS_BLOCK = """
+CRITICAL — NEVER suggest any of these (inappropriate for this app):
+- "Visit libraries or community centers"
+- "Ask at city hall" or government offices for basic business listings
+- "Visit social services" or "ask neighbors" or bulletin boards
+- Generic offline walk-around advice instead of online search tools
+
+ONLY suggest practical online resources when the directory has no rows:
+- Google Maps (with a specific search query for the category and area)
+- Yelp or a category-relevant app (Uber, Zillow, ZocDoc, etc. when appropriate)
+- Trusted local Facebook or WhatsApp groups for Brazilian/Latino immigrants in that city
+"""
+
+
+def _strip_banned_suggestion_phrases(text: str) -> str:
+    if not text:
+        return text
+    low = text.lower()
+    banned_fragments = (
+        "visit libraries",
+        "community centers for information",
+        "ask at city hall",
+        "city hall",
+        "bulletin board",
+        "ask neighbors",
+        "social services office",
+    )
+    if not any(b in low for b in banned_fragments):
+        return text
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    cleaned = [p for p in parts if not any(b in p.lower() for b in banned_fragments)]
+    return " ".join(cleaned).strip() or text
+
+
 def generate_business_not_found_response(
     query: str,
     *,
@@ -1562,6 +1610,7 @@ def generate_business_not_found_response(
     subcategory_en: str | None = None,
     detected_language: str = "en",
     language_continuation_note: str = "",
+    established_context: dict | None = None,
 ) -> str:
     """
     After the directory search returns no rows: short, helpful guidance (LLM when available).
@@ -1578,15 +1627,33 @@ def generate_business_not_found_response(
     county_f = (county or parsed.get("county") or "").strip()
     zip_f = (zip_code or "").strip()
 
-    display_category = (
-        cen
-        or cpt
-        or sen
-        or spt
-        or "local businesses"
-    )
+    est = established_context or {}
+    if est.get("biz_cat"):
+        display_category = est["biz_cat"]
+    elif est.get("biz_sub"):
+        display_category = est["biz_sub"]
+    else:
+        display_category = (
+            cen
+            or cpt
+            or sen
+            or spt
+            or "local businesses"
+        )
     loc_parts = [p for p in (city_f, county_f, state_f, zip_f) if p]
+    if not loc_parts and est:
+        loc_parts = [p for p in (est.get("city"), est.get("state"), est.get("zip_code")) if p]
     location_str = ", ".join(loc_parts) if loc_parts else "your area"
+
+    context_note = ""
+    if est and (est.get("biz_cat") or est.get("city") or est.get("state")):
+        context_note = f"""
+ESTABLISHED CONTEXT (already known — do NOT ask again):
+- Category: {est.get('biz_cat') or display_category}
+- Location: {est.get('city') or city_f or est.get('state') or state_f or 'user area'}
+
+Do NOT ask "what are you looking for?" or "what type of service?" — continue the same search.
+"""
 
     lang = (detected_language or "en").lower()[:2]
     lang_instruction = {
@@ -1599,15 +1666,18 @@ def generate_business_not_found_response(
 
 The user is looking for: {display_category}
 Location context: {location_str}
+{context_note}
 
 Braelo's internal partner directory returned no rows for this category + location.
 
-Give a SHORT reply (under 160 words):
-1. Say clearly (first sentence) that there were no matches in Braelo's directory for that request, so you are giving general guidance — not hidden listings.
-2. Ask if they want you to try again with a wider area (nearby city/ZIP) or a slightly different category wording before they leave the chat.
-3. Then suggest 2–4 practical ways to explore {display_category} in {location_str} (Google Maps, official licensing or bar referral pages, local community groups, etc.). Do not invent phone numbers or addresses.
-4. {lang_instruction}
-5. Avoid salesy sign-offs; you may end with one short follow-up question."""
+{BANNED_SUGGESTIONS_BLOCK}
+
+Give a SHORT reply (max 80 words):
+1. Say clearly (first sentence) that there were no matches in Braelo's directory for {display_category} in {location_str}.
+2. Suggest 2–3 SPECIFIC online resources (Google Maps and Yelp with a concrete search phrase, or an app relevant to {display_category}).
+3. {lang_instruction}
+4. Do NOT ask what they are looking for if category/location are already established above.
+5. At most one short follow-up question (e.g. wider area), not a generic "what do you need?" question."""
 
     if (language_continuation_note or "").strip():
         system_prompt = f"{system_prompt}\n\n{language_continuation_note.strip()[:1200]}"
@@ -1629,7 +1699,7 @@ Give a SHORT reply (under 160 words):
             )
             out = (resp.choices[0].message.content or "").strip()
             if out:
-                return out
+                return _strip_banned_suggestion_phrases(out)
     except Exception:
         logger.exception("business_search_service.generate_business_not_found_response.llm_failed")
 

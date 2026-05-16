@@ -511,6 +511,12 @@ def extract_category_from_message(message: str) -> str:
         "daycare",
         "guardería",
         "childcare",
+        "babysitter",
+        "babysitting",
+        "baby sitter",
+        "baby-sitter",
+        "nanny",
+        "nannies",
         "pharmacy",
         "farmacia",
         "farmácia",
@@ -946,7 +952,90 @@ _LOCATION_CITY_BLOCKLIST = frozenset({
     "my", "the", "this", "your", "our", "downtown", "area", "city", "town", "here", "usa",
     "restaurant", "restaurants", "food", "places", "place", "eating", "dining", "best", "top",
     "good", "great", "popular", "some", "any", "local", "nearby",
+    # ZIP / postal phrasing — never treat as a placename (e.g. "in zip code 11001")
+    "zip", "zipcode", "zip code", "postal", "postal code", "code", "region",
+    "near", "nearby", "around", "local", "where", "also", "and",
 })
+
+_FALSE_CITY_WORDS = frozenset(_LOCATION_CITY_BLOCKLIST)
+
+_RX_ZIP_PHRASE = re.compile(
+    r"\b(?:zip\s*code|zipcode|zip|postal\s*code|postal)\s+(\d{5})(?:-(\d{4}))?\b",
+    re.I,
+)
+
+LANGUAGE_SWITCH_PATTERNS = (
+    "continue in english",
+    "speak english",
+    "reply in english",
+    "answer in english",
+    "in english please",
+    "english please",
+    "switch to english",
+    "use english",
+    "continue em português",
+    "continua em português",
+    "continua em portugues",
+    "fala português",
+    "fala portugues",
+    "responda em português",
+    "responda em portugues",
+    "em português por favor",
+    "em portugues por favor",
+    "português por favor",
+    "portugues por favor",
+    "muda para português",
+    "muda para portugues",
+    "continúa en español",
+    "continua en español",
+    "habla español",
+    "habla espanol",
+    "responde en español",
+    "responde en espanol",
+    "en español por favor",
+    "en espanol por favor",
+    "español por favor",
+    "espanol por favor",
+    "cambia a español",
+    "cambia a espanol",
+)
+
+
+def _sanitize_city_name(city: str | None) -> str:
+    """Drop false-positive 'cities' (zip, postal, prepositions, etc.)."""
+    if not city:
+        return ""
+    city_lower = str(city).strip().lower()
+    if city_lower in _FALSE_CITY_WORDS:
+        logger.info("[CityFilter] %r is not a valid city → cleared", city)
+        return ""
+    if len(city_lower) <= 2:
+        return ""
+    return str(city).strip()
+
+
+def _extract_zip_from_phrase(message: str) -> str | None:
+    """Extract ZIP from 'zip code 11001' / 'zip 11001' (not bare digits alone)."""
+    if not message:
+        return None
+    m = _RX_ZIP_PHRASE.search(message)
+    if not m:
+        return None
+    z = m.group(1)
+    if m.group(2):
+        z = f"{z}-{m.group(2)}"
+    return z
+
+
+def _extract_zip_and_clean_city(message: str, current_city: str | None) -> tuple[str | None, str | None]:
+    """When message names a ZIP phrase, return ZIP and a sanitized city (never 'zip')."""
+    extracted = _extract_zip_from_phrase(message)
+    if not extracted:
+        return None, current_city
+    cleaned = _sanitize_city_name(current_city) or None
+    if (current_city or "").strip().lower() in ("zip", "zipcode", "zip code", "postal", "postal code", "code"):
+        cleaned = None
+    return extracted, cleaned
 
 
 def _normalize_hint_city(raw: str) -> str:
@@ -962,7 +1051,7 @@ def _normalize_hint_city(raw: str) -> str:
         return ""
     if _implausible_hint_city_fragment(low):
         return ""
-    return city
+    return _sanitize_city_name(city) or ""
 
 
 def _sanitize_pipeline_city(city: str | None) -> str | None:
@@ -996,6 +1085,8 @@ def _sanitize_pipeline_city(city: str | None) -> str | None:
     if any(m in padded for m in junk_markers):
         return None
     if len(s.split()) > 4:
+        return None
+    if not _sanitize_city_name(s):
         return None
     return s
 
@@ -1038,9 +1129,13 @@ def _extract_location_hints_from_message(message: str) -> dict:
         return out
     text = message.strip()
 
-    z = re.search(r"\b(\d{5})(?:-(\d{4}))?\b", text)
-    if z:
-        out["zip_code"] = z.group(1) + (("-" + z.group(2)) if z.group(2) else "")
+    z_phrase = _extract_zip_from_phrase(text)
+    if z_phrase:
+        out["zip_code"] = z_phrase
+    else:
+        z = re.search(r"\b(\d{5})(?:-(\d{4}))?\b", text)
+        if z:
+            out["zip_code"] = z.group(1) + (("-" + z.group(2)) if z.group(2) else "")
 
     city_val = None
     state_val = None
@@ -1081,12 +1176,19 @@ def _extract_location_hints_from_message(message: str) -> dict:
     if not city_val:
         m = re.search(r"\b(?:and\s+)?(?:in|near|around|at)\s+([A-Za-z][A-Za-z'.-]{2,40})\b", text, re.I)
         if m:
-            cn = _normalize_hint_city(m.group(1))
-            if cn and cn.lower() not in _US_STATE_NAMES and cn.upper() not in _US_STATE_ABBR:
-                city_val = cn
+            captured = (m.group(1) or "").strip()
+            nxt = text[m.end() : m.end() + 12].lower()
+            if captured.lower() == "zip" and nxt.lstrip().startswith("code"):
+                pass
+            else:
+                cn = _normalize_hint_city(captured)
+                if cn and cn.lower() not in _US_STATE_NAMES and cn.upper() not in _US_STATE_ABBR:
+                    city_val = cn
 
     if city_val:
-        out["city"] = city_val
+        out["city"] = _sanitize_city_name(city_val) or None
+        if not out.get("city"):
+            city_val = None
     if state_val:
         out["state"] = state_val
 
@@ -1102,8 +1204,14 @@ def _extract_location_hints_from_message(message: str) -> dict:
     pco = (parsed.get("county") or "").strip()
     if ps and not out.get("state"):
         out["state"] = ps
-    if pc and not out.get("city"):
-        out["city"] = pc
+    if pc:
+        existing = (out.get("city") or "").strip()
+        if (
+            not existing
+            or len(pc) > len(existing)
+            or pc.lower().startswith((existing.lower() + " "))
+        ):
+            out["city"] = pc
     if pco and not out.get("county"):
         out["county"] = pco
     if ps or pc or pco:
@@ -1156,6 +1264,15 @@ def _apply_message_location_for_map(
     if hints.get("state") and not hints.get("city"):
         c = None
         co = None
+
+    _zip_phrase, c = _extract_zip_and_clean_city(message, c)
+    if _zip_phrase:
+        z = _zip_phrase
+        if not hints.get("city"):
+            c = None
+            co = None
+
+    c = _sanitize_pipeline_city(_sanitize_city_name(c) or None) if c else None
 
     out = (st, c, co, z)
     if out != (state, city, county, zip_code):
@@ -1397,6 +1514,16 @@ _SERVICE_INFERENCE = [
     (re.compile(r"\b(tax preparer|cpa\b|accountant|tax filing|imposto|income tax prep)\b", re.I), ("tax", "tax_preparer")),
     (re.compile(r"\b(plumber|electrician|hvac)\b", re.I), ("home", "home_services")),
     (re.compile(r"\b(real estate|realtor|realty|corretor de im[oó]veis)\b", re.I), ("housing", "real_estate_agent")),
+    # Kids / childcare (marketplace `kids` + subcategory `babysitter` in Mongo)
+    (
+        re.compile(
+            r"\b(baby\s*sitters?|babysitters?|babysitting|nann(y|ies)|day\s*care|daycare|"
+            r"child\s*care|childcare|au\s*pair|cuidador(?:a)?\s+de\s+crian[cç]as?|"
+            r"bab[aá]\s*sitter|niñer[ao]s?)\b",
+            re.I,
+        ),
+        ("kids", "babysitter"),
+    ),
     # Food / dining (Portuguese Lista uses "Gastronomia", "Restaurantes", etc.)
     (
         re.compile(
@@ -1458,11 +1585,37 @@ def _llm_category_smells_like_location_noise(cat: str | None, message: str) -> b
     return False
 
 
+def _looks_like_zip_only_followup(message: str) -> bool:
+    """User adds only a ZIP (e.g. 'and in zip code 11001') — keep prior category."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 90:
+        return False
+    if not _extract_zip_from_phrase(msg) and not re.search(
+        r"\b(?:zip|postal)\s*(?:code)?\s*\d{5}\b", msg, re.I
+    ):
+        return False
+    if _infer_service_category_from_text(msg)[0]:
+        return False
+    return True
+
+
 def _looks_like_location_only_followup(message: str) -> bool:
     """Short reply that names a place but does not repeat the service (e.g. 'in Los Angeles?')."""
     msg = (message or "").strip()
+    if _looks_like_zip_only_followup(msg):
+        return True
     if not msg or len(msg) > 120:
         return False
+    if _infer_service_category_from_text(msg)[0]:
+        return False
+    try:
+        from chatbot.services.business_search_service import convert_query_to_portuguese_fields
+
+        parsed = convert_query_to_portuguese_fields(msg)
+        if parsed.get("category_en") or parsed.get("matched_keyword"):
+            return False
+    except Exception:
+        pass
     ml = msg.lower()
     if any(
         x in ml
@@ -1480,6 +1633,14 @@ def _looks_like_location_only_followup(message: str) -> bool:
             "café",
             "cafe",
             "eat ",
+            "baby sitter",
+            "babysitter",
+            "babysitting",
+            "nanny",
+            "daycare",
+            "day care",
+            "childcare",
+            "child care",
         )
     ):
         return False
@@ -1504,6 +1665,22 @@ def _sanitize_structured_category_for_followup(
     """
     mc = (st_cat or "").strip() or None
     ms = (st_sub or "").strip() or None
+
+    if _looks_like_zip_only_followup(message) and not mc:
+        if session_ctx:
+            lc = (session_ctx.get("last_category") or session_ctx.get("biz_cat") or "").strip() or None
+            ls = (session_ctx.get("last_subcategory") or session_ctx.get("biz_sub") or "").strip() or None
+            if lc:
+                logger.info(
+                    "[SanitizeCategory] ZIP follow-up: inherited cat=%r sub=%r from session",
+                    lc,
+                    ls,
+                )
+                return lc, ls
+        ic, isub = _infer_category_from_prior_user_turns(chat_history)
+        if ic:
+            return ic, isub or ms
+
     if (not mc and not ms) and session_ctx and _looks_like_directory_listing_followup_message(message):
         lc = (session_ctx.get("last_category") or "").strip() or None
         ls = (session_ctx.get("last_subcategory") or "").strip() or None
@@ -1518,6 +1695,15 @@ def _sanitize_structured_category_for_followup(
     garbage = _llm_category_smells_like_location_noise(mc, message)
     if not (loc_only or garbage):
         return mc, ms
+    if loc_only and session_ctx and not mc:
+        lc = (session_ctx.get("last_category") or "").strip() or None
+        ls = (session_ctx.get("last_subcategory") or "").strip() or None
+        if lc:
+            logger.info(
+                "[SanitizeCategory] Location-only: inherited cat=%r from session",
+                lc,
+            )
+            return lc, ls
     ic, isub = _infer_category_from_prior_user_turns(chat_history)
     if ic:
         return ic, isub or ms
@@ -2089,10 +2275,175 @@ def _last_directory_listings_snapshot_from_history(chat_history: list | None) ->
     return None
 
 
+def _business_id_for_dedup(b: dict) -> str:
+    return str(b.get("_id") or b.get("id") or b.get("name") or "").strip()
+
+
+def _load_session_search_cache(session_id: str) -> dict:
+    try:
+        from django.core.cache import cache
+
+        raw = cache.get(f"session_search_ctx_{session_id}")
+        if raw:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.debug("[SessionCtx] load failed session_id=%s", session_id)
+    return {}
+
+
+def _save_session_search_cache(
+    session_id: str,
+    *,
+    intent: str = "",
+    biz_cat: str = "",
+    biz_sub: str = "",
+    city: str = "",
+    state: str = "",
+    zip_code: str = "",
+    search_type: str = "",
+    businesses_shown: list | None = None,
+) -> None:
+    try:
+        from django.core.cache import cache
+
+        existing = _load_session_search_cache(session_id)
+        existing_shown = set(existing.get("all_shown_ids") or [])
+        for b in businesses_shown or []:
+            if isinstance(b, dict):
+                bid = _business_id_for_dedup(b)
+                if bid:
+                    existing_shown.add(bid)
+        ctx = {
+            "intent": intent or existing.get("intent", ""),
+            "biz_cat": biz_cat or existing.get("biz_cat", ""),
+            "biz_sub": biz_sub or existing.get("biz_sub", ""),
+            "city": city or existing.get("city", ""),
+            "state": state or existing.get("state", ""),
+            "zip_code": zip_code or existing.get("zip_code", ""),
+            "search_type": search_type or existing.get("search_type", ""),
+            "all_shown_ids": list(existing_shown),
+            "last_shown": [
+                {"id": _business_id_for_dedup(b), "name": (b.get("name") or "")[:200]}
+                for b in (businesses_shown or [])[:8]
+                if isinstance(b, dict)
+            ],
+        }
+        cache.set(
+            f"session_search_ctx_{session_id}",
+            json.dumps(ctx, default=str),
+            timeout=7200,
+        )
+    except Exception as e:
+        logger.debug("[SessionCtx] save failed: %s", e)
+
+
+def _merge_cache_into_session_ctx(session_ctx: dict, session_id: str) -> dict:
+    cached = _load_session_search_cache(session_id)
+    if not cached:
+        return session_ctx
+    out = dict(session_ctx or {})
+    for k in ("biz_cat", "biz_sub", "city", "state", "zip_code", "intent", "search_type"):
+        if cached.get(k) and not out.get(k if k != "biz_cat" else "last_category"):
+            if k == "biz_cat":
+                out.setdefault("last_category", cached["biz_cat"])
+            elif k == "biz_sub":
+                out.setdefault("last_subcategory", cached["biz_sub"])
+            elif k in ("city", "state", "zip_code"):
+                loc = dict(out.get("last_location") or {})
+                if cached.get(k):
+                    loc[k] = cached[k]
+                out["last_location"] = loc
+    all_ids = set(out.get("last_shown_business_ids") or []) | set(cached.get("all_shown_ids") or [])
+    if all_ids:
+        out["last_shown_business_ids"] = list(all_ids)
+        out["all_shown_ids"] = list(all_ids)
+    out["biz_cat"] = out.get("last_category") or cached.get("biz_cat") or ""
+    out["biz_sub"] = out.get("last_subcategory") or cached.get("biz_sub") or ""
+    return out
+
+
+def _established_context_from_session(
+    session_ctx: dict | None,
+    *,
+    city: str = "",
+    state: str = "",
+    zip_code: str = "",
+    biz_cat: str = "",
+    biz_sub: str = "",
+) -> dict:
+    loc = (session_ctx or {}).get("last_location") or {}
+    return {
+        "biz_cat": (biz_cat or (session_ctx or {}).get("last_category") or (session_ctx or {}).get("biz_cat") or ""),
+        "biz_sub": (biz_sub or (session_ctx or {}).get("last_subcategory") or (session_ctx or {}).get("biz_sub") or ""),
+        "city": (city or loc.get("city") or ""),
+        "state": (state or loc.get("state") or ""),
+        "zip_code": (str(zip_code or loc.get("zip_code") or "")).strip(),
+    }
+
+
+def _is_language_switch_request(message: str) -> bool:
+    """True when the user only asks to change response language."""
+    msg_lower = (message or "").strip().lower()
+    if not msg_lower or len(msg_lower) > 120:
+        return False
+    if not any(p in msg_lower for p in LANGUAGE_SWITCH_PATTERNS):
+        return False
+    if _infer_service_category_from_text(message)[0]:
+        return False
+    if _extract_zip_from_phrase(message) or extract_zip_from_message(message):
+        return False
+    if _extract_location_hints_from_message(message).get("city"):
+        return False
+    return True
+
+
+def _build_language_switch_reply(detected_lang: str, session_ctx: dict | None) -> str:
+    est = _established_context_from_session(session_ctx)
+    cat = (est.get("biz_cat") or "").strip() or None
+    place = (
+        (est.get("city") or "").strip()
+        or (est.get("state") or "").strip()
+        or (est.get("zip_code") or "").strip()
+        or None
+    )
+    ack = {
+        "en": "Of course! I'll continue in English. ",
+        "pt": "Claro! Continuarei em português. ",
+        "es": "¡Por supuesto! Continuaré en español. ",
+    }.get(detected_lang, "Of course! I'll continue in English. ")
+    if cat or place:
+        cont = {
+            "en": (
+                f"We were looking for {cat or 'businesses'} "
+                f"in {place or 'your area'}. "
+                f"Would you like to continue with that search, or is there something else I can help you with?"
+            ),
+            "pt": (
+                f"Estávamos procurando {cat or 'negócios'} "
+                f"em {place or 'sua área'}. "
+                f"Gostaria de continuar com essa busca ou posso ajudar com outra coisa?"
+            ),
+            "es": (
+                f"Estábamos buscando {cat or 'negocios'} "
+                f"en {place or 'tu área'}. "
+                f"¿Te gustaría continuar con esa búsqueda o puedo ayudarte con otra cosa?"
+            ),
+        }
+        return ack + cont.get(detected_lang, cont["en"])
+    tail = {
+        "en": "How can I help you?",
+        "pt": "Como posso ajudar?",
+        "es": "¿En qué puedo ayudarte?",
+    }
+    return ack + tail.get(detected_lang, tail["en"])
+
+
 def _restore_session_context(chat_history: list | None) -> dict:
     """Rebuild short-term session fields from recent assistant turns (entities_json / directory snapshot)."""
     ctx: dict = {
         "last_shown_business_ids": [],
+        "all_shown_ids": [],
         "last_directory_snapshot": [],
         "last_category": None,
         "last_subcategory": None,
@@ -2102,21 +2453,21 @@ def _restore_session_context(chat_history: list | None) -> dict:
         "external_suggested": False,
         "turn_count": len(chat_history or []),
     }
+    all_ids: set[str] = set()
     for item in reversed(chat_history or []):
         if item.get("role") != "assistant":
             continue
         ent = item.get("entities")
         if not isinstance(ent, dict):
             continue
-        if not ctx["last_directory_snapshot"]:
-            snap = ent.get("directory_listings_snapshot")
-            if isinstance(snap, list) and snap:
+        snap = ent.get("directory_listings_snapshot")
+        if isinstance(snap, list) and snap:
+            for x in snap:
+                bid = str(x.get("id") or "").strip()
+                if bid:
+                    all_ids.add(bid)
+            if not ctx["last_directory_snapshot"]:
                 ctx["last_directory_snapshot"] = snap
-                ctx["last_shown_business_ids"] = [
-                    str(x.get("id") or "").strip()
-                    for x in snap
-                    if x.get("id")
-                ]
         if not ctx["last_category"]:
             c = (ent.get("category") or "").strip()
             s = (ent.get("subcategory") or "").strip()
@@ -2142,6 +2493,10 @@ def _restore_session_context(chat_history: list | None) -> dict:
                 ctx["last_language"] = str(ll).strip().lower()[:2]
         if ent.get("external_suggested"):
             ctx["external_suggested"] = True
+    ctx["last_shown_business_ids"] = list(all_ids)
+    ctx["all_shown_ids"] = list(all_ids)
+    ctx["biz_cat"] = ctx.get("last_category") or ""
+    ctx["biz_sub"] = ctx.get("last_subcategory") or ""
     for item in reversed(chat_history or []):
         ent = item.get("entities")
         if isinstance(ent, dict) and ent.get("user_name"):
@@ -2189,19 +2544,19 @@ def _dedupe_businesses_session(businesses: list | None, already_shown_ids: list)
     if not businesses or not already_shown_ids:
         return businesses or []
     sid = {str(x).strip() for x in already_shown_ids if x}
-    fresh = [
-        b
-        for b in businesses
-        if str(b.get("_id") or b.get("id") or "").strip() not in sid
-    ]
+    fresh = [b for b in businesses if _business_id_for_dedup(b) not in sid]
     if fresh:
         logger.info(
-            "[Deduplication] filtered shown ids: %s → %s",
+            "[Dedup] %s → %s (%s already shown)",
             len(businesses),
             len(fresh),
+            len(businesses) - len(fresh),
         )
         return fresh
-    logger.info("[Deduplication] exhausted fresh ids — returning same ranking")
+    logger.info(
+        "[Dedup] All %s results already shown in session — returning original list",
+        len(businesses),
+    )
     return businesses
 
 
@@ -2305,9 +2660,51 @@ def _answer_directory_snapshot_followup_llm(
         return None
 
 
-def _ensure_single_cta(response: str, lang: str) -> str:
+def _ensure_single_cta(
+    response: str,
+    lang: str,
+    established_context: dict | None = None,
+) -> str:
     if not response:
         return response
+    if established_context:
+        known_cat = (established_context.get("biz_cat") or "").strip()
+        known_city = (established_context.get("city") or "").strip()
+        redundant = []
+        if known_cat:
+            redundant.extend(
+                (
+                    "what are you looking for",
+                    "what type of service",
+                    "what kind of business",
+                    "what exactly are you looking for",
+                    "something specific you are looking for",
+                    "something specific you're looking for",
+                    "o que você está procurando",
+                    "qué estás buscando",
+                )
+            )
+        if known_city:
+            redundant.extend(
+                (
+                    "which city",
+                    "what city",
+                    "where are you",
+                    "what location",
+                    "qual cidade",
+                    "qué ciudad",
+                    "share your zip",
+                    "share your zip code",
+                    "código postal",
+                    "compartilhe seu cep",
+                )
+            )
+        resp_lower = response.lower()
+        for pattern in redundant:
+            if pattern in resp_lower:
+                parts = re.split(r"(?<=[.!?])\s+", response)
+                response = " ".join(p for p in parts if pattern not in p.lower()).strip()
+                logger.debug("[CTA] Removed redundant: %r", pattern)
     if response.count("?") <= 1:
         return response
     generic_ctas = {
@@ -3324,6 +3721,7 @@ def process_message(
     _hist_cap = getattr(django_settings, "CHAT_HISTORY_MAX_DOCUMENTS", 200)
     openai_chat_history = _load_openai_chat_history(session_id, _hist_cap)
     _session_ctx = _restore_session_context(openai_chat_history)
+    _session_ctx = _merge_cache_into_session_ctx(_session_ctx, session_id)
     _session_geo_log(
         "turn_start",
         session_id=session_id,
@@ -3606,6 +4004,37 @@ def process_message(
                 )
 
     # ------------------------------------------------------------------
+    # Language switch only — do not re-run WhatWhereGate or ask for ZIP again
+    # ------------------------------------------------------------------
+    if _is_language_switch_request(message):
+        logger.info("[LangSwitch] language_switch_request session_id=%s lang=%s", session_id, detected_lang)
+        ls_reply = _build_language_switch_reply(detected_lang, _session_ctx)
+        ls_struct = {
+            "intent": "language_switch",
+            "detected_language": detected_lang,
+            "category": (_session_ctx.get("last_category") or ""),
+            "subcategory": (_session_ctx.get("last_subcategory") or ""),
+            "city": city or ((_session_ctx.get("last_location") or {}).get("city") or ""),
+            "state": state or ((_session_ctx.get("last_location") or {}).get("state") or ""),
+            "zip_code": zip_code or ((_session_ctx.get("last_location") or {}).get("zip_code") or ""),
+        }
+        _save_history(
+            session_id,
+            message,
+            ls_reply,
+            "language_switch",
+            ls_struct,
+            session_snapshot_meta=_session_snapshot_meta(),
+        )
+        return _build_response(
+            ls_reply,
+            detected_lang,
+            "language_switch",
+            question_analysis=ls_struct,
+            user_name=user_name,
+        )
+
+    # ------------------------------------------------------------------
     # TIER 1a — Structured intent + location (before business DB and KB)
     # ------------------------------------------------------------------
     if has_api_key:
@@ -3760,23 +4189,50 @@ def process_message(
     if isinstance(structured, dict):
         structured["category"] = _st_cat
         structured["subcategory"] = _st_sub
+    # User-text inference beats wrong LLM labels (e.g. food/restaurant for babysitter queries).
     biz_cat = inf_cat or _st_cat
     biz_sub = inf_sub or _st_sub
+    if inf_cat and _st_cat and inf_cat.lower() != (_st_cat or "").lower():
+        if inf_cat.lower() == "kids" or (inf_sub or "").lower() in ("babysitter", "nanny", "daycare", "childcare"):
+            biz_cat, biz_sub = inf_cat, inf_sub or biz_sub
+            logger.info(
+                "chat_flow.category_override user_text=%r,%r over structured=%r,%r",
+                inf_cat,
+                inf_sub,
+                _st_cat,
+                _st_sub,
+            )
+    if not (biz_cat or biz_sub) and _session_ctx:
+        biz_cat = biz_cat or (_session_ctx.get("last_category") or None)
+        biz_sub = biz_sub or (_session_ctx.get("last_subcategory") or None)
 
     # Location-only follow-up (e.g. "and in miami?") should not enter directory-first routing,
     # because the category is typically absent and fallbacks can accidentally treat the whole message
     # as the "category". Let Tier 2a0 (broad local discovery) handle it instead.
-    _is_loc_only_followup = bool(openai_chat_history) and _looks_like_location_only_followup(message)
+    _zip_only_followup = _looks_like_zip_only_followup(message)
+    _is_loc_only_followup = (
+        bool(openai_chat_history)
+        and _looks_like_location_only_followup(message)
+        and not _zip_only_followup
+    )
     directory_intent = _directory_lookup_intent(
         message, structured or {}, intent, confidence
     ) and not kb_over_directory
-    if _is_loc_only_followup:
+    if _is_loc_only_followup and not _zip_only_followup:
         directory_intent = False
         logger.info(
             "chat_flow.directory_intent.skip reason=location_only_followup user_id=%s city=%s state=%s",
             user_id,
             city,
             state,
+        )
+    elif _zip_only_followup and (biz_cat or biz_sub):
+        directory_intent = True
+        logger.info(
+            "chat_flow.directory_intent.zip_followup user_id=%s cat=%s zip=%s",
+            user_id,
+            biz_cat,
+            zip_code,
         )
 
     if directory_intent:
@@ -3953,7 +4409,9 @@ def process_message(
         if businesses:
             businesses = _dedupe_businesses_session(
                 businesses,
-                _session_ctx.get("last_shown_business_ids") or [],
+                _session_ctx.get("all_shown_ids")
+                or _session_ctx.get("last_shown_business_ids")
+                or [],
             )
 
         structured = dict(structured or {})
@@ -4036,6 +4494,17 @@ def process_message(
                 "source_message": message,
             }
             biz_pag = _business_pagination_dict(biz_snap, lim, 0, businesses, see_more)
+            _save_session_search_cache(
+                session_id,
+                intent="business_search",
+                biz_cat=biz_cat or "",
+                biz_sub=biz_sub or "",
+                city=city or "",
+                state=state or "",
+                zip_code=str(zip_code or ""),
+                search_type="get_top",
+                businesses_shown=businesses,
+            )
             _save_history(session_id, message, reply, "business_search", structured, businesses=businesses, session_snapshot_meta=_session_snapshot_meta())
             return _build_response(
                 reply,
@@ -4089,6 +4558,14 @@ def process_message(
                 subcategory_en=biz_sub,
                 detected_language=detected_lang,
                 language_continuation_note=_lang_continuation_note,
+                established_context=_established_context_from_session(
+                    _session_ctx,
+                    city=city,
+                    state=state,
+                    zip_code=zip_code,
+                    biz_cat=biz_cat,
+                    biz_sub=biz_sub,
+                ),
             )
             _save_history(session_id, message, reply, "business_search", structured, session_snapshot_meta=_session_snapshot_meta())
             logger.info("chat_flow.business_database_first user_id=%s n=0 fallback=helpful_llm", user_id)
@@ -4262,8 +4739,23 @@ def process_message(
 
         # For location-only follow-ups ("and in miami?"), never use the whole message as a category hint.
         # We want a broad "local businesses" discovery query in the new place.
-        _loc_only_t2 = bool(openai_chat_history) and _looks_like_location_only_followup(message)
-        category_hint = "local businesses" if _loc_only_t2 else extract_category_from_message(message)
+        _zip_only_t2 = _looks_like_zip_only_followup(message)
+        _inf_t2_hint, _inf_t2_sub = _infer_service_category_from_text(message)
+        _loc_only_t2 = (
+            bool(openai_chat_history)
+            and _looks_like_location_only_followup(message)
+            and not _zip_only_t2
+            and not _inf_t2_hint
+        )
+        if _inf_t2_hint:
+            category_hint = _inf_t2_hint
+        elif _loc_only_t2:
+            category_hint = "local businesses"
+        else:
+            category_hint = extract_category_from_message(message)
+        if not category_hint or category_hint == "local businesses":
+            if _session_ctx.get("last_category"):
+                category_hint = _session_ctx.get("last_category")
         reply = ""
 
         from chatbot.agents.decision_agent import DecisionAgent
@@ -4305,7 +4797,12 @@ def process_message(
         )
 
         _t2_cat, _t2_sub = biz_cat, biz_sub
-        if _loc_only_t2:
+        if not (_t2_cat or _t2_sub):
+            _t2_cat, _t2_sub = _inf_t2_hint, _inf_t2_sub
+        if not (_t2_cat or _t2_sub) and _session_ctx:
+            _t2_cat = _t2_cat or _session_ctx.get("last_category")
+            _t2_sub = _t2_sub or _session_ctx.get("last_subcategory")
+        if _loc_only_t2 and not _zip_only_t2 and not _inf_t2_hint:
             _t2_cat, _t2_sub = None, None
         _bad_cat = (_t2_cat or "").strip()
         _msg_l = (message or "").strip().lower()
@@ -4333,7 +4830,11 @@ def process_message(
         # For broad local discovery, Mongo only enables broad_location_only when the message looks
         # like a generic "local businesses" query. Location-only follow-ups ("and in miami?")
         # should therefore use a generic discovery message for the DB step.
-        _db_discovery_message = "local businesses" if _loc_only_t2 else message
+        _db_discovery_message = (
+            "local businesses"
+            if _loc_only_t2 and not (_t2_cat or _t2_sub)
+            else message
+        )
         _search_ag = ServiceSearchAgent().run(
             message=_db_discovery_message,
             category=_t2_cat,
@@ -4424,6 +4925,13 @@ def process_message(
             "see_more": _search_ag.see_more,
             "location_note": _search_ag.location_note,
         }
+        if db_discovery.get("businesses"):
+            db_discovery["businesses"] = _dedupe_businesses_session(
+                db_discovery["businesses"],
+                _session_ctx.get("all_shown_ids")
+                or _session_ctx.get("last_shown_business_ids")
+                or [],
+            )
         if db_discovery.get("businesses"):
             _resp_ag = ResponseAgent().build_directory_intro(
                 language=detected_lang,
@@ -4518,6 +5026,17 @@ def process_message(
                 db_discovery["businesses"],
                 db_discovery.get("see_more", False),
             )
+            _save_session_search_cache(
+                session_id,
+                intent="location_business_search",
+                biz_cat=biz_cat or category_hint or "",
+                biz_sub=biz_sub or "",
+                city=resolved_city or "",
+                state=resolved_state or "",
+                zip_code=str(resolved_zip or ""),
+                search_type="tier2a0",
+                businesses_shown=db_discovery["businesses"],
+            )
             return _build_response(
                 reply,
                 detected_lang,
@@ -4558,8 +5077,16 @@ def process_message(
                     city=resolved_city or None,
                     country=resolved_country or None,
                     neighbourhood=(user_location.get("neighbourhood") or ""),
-                    category=category_hint,
+                    category=category_hint or biz_cat,
                     chat_history=recent_hist or None,
+                    established_context=_established_context_from_session(
+                        _session_ctx,
+                        city=resolved_city,
+                        state=resolved_state,
+                        zip_code=resolved_zip,
+                        biz_cat=biz_cat or category_hint,
+                        biz_sub=biz_sub,
+                    ),
                 )
             except Exception:
                 logger.exception("chat_flow.location_llm.openai_failed user_id=%s", user_id)
@@ -4956,6 +5483,14 @@ def process_message(
         )
 
         if businesses:
+            businesses = _dedupe_businesses_session(
+                businesses,
+                _session_ctx.get("all_shown_ids")
+                or _session_ctx.get("last_shown_business_ids")
+                or [],
+            )
+
+        if businesses:
             reply = _directory_ui_intro(
                 detected_lang,
                 category=bc or "",
@@ -4987,6 +5522,14 @@ def process_message(
                 subcategory_en=bs,
                 detected_language=detected_lang,
                 language_continuation_note=_lang_continuation_note,
+                established_context=_established_context_from_session(
+                    _session_ctx,
+                    city=city,
+                    state=state,
+                    zip_code=zip_code,
+                    biz_cat=bc,
+                    biz_sub=bs,
+                ),
             )
 
         # When we show business results (connecting user with providers), ask for email/phone if missing
@@ -5209,6 +5752,14 @@ def process_message(
                 subcategory_en=rescue_sub,
                 detected_language=detected_lang,
                 language_continuation_note=_lang_continuation_note,
+                established_context=_established_context_from_session(
+                    _session_ctx,
+                    city=city,
+                    state=state,
+                    zip_code=zip_code,
+                    biz_cat=rescue_cat,
+                    biz_sub=rescue_sub,
+                ),
             )
             structured["answer_source"] = "directory_llm_fallback"
             _save_history(session_id, message, reply, "information_request", structured, session_snapshot_meta=_session_snapshot_meta())
@@ -5281,7 +5832,18 @@ def _build_response(
     # When businesses are returned for structured cards, do not duplicate them in `response`
     # (numbered list + WhatsApp lines); the client renders the same data as cards.
     final_resp = (response or "").strip()
-    final_resp = _ensure_single_cta(final_resp, detected_language or "en")
+    _est_ctx = None
+    if question_analysis and isinstance(question_analysis, dict):
+        _est_ctx = {
+            "biz_cat": (question_analysis.get("category") or ""),
+            "biz_sub": (question_analysis.get("subcategory") or ""),
+            "city": (question_analysis.get("city") or ""),
+            "state": (question_analysis.get("state") or ""),
+            "zip_code": (str(question_analysis.get("zip_code") or "")),
+        }
+    final_resp = _ensure_single_cta(
+        final_resp, detected_language or "en", established_context=_est_ctx
+    )
 
     if not PrivacyGuard().check_outgoing_response(final_resp):
         final_resp = get_phrase("ask_next", detected_language)

@@ -253,9 +253,13 @@ _BUSINESS_CATEGORY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
     # Kids / childcare (marketplace `kids` category + LLM "babysitting" vs stored "babysitter")
     frozenset(
         {
+            "kids",
+            "kid",
             "babysitter",
+            "babysitters",
             "babysitting",
             "baby sitting",
+            "baby sitter",
             "baby-sitter",
             "nanny",
             "nannies",
