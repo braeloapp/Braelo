@@ -169,44 +169,49 @@ class DeactivateBusiness(generics.CreateAPIView):
 
     permission_classes = [IsAuthenticated]
 
+    @handle_exceptions
     def post(self, request):
         '''
         POST method to Deactivate business.
         :param request : reuqest object. (dict)
         :return: Deactivation Message. (json)
         '''
-        try:
-            admin_path = '/admin-panel/'
-            if request.path.startswith(admin_path):
-                user_id = request.data.get('user_id')
-                if not user_id:
-                    raise ValidationError(
-                        {'field': 'user_id is required for admin path'}
-                    )
-                user = User.objects.filter(id=user_id).first()
-            else:
-                user = request.user
-                user_id = user.id
-                if not user.is_business:
-                    raise ValidationError(
-                        {'user': 'User must be business_user'}
-                    )
+        admin_path = '/admin-panel/'
+        if request.path.startswith(admin_path):
+            user_id = request.data.get('user_id')
+            if not user_id:
+                raise ValidationError(
+                    {'field': 'user_id is required for admin path'}
+                )
+            user = User.objects.filter(id=user_id).first()
+            if not user:
+                raise ValidationError({'error': 'user not found'})
+        else:
+            user = request.user
+            user_id = user.id
+            if not user.is_business:
+                raise ValidationError({'user': 'User must be business_user'})
 
-            business = Business.objects.get(user_id=user_id, is_active=True)
-            business.is_active = False
-            user.is_business = False
-            user.save(update_fields=['is_business'])
-            business.save(update_fields=['is_active'])
-            set_businesses_directory_active(str(business.id), False)
-            return response(
-                status=status.HTTP_204_NO_CONTENT,
-                message='Business Deactivated Successfully',
-                data={'user_business_status': user.is_business},
-            )
-        except DoesNotExist:
+        active_businesses = list(
+            Business.objects.filter(user_id=user_id, is_active=True)
+        )
+        if not active_businesses:
             raise ValidationError(
                 {'Business': 'Business not found or already deactivated'}
             )
+
+        for business in active_businesses:
+            business.is_active = False
+            business.save(update_fields=['is_active'])
+            set_businesses_directory_active(str(business.id), False)
+
+        user.is_business = False
+        user.save(update_fields=['is_business'])
+        return response(
+            status=status.HTTP_204_NO_CONTENT,
+            message='Business Deactivated Successfully',
+            data={'user_business_status': user.is_business},
+        )
 
 
 class UpdateBusiness(generics.UpdateAPIView):
