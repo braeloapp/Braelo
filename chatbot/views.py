@@ -292,14 +292,28 @@ def legacy_get(request):
     return HttpResponse("Chat is not configured. Set OPENAI_API_KEY or add chatbot_model.h5 and intents.json.")
 
 
+def _deny_unauthenticated_debug(request):
+    """Debug/internal chatbot endpoints require an authenticated staff user."""
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False) and getattr(user, "is_staff", False):
+        return None
+    return JsonResponse({"error": "Not found"}, status=404)
+
+
 @require_http_methods(["GET"])
 def health(request):
-    logger.info("chatbot.health.check llm=%s", bool(getattr(django_settings, "OPENAI_API_KEY", None)))
-    return JsonResponse({"status": "ok", "llm": bool(getattr(django_settings, "OPENAI_API_KEY", None))})
+    payload = {"status": "ok"}
+    if getattr(django_settings, "DEBUG", False):
+        payload["llm"] = bool(getattr(django_settings, "OPENAI_API_KEY", None))
+    logger.info("chatbot.health.check")
+    return JsonResponse(payload)
 
 
 @require_http_methods(["GET"])
 def debug_knowledge(request):
+    denied = _deny_unauthenticated_debug(request)
+    if denied is not None:
+        return denied
     logger.info("chatbot.debug_knowledge.request use_mongo=%s", bool(getattr(django_settings, "USE_MONGO", False)))
     if getattr(django_settings, "USE_MONGO", False):
         try:
@@ -340,13 +354,11 @@ def debug_knowledge(request):
 def api_learning_gaps(request):
     """
     Summary of directory gaps logged by LearningAgent (Mongo learning_logs).
-    Restricted to DEBUG or staff in production.
+    Staff-only. Never expose to anonymous clients.
     """
-    if not getattr(django_settings, "DEBUG", False):
-        if not getattr(request, "user", None) or not request.user.is_authenticated:
-            return JsonResponse({"error": "Not found"}, status=404)
-        if not getattr(request.user, "is_staff", False):
-            return JsonResponse({"error": "Not found"}, status=404)
+    denied = _deny_unauthenticated_debug(request)
+    if denied is not None:
+        return denied
     try:
         days = int(request.GET.get("days", "7"))
     except ValueError:
