@@ -1,1 +1,1 @@
-# User-domain services (directory sync, etc.)
+# User-domain services (directory sync, Firebase identity, rate limits, etc.)

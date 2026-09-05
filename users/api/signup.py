@@ -23,6 +23,12 @@ from users.models import User
 from users.models import Business
 
 from users.serializers import EmailSignup
+from users.services.firebase_identity import (
+    extract_id_token,
+    phone_from_firebase_claims,
+    verify_firebase_id_token,
+)
+from users.services.rate_limit import check_rate_limit, client_ip
 from helpers import (
     handle_exceptions,
     get_token,
@@ -109,6 +115,31 @@ class LoginAuth(generics.CreateAPIView):
         )  # Generate a random number with a wide range
         return f"User{number}"
 
+    @staticmethod
+    def _phone_candidates(phone_number):
+        raw = (phone_number or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        candidates = {raw, digits}
+        if raw.startswith("+"):
+            candidates.add(raw[1:])
+        if digits:
+            candidates.add(f"+{digits}")
+        return [item for item in candidates if item]
+
+    def _find_user_by_phone(self, phone_number):
+        candidates = self._phone_candidates(phone_number)
+        if not candidates:
+            return None
+        return User.objects.filter(phone_number__in=candidates).first()
+
+    @staticmethod
+    def _business_name_for_user(user):
+        try:
+            business = Business.objects.filter(user_id=user.id).first()
+        except Exception:
+            return None
+        return business.business_name if business else None
+
     def authenticate_user(self, login_type, data):
         '''
         Handles sign_up/login for google and apple
@@ -166,11 +197,10 @@ class LoginAuth(generics.CreateAPIView):
                 user.save()
 
             token = get_token(user)
-            business = Business.objects.filter(user_id=user.id).first()
             response_data = {
                 'email': user.email,
                 'name': user.name,
-                'business_name': business.business_name if business else None,
+                'business_name': self._business_name_for_user(user),
                 'token': token,
                 'user_status': user.is_business,
                 'is_warned': user.is_warned,
@@ -218,30 +248,41 @@ class LoginAuth(generics.CreateAPIView):
                 data=data,
             )
 
-        # if user logs in from phone
+        # Phone login: JWT is issued only after a verified Firebase ID token.
+        # Client-supplied phone_number is ignored for identity.
         if login_type == 'phone':
-            data = request.data
-            phone_number = data.get('phone_number')
-            if not phone_number:
+            ip = client_ip(request)
+            if not check_rate_limit(f"phone-login:{ip}", limit=8, window_seconds=300):
                 raise ValidationError(
-                    {'phone_number': 'phone number is required.'}
+                    {
+                        'detail': (
+                            'Too many phone login attempts. Please try again later.'
+                        )
+                    }
                 )
+            claims = verify_firebase_id_token(extract_id_token(request.data))
+            phone_number = phone_from_firebase_claims(claims)
             self.validate_phone_number(phone_number)
-            # Check if the phone_number exists
-            user = User.objects.filter(phone_number=phone_number).first()
+            user = self._find_user_by_phone(phone_number)
             if user:
                 if user.is_banned:
                     raise ValidationError(
                         {'User': 'Sorry, Your Account is Banned.'}
                     )
+                update_fields = []
+                if user.phone_number != phone_number:
+                    user.phone_number = phone_number
+                    update_fields.append('phone_number')
+                if not user.is_phone_verified:
+                    user.is_phone_verified = True
+                    update_fields.append('is_phone_verified')
+                if update_fields:
+                    user.save(update_fields=update_fields)
                 token = get_token(user)
-                business = Business.objects.filter(user_id=user.id).first()
                 data = {
                     'phone': user.phone_number,
                     'name': user.name,
-                    'business_name': (
-                        business.business_name if business else None
-                    ),
+                    'business_name': self._business_name_for_user(user),
                     'token': token,
                     'user_status': user.is_business,
                     'is_warned': user.is_warned,
@@ -259,6 +300,7 @@ class LoginAuth(generics.CreateAPIView):
                 first_name=username,
                 last_name=username,
                 phone_number=phone_number,
+                is_phone_verified=True,
             )
             token = get_token(new_user)
             data = {
