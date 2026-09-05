@@ -11,6 +11,7 @@ from helpers.notifications import (
     chat_message_event,
     listing_created_event,
     listing_saved_event,
+    support_reply_event,
 )
 from notifications.api.operations import _user_can_access
 from notifications.services.email import EmailTemplateService
@@ -37,6 +38,9 @@ class NotificationPayloadTests(TestCase):
         business = business_created_event(3, 'B1', 'shop')
         self.assertEqual(business['type'], 'business')
         self.assertEqual(business['data']['action'], 'open_dashboard')
+        support = support_reply_event(3, 'T1')
+        self.assertEqual(support['data']['type'], 'support_reply')
+        self.assertEqual(support['data']['ticket_id'], 'T1')
 
     def test_chat_payload_keeps_model_type_chat(self):
         payload = chat_message_event(44, 'room-1', 12, 'm9')
@@ -91,6 +95,7 @@ class EmailTemplateTests(TestCase):
             'security_alert',
             'listing_created',
             'business_activated',
+            'support_reply',
         ):
             subject, html, text = service.render(key, {'otp': '123456', 'ttl_minutes': 15})
             self.assertTrue(subject)

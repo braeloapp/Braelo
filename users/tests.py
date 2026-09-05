@@ -443,7 +443,8 @@ class AdminAuthorizationTests(TestCase):
                 "email": "created@example.com",
                 "name": "Created",
                 "password": "pass12345",
-                "role": True,
+                "phone_number": "15551234567",
+                "role": "user",
             },
             format="json",
         )
@@ -451,7 +452,92 @@ class AdminAuthorizationTests(TestCase):
         self.assertEqual(body.get("status"), 201)
         created = User.objects.get(email="created@example.com")
         self.assertTrue(created.is_email_verified)
+        self.assertFalse(created.is_staff)
+        self.assertEqual(created.phone_number, "15551234567")
+        self.assertEqual(created.role, "Client")
+
+    def test_staff_cannot_create_staff_user(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.staff).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.post(
+            "/admin-panel/signup",
+            data={
+                "email": "newstaff@example.com",
+                "name": "New Staff",
+                "password": "pass12345",
+                "role": "admin",
+            },
+            format="json",
+        )
+        self.assertNotEqual(response.json().get("status"), 201)
+        self.assertFalse(User.objects.filter(email="newstaff@example.com").exists())
+
+    def test_superuser_can_create_staff_user(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        owner = User.objects.create_user(
+            username="root@example.com",
+            email="root@example.com",
+            name="Root",
+            password="pass12345",
+            is_staff=True,
+            is_superuser=True,
+            is_email_verified=True,
+        )
+        client = APIClient()
+        token = str(RefreshToken.for_user(owner).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.post(
+            "/admin-panel/signup",
+            data={
+                "email": "newstaff@example.com",
+                "name": "New Staff",
+                "password": "pass12345",
+                "role": "admin",
+            },
+            format="json",
+        )
+        self.assertEqual(response.json().get("status"), 201)
+        created = User.objects.get(email="newstaff@example.com")
         self.assertTrue(created.is_staff)
+        self.assertEqual(created.role, "Admin")
+
+    def test_staff_can_reactivate_deactivated_user(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        self.regular.is_active = False
+        self.regular.save(update_fields=["is_active"])
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.staff).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.post(
+            "/admin-panel/user/reactivate",
+            data={"user_id": self.regular.id},
+            format="json",
+        )
+        self.assertEqual(response.json().get("status"), 200)
+        self.regular.refresh_from_db()
+        self.assertTrue(self.regular.is_active)
+
+    def test_staff_can_fetch_user_by_id(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.staff).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get(f"/admin-panel/users/{self.regular.id}")
+        body = response.json()
+        self.assertEqual(body.get("status"), 200)
+        self.assertEqual(body["data"]["email"], self.regular.email)
+        self.assertNotIn("password", body["data"])
+        self.assertNotIn("otp", body["data"])
 
     def test_admin_me_requires_staff(self):
         from rest_framework.test import APIClient
