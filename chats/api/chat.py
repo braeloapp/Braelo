@@ -23,6 +23,14 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from chats.models import Chat, Message
 from chats.serializers.chat import ChatSerializer
+from chats.services import (
+    assert_not_blocked,
+    assert_user_can_chat,
+    block_user,
+    is_participant,
+    peer_user_id,
+    unblock_user,
+)
 
 from helpers import response, handle_exceptions
 
@@ -50,6 +58,7 @@ class ChatroomPagination(PageNumberPagination):
             sender = record.get('sender')
             sender_id = sender.get('user_id')
 
+            user_type = None
             # finding out who is the online user
             # And getting the second user for searching of their records
             if str(receiver_id) == user_id:
@@ -144,6 +153,7 @@ class CreateChatroomApi(generics.CreateAPIView):
         '''
         Handle the creation or retrieval of a chatroom.
         '''
+        assert_user_can_chat(request.user)
         user_id = str(request.user.id)  # Get the current user's ID
         second_user_id = request.data.get('user_id')
         receiver_type = request.data.get('receiver')
@@ -151,6 +161,9 @@ class CreateChatroomApi(generics.CreateAPIView):
 
         if not second_user_id:
             raise ValidationError({'detail': 'Second user ID is required.'})
+        if str(second_user_id) == user_id:
+            raise ValidationError({'user_id': 'Cannot create a chat with yourself.'})
+        assert_not_blocked(user_id, second_user_id)
 
         receiver = self.assign_roles(second_user_id, receiver_type)
         sender = self.assign_roles(user_id, sender_type)
@@ -238,11 +251,12 @@ class DeleteChatroomApi(APIView):
         )
 
 
-class ChatroomListApi(generics.ListCreateAPIView):
+class ChatroomListApi(generics.ListAPIView):
 
     permission_classes = [IsAuthenticated]
     serializer_class = ChatSerializer
     pagination_class = ChatroomPagination
+    http_method_names = ['get', 'head', 'options']
 
     def get_queryset(self):
         # Filter chatroom's where the user is a participant
@@ -272,9 +286,13 @@ class ChatroomDetailApi(generics.ListAPIView):
     def get(self, request, **kwargs):
         chat_id = self.kwargs['chat_id']
         user_id = str(self.request.user.id)
-        chat = Chat.objects.filter(
-            chat_id=chat_id, participants__in=[user_id]
-        ).first()
+        chat = Chat.objects.filter(chat_id=chat_id).first()
+        if not chat or not is_participant(chat, user_id):
+            return response(
+                status=status.HTTP_403_FORBIDDEN,
+                message='You are not authorized to view this chatroom.',
+                data={},
+            )
         chat_data = self.get_serializer(chat)
 
         return response(
@@ -306,17 +324,23 @@ class BlockChatRoom(generics.CreateAPIView):
                 {'error': 'You are not a participant of this chat.'}
             )
 
+        peer = peer_user_id(room, user_id)
         if is_block.lower() == 'true':
-            if room.is_blocked:
-                raise ValidationError({'error': 'Room is already blocked.'})
-            room.update(set__is_blocked=True)
+            if peer:
+                block_user(user_id, peer)
+            else:
+                room.update(set__is_blocked=True)
             return response(
                 status=status.HTTP_200_OK, message='Room Blocked', data={}
             )
         elif is_block.lower() == 'false':
-            if not room.is_blocked:
-                raise ValidationError({'error': 'Room is already unblocked.'})
-            room.update(set__is_blocked=False)
+            if peer:
+                try:
+                    unblock_user(user_id, peer)
+                except ValidationError:
+                    room.update(set__is_blocked=False)
+            else:
+                room.update(set__is_blocked=False)
             return response(
                 status=status.HTTP_200_OK, message='Room Unblocked', data={}
             )

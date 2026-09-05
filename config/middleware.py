@@ -56,6 +56,8 @@ def _get_user(user_id):
         return AnonymousUser()
     if not getattr(user, "is_active", True):
         return AnonymousUser()
+    if getattr(user, "is_banned", False):
+        return AnonymousUser()
     return user
 
 

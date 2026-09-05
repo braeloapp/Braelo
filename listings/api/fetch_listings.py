@@ -23,6 +23,7 @@ from helpers.model_map import MODEL_MAP
 from helpers.normalize import resolve_category
 from listings.api.paginate_listing import Pagination
 from listings.geo import request_geo_filter
+from listings.visibility import exclude_blocked_owners
 from listings.models import SavedItem
 from helpers import handle_exceptions, response
 from users.models import Interest, User
@@ -223,7 +224,9 @@ class Recent(generics.ListAPIView):
     def get_queryset(self):
         filters = {'is_active': True}
         filters.update(request_geo_filter(self.request))
-        return ListSync.objects.filter(**filters)
+        return exclude_blocked_owners(
+            ListSync.objects.filter(**filters), self.request
+        )
 
 
 class Recommendations(generics.ListAPIView):
@@ -255,4 +258,4 @@ class Recommendations(generics.ListAPIView):
                 )
         except Exception as exc:
             raise ValidationError({'Listsync': str(exc)})
-        return queryset
+        return exclude_blocked_owners(queryset, self.request)

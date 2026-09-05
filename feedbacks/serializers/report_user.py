@@ -3,6 +3,7 @@ from rest_framework_mongoengine import serializers
 from rest_framework.exceptions import ValidationError
 
 from feedbacks.models import ReportMessage
+from users.models import User
 
 
 class ReportMessageSerializer(serializers.DocumentSerializer):
@@ -20,11 +21,22 @@ class ReportMessageSerializer(serializers.DocumentSerializer):
         ]
         user = self.context['request'].user
         data['reported_by'] = user.id
-        data['reported_to'] = data.get('reported_to')
+        reported_to = data.get('reported_to')
         report_checkbox = data.get('report_checkbox')
 
-        if not data.get('reported_to'):
+        if not reported_to:
             raise ValidationError({'Error': 'Reported_User_id is Missing'})
+        try:
+            reported_to = int(reported_to)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                {'reported_to': 'reported_to must be a user id.'}
+            ) from exc
+        if reported_to == user.id:
+            raise ValidationError({'reported_to': 'You cannot report yourself.'})
+        if not User.objects.filter(id=reported_to).exists():
+            raise ValidationError({'reported_to': 'User does not exist.'})
+        data['reported_to'] = reported_to
 
         if report_checkbox not in required_fields:
             raise ValidationError(

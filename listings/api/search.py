@@ -23,6 +23,7 @@ from users.models.users import User
 from helpers import handle_exceptions, response
 from listings.api.paginate_listing import Pagination
 from listings.geo import request_geo_filter
+from listings.visibility import exclude_blocked_owners
 from listings.serializers import ListsyncSerializer
 from rest_framework.exceptions import ValidationError
 
@@ -77,6 +78,7 @@ class Search(generics.ListAPIView):
                 | Q(location__icontains=search)
             )
             queryset = _apply_taxonomy_filters(queryset, self.request)
+            queryset = exclude_blocked_owners(queryset, self.request)
         except ValidationError:
             raise
         except Exception as exc:

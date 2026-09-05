@@ -12,6 +12,7 @@ End points registry file.
 
 from django.urls import path
 
+from chats.api.block import BlockUserApi
 from chats.api.chat import (
     BlockChatRoom,
     ChatroomListApi,
@@ -33,6 +34,8 @@ urlpatterns = [
     path('create', CreateChatroomApi.as_view()),
     # Lists all chatrooms for the authenticated user
     path('paginate', ChatroomListApi.as_view()),
+    # Block a user (platform-level). Room-level flag remains at block/user.
+    path('block', BlockUserApi.as_view()),
     # Block user chatroom
     path('block/user', BlockChatRoom.as_view()),
     # Delete chat

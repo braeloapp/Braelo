@@ -10,5 +10,6 @@ __init__ file.
 ---------------------------------------------------
 '''
 
+from chats.models.block import BlockedUser
 from chats.models.chat import Chat
 from chats.models.message import Message

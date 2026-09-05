@@ -22,11 +22,15 @@ WebSocket close code so the client can react. Returning a raw HTTP 403
 mid-handshake (the original bug on Azure) makes browsers fail without
 any actionable error.
 
+Identity is taken from the JWT. The optional ``user_id`` query parameter
+is the *peer*, not the caller. If it is missing or equals the caller,
+the peer is derived from ``chat.participants``.
+
 WebSocket close codes used
 --------------------------
 * 4401 - missing / invalid / expired token
 * 4404 - chat not found
-* 4400 - malformed request (no peer ``user_id``)
+* 4400 - malformed request (no peer)
 * 4003 - chat blocked between participants
 * 5000 - infrastructure failure (Redis unavailable, etc.)
 ---------------------------------------------------
@@ -42,7 +46,13 @@ from channels.generic.websocket import WebsocketConsumer
 from channels.layers import get_channel_layer
 from django.utils import timezone
 
-from .models import Chat, Message
+from chats.models import Chat, Message
+from chats.services import (
+    is_blocked_between,
+    is_participant,
+    notify_new_chat_message,
+    peer_user_id,
+)
 
 logger = logging.getLogger("chats.ws")
 
@@ -77,6 +87,12 @@ class ChatroomConsumer(WebsocketConsumer):
             self.close(code=4401)
             return
 
+        if getattr(user, "is_banned", False):
+            logger.warning("WS reject (4401 banned) user=%s", getattr(user, "id", None))
+            self.accept()
+            self.close(code=4401)
+            return
+
         try:
             self.user_id = str(user.id)
             self.chat_id = self.scope["url_route"]["kwargs"]["chat_id"]
@@ -89,12 +105,52 @@ class ChatroomConsumer(WebsocketConsumer):
                 return
 
             params = self._parse_query_params()
-            self.second_user_id = params.get("user_id")
+            requested_peer = params.get("user_id")
             self.chat_type = "private"
 
+            try:
+                self.chatroom = Chat.objects.get(chat_id=self.chat_id)
+            except Chat.DoesNotExist:
+                logger.warning(
+                    "WS reject (4404) user=%s chat=%s: chat not found",
+                    self.user_id,
+                    self.chat_id,
+                )
+                self.accept()
+                self.close(code=4404)
+                return
+
+            if not is_participant(self.chatroom, self.user_id):
+                logger.warning(
+                    "WS reject (4404) user=%s chat=%s: not a participant",
+                    self.user_id,
+                    self.chat_id,
+                )
+                self.accept()
+                self.close(code=4404)
+                return
+
+            derived_peer = peer_user_id(self.chatroom, self.user_id)
+            if (
+                requested_peer
+                and requested_peer != self.user_id
+                and derived_peer
+                and requested_peer != derived_peer
+            ):
+                logger.warning(
+                    "WS reject (4404) user=%s chat=%s peer=%s: peer mismatch",
+                    self.user_id,
+                    self.chat_id,
+                    requested_peer,
+                )
+                self.accept()
+                self.close(code=4404)
+                return
+
+            self.second_user_id = derived_peer
             if not self.second_user_id:
                 logger.warning(
-                    "WS reject (4400) user=%s chat=%s: missing peer user_id",
+                    "WS reject (4400) user=%s chat=%s: missing peer",
                     self.user_id,
                     self.chat_id,
                 )
@@ -102,24 +158,9 @@ class ChatroomConsumer(WebsocketConsumer):
                 self.close(code=4400)
                 return
 
-            try:
-                self.chatroom = Chat.objects.get(
-                    chat_id=self.chat_id,
-                    participants__all=[self.user_id, self.second_user_id],
-                    participants__size=2,
-                )
-            except Chat.DoesNotExist:
-                logger.warning(
-                    "WS reject (4404) user=%s chat=%s peer=%s: chat not found",
-                    self.user_id,
-                    self.chat_id,
-                    self.second_user_id,
-                )
-                self.accept()
-                self.close(code=4404)
-                return
-
-            if self.chatroom.is_blocked:
+            if self.chatroom.is_blocked or is_blocked_between(
+                self.user_id, self.second_user_id
+            ):
                 logger.info(
                     "WS reject (4003) user=%s chat=%s: chat is blocked",
                     self.user_id,
@@ -157,6 +198,20 @@ class ChatroomConsumer(WebsocketConsumer):
         '''
         try:
             payload = json.loads(text_data)
+            if payload.get("type") == "ping":
+                self.send(text_data=json.dumps({"type": "pong"}))
+                return
+
+            if self.chatroom is None:
+                self.send(text_data=json.dumps({"error": "Chat is not connected."}))
+                return
+
+            if self.chatroom.is_blocked or is_blocked_between(
+                self.user_id, self.second_user_id
+            ):
+                self.send(text_data=json.dumps({"error": "This chat is blocked."}))
+                return
+
             message_content = payload.get("message")
 
             if not message_content:
@@ -171,17 +226,22 @@ class ChatroomConsumer(WebsocketConsumer):
                 created_at=timezone.now(),
             )
             message.save()
+            if hasattr(self.chatroom, "update"):
+                self.chatroom.update(set__updated_at=timezone.now())
 
             message_payload = {
+                "id": str(message.id),
                 "sender_id": self.user_id,
                 "content": message_content,
                 "created_at": message.created_at.isoformat(),
+                "read": False,
             }
 
             async_to_sync(self.channel_layer.group_send)(
                 self.chat_id,
                 {"type": "chat_message", "message": message_payload},
             )
+            notify_new_chat_message(self.chatroom, message, self.second_user_id)
 
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning("WS bad payload from user=%s: %s", self.user_id, exc)

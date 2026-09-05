@@ -17,10 +17,16 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from chats.models import Message, Chat
 from chats.serializers import MessageSerializer
-from helpers.notifications import CHAT_NOTIFICATION
+from chats.services import (
+    assert_not_blocked,
+    get_chat_for_participant,
+    is_blocked_between,
+    notify_new_chat_message,
+    parse_before_cursor,
+    peer_user_id,
+)
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
-from notifications.serializers.events import EventNotificationSerializer
 
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from helpers import response, handle_exceptions, blob_service_client
@@ -72,17 +78,8 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         try:
             chatroom_id = self.kwargs['chat_id']
             user_id = str(self.request.user.id)
-            before = self.request.query_params.get('before')
-            chatroom = Chat.objects.get(chat_id=chatroom_id)
-
-            # Check if the user is a participant
-            participants = chatroom.participants
-            if user_id not in participants:
-                raise ValidationError(
-                    {
-                        'participant': 'You are not a participant in this chatroom.'
-                    }
-                )
+            before = parse_before_cursor(self.request.query_params.get('before'))
+            chatroom = get_chat_for_participant(chatroom_id, user_id)
 
             queryset = Message.objects.filter(chat=chatroom.id).order_by(
                 '-created_at'
@@ -100,15 +97,16 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         chatroom_id = kwargs['chat_id']
         user_id = str(request.user.id)
         file = request.FILES.get('file')
-        chatroom = Chat.objects.get(chat_id=chatroom_id)
-        # Check if the user is a participant
-        participants = chatroom.participants
-        if user_id not in participants:
+        chatroom = get_chat_for_participant(chatroom_id, user_id)
+        peer = peer_user_id(chatroom, user_id)
+        if chatroom.is_blocked or (peer and is_blocked_between(user_id, peer)):
             return response(
-                status=status.HTTP_401_UNAUTHORIZED,
-                message='You are not a participant in this chatroom.',
-                data=request.data,
+                status=status.HTTP_403_FORBIDDEN,
+                message='This chat is blocked.',
+                data={},
             )
+        if peer:
+            assert_not_blocked(user_id, peer)
         data = request.data.copy()
         if file:
             media_url = upload_media(chatroom_id, file)
@@ -116,10 +114,11 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         data['chat'] = chatroom.id
         data['sender_id'] = user_id
         data['created_at'] = timezone.now()
-        # Set the current timestamp
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        message = serializer.save()
+        chatroom.update(set__updated_at=timezone.now())
+        notify_new_chat_message(chatroom, message, peer)
         return response(
             status=status.HTTP_201_CREATED,
             message='Message sent successfully',
@@ -261,19 +260,7 @@ class SendChatNotification(generics.ListAPIView):
                 message='Message not found.',
                 data={},
             )
-        CHAT_NOTIFICATION['data']['chatroom'] = chatroom
-        CHAT_NOTIFICATION['data']['sender_id'] = message.sender_id
-        CHAT_NOTIFICATION['data']['message_content'] = message.content
-        CHAT_NOTIFICATION['user_id'] = [notify_users]
-        try:
-            notification_serilaizer = EventNotificationSerializer(
-                data=CHAT_NOTIFICATION
-            )
-            notification_serilaizer.is_valid(raise_exception=True)
-            notification_serilaizer.save()
-        except Exception:
-            pass
-
+        notify_new_chat_message(chatroom, message, notify_users)
         return response(
             status=status.HTTP_200_OK,
             message='Notification Sent',
