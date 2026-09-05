@@ -213,3 +213,258 @@ class PhoneLoginFirebaseTests(TestCase):
         for _ in range(8):
             self.assertTrue(check_rate_limit(key, limit=8, window_seconds=300))
         self.assertFalse(check_rate_limit(key, limit=8, window_seconds=300))
+
+
+class SocialLoginFirebaseTests(TestCase):
+    def setUp(self):
+        reset_rate_limits()
+
+    def test_google_login_without_token_rejected(self):
+        response = self.client.post(
+            "/auth/login?login_type=google",
+            data={
+                "email": "victim@example.com",
+                "google_id": "attacker-id",
+                "name": "Attacker",
+                "first_name": "A",
+                "last_name": "B",
+                "is_email_verified": True,
+            },
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 400)
+        self.assertFalse(User.objects.filter(email="victim@example.com").exists())
+
+    def test_client_email_cannot_issue_jwt(self):
+        User.objects.create(
+            username="victim@example.com",
+            email="victim@example.com",
+            name="Victim",
+            is_email_verified=True,
+        )
+        response = self.client.post(
+            "/auth/login?login_type=google",
+            data={
+                "email": "victim@example.com",
+                "google_id": "spoofed",
+                "name": "Victim",
+                "first_name": "V",
+                "last_name": "I",
+                "is_email_verified": True,
+            },
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 400)
+        self.assertIsNone((body.get("data") or {}).get("token"))
+
+    @patch("users.api.signup.verify_firebase_id_token")
+    def test_verified_google_token_issues_jwt(self, mock_verify):
+        mock_verify.return_value = {
+            "uid": "firebase-google-1",
+            "email": "real@example.com",
+            "email_verified": True,
+            "name": "Real User",
+            "firebase": {"sign_in_provider": "google.com"},
+        }
+        response = self.client.post(
+            "/auth/login?login_type=google",
+            data={
+                "email": "spoof@example.com",
+                "google_id": "client-id",
+                "name": "Spoof",
+                "first_name": "S",
+                "last_name": "P",
+                "is_email_verified": True,
+                "id_token": "valid-firebase-token",
+            },
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 200)
+        self.assertEqual(body["data"]["email"], "real@example.com")
+        self.assertIn("access", body["data"]["token"])
+        user = User.objects.get(email="real@example.com")
+        self.assertEqual(user.google_id, "firebase-google-1")
+        self.assertTrue(user.is_email_verified)
+        self.assertFalse(User.objects.filter(email="spoof@example.com").exists())
+
+
+class EmailVerificationTests(TestCase):
+    def setUp(self):
+        reset_rate_limits()
+
+    @patch("users.services.email_verification.send_mail")
+    def test_signup_does_not_issue_jwt_until_verified(self, mock_mail):
+        response = self.client.post(
+            "/auth/signup/email",
+            data={
+                "email": "new@example.com",
+                "name": "New User",
+                "password": "StrongPass123",
+            },
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 201)
+        self.assertTrue(body["data"].get("email_verification_required"))
+        self.assertIsNone(body["data"].get("token"))
+        user = User.objects.get(email="new@example.com")
+        self.assertFalse(user.is_email_verified)
+        mock_mail.assert_called_once()
+
+    @patch("users.services.email_verification.send_mail")
+    def test_unverified_email_cannot_login(self, mock_mail):
+        self.client.post(
+            "/auth/signup/email",
+            data={
+                "email": "new@example.com",
+                "name": "New User",
+                "password": "StrongPass123",
+            },
+            content_type="application/json",
+        )
+        response = self.client.post(
+            "/auth/login/email",
+            data={"email": "new@example.com", "password": "StrongPass123"},
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 400)
+        self.assertIsNone((body.get("data") or {}).get("token"))
+
+    @patch("users.services.email_verification.send_mail")
+    def test_verify_email_issues_jwt(self, mock_mail):
+        self.client.post(
+            "/auth/signup/email",
+            data={
+                "email": "new@example.com",
+                "name": "New User",
+                "password": "StrongPass123",
+            },
+            content_type="application/json",
+        )
+        from users.models import EmailVerificationToken
+
+        record = EmailVerificationToken.objects.get(user__email="new@example.com")
+        response = self.client.post(
+            "/auth/verify/email",
+            data={"email": "new@example.com", "otp": record.otp},
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 200)
+        self.assertIn("access", body["data"]["token"])
+        user = User.objects.get(email="new@example.com")
+        self.assertTrue(user.is_email_verified)
+
+    def test_wrong_otp_rejected(self):
+        user = User.objects.create(
+            username="otp@example.com",
+            email="otp@example.com",
+            name="OTP",
+            is_email_verified=False,
+        )
+        from users.models import EmailVerificationToken
+
+        EmailVerificationToken.objects.create(user=user, otp="123456")
+        response = self.client.post(
+            "/auth/verify/email",
+            data={"email": "otp@example.com", "otp": "000000"},
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 400)
+        user.refresh_from_db()
+        self.assertFalse(user.is_email_verified)
+
+
+class AdminAuthorizationTests(TestCase):
+    def setUp(self):
+        self.regular = User.objects.create_user(
+            username="user@example.com",
+            email="user@example.com",
+            name="User",
+            password="pass12345",
+            is_email_verified=True,
+        )
+        self.staff = User.objects.create_user(
+            username="admin@example.com",
+            email="admin@example.com",
+            name="Admin",
+            password="pass12345",
+            is_staff=True,
+            is_email_verified=True,
+        )
+
+    def test_anonymous_cannot_create_admin_user(self):
+        response = self.client.post(
+            "/admin-panel/signup",
+            data={
+                "email": "newadmin@example.com",
+                "name": "New Admin",
+                "password": "pass12345",
+                "role": True,
+            },
+            content_type="application/json",
+        )
+        self.assertIn(response.status_code, (401, 403))
+        self.assertFalse(User.objects.filter(email="newadmin@example.com").exists())
+
+    def test_regular_user_cannot_deactivate_other_via_admin(self):
+        self.client.force_login(self.regular)
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.regular).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.post(
+            "/admin-panel/user/deactivate",
+            data={"user_id": self.staff.id},
+            format="json",
+        )
+        self.assertIn(response.status_code, (401, 403))
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.is_active)
+
+    def test_staff_can_create_user_on_admin_path(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.staff).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.post(
+            "/admin-panel/signup",
+            data={
+                "email": "created@example.com",
+                "name": "Created",
+                "password": "pass12345",
+                "role": True,
+            },
+            format="json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 201)
+        created = User.objects.get(email="created@example.com")
+        self.assertTrue(created.is_email_verified)
+        self.assertTrue(created.is_staff)
+
+    def test_admin_me_requires_staff(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        client = APIClient()
+        token = str(RefreshToken.for_user(self.regular).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get("/admin-panel/me")
+        self.assertIn(response.status_code, (401, 403))
+
+        token = str(RefreshToken.for_user(self.staff).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get("/admin-panel/me")
+        body = response.json()
+        self.assertEqual(body.get("status"), 200)
+        self.assertEqual(body["data"]["role"], "admin")
