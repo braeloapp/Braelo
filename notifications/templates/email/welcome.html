@@ -1,0 +1,5 @@
+{% extends "email/base.html" %}
+{% block content %}
+  <p>Hi {{ name|default:"there" }},</p>
+  <p>Your email is verified. You can now browse listings, save items, and chat with other Braelo users.</p>
+{% endblock %}

@@ -1,0 +1,4 @@
+Hi {{ name|default:"there" }},
+
+Your Braelo verification code is {{ otp }}.
+It expires in {{ ttl_minutes }} minutes. Do not share this code with anyone.

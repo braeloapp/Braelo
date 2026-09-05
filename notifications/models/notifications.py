@@ -24,7 +24,10 @@ from django.utils import timezone
 
 class Notification(Document):
     user_id = ListField(IntField(), required=True)
-    type = StringField(choices=['admin', 'chat'], required=True)
+    type = StringField(
+        choices=['admin', 'chat', 'listing', 'business', 'system', 'marketing'],
+        required=True,
+    )
     title = StringField(required=True)
     body = StringField(required=True)
     data = DictField(required=True)

@@ -1,0 +1,3 @@
+Hi {{ name|default:"there" }},
+
+Your email is verified. You can now browse listings, save items, and chat with other Braelo users.

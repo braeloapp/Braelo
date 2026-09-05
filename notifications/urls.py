@@ -17,14 +17,12 @@ from notifications.api.operations import (
     MarkNotificationsAsReadAPI,
     DeleteNotificationsAPI,
 )
+from notifications.api.preferences import NotificationPreferencesAPI
 
 urlpatterns = [
-    # Fetch notifications
     path('paginate', FetchNotificationsAPI.as_view()),
-    # Admin broadcast
     path('send', EventNotificationAPI.as_view()),
-    # mark read
     path('read', MarkNotificationsAsReadAPI.as_view()),
-    # delete notification
     path('delete', DeleteNotificationsAPI.as_view()),
+    path('preferences', NotificationPreferencesAPI.as_view()),
 ]

@@ -10,11 +10,10 @@ from __future__ import annotations
 import logging
 
 import pyotp
-from django.conf import settings
-from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from notifications.services.email import email_service
 from users.models.users import EmailVerificationToken, User
 from users.services.rate_limit import check_rate_limit, client_ip
 
@@ -65,18 +64,15 @@ def send_verification_email(user: User, request=None) -> EmailVerificationToken:
     ).delete()
     otp = _generate_otp()
     record = EmailVerificationToken.objects.create(user=user, otp=otp)
-    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or None
     try:
-        send_mail(
-            subject='Verify your Braelo email',
-            message=(
-                f'Your Braelo verification code is {otp}. '
-                f'It expires in {EmailVerificationToken.TTL_MINUTES} minutes. '
-                'Do not share this code with anyone.'
-            ),
-            from_email=from_email,
-            recipient_list=[user.email],
-            fail_silently=False,
+        email_service.send(
+            to=user.email,
+            template_key='verify_email',
+            context={
+                'name': user.name or user.first_name or '',
+                'otp': otp,
+                'ttl_minutes': EmailVerificationToken.TTL_MINUTES,
+            },
         )
     except Exception:
         logger.exception('Failed to send verification email to %s', user.email)
@@ -134,4 +130,9 @@ def verify_email_otp(email: str, otp: str, request=None) -> User:
     record.save(update_fields=['used_at'])
     user.is_email_verified = True
     user.save(update_fields=['is_email_verified'])
+    email_service.send_best_effort(
+        to=user.email,
+        template_key='welcome',
+        context={'name': user.name or user.first_name or ''},
+    )
     return user

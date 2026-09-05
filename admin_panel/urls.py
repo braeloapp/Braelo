@@ -101,7 +101,8 @@ urlpatterns = [
     path('user/update', UpdateProfile.as_view()),
     # Action taken by admin, and get method for getting all reports
     path('report/action', ReportedUsers.as_view()),
-    # Read notifications
+    # Read notifications (typo alias kept for older admin builds)
+    path('notifications', AllNotifications.as_view()),
     path('notificatons', AllNotifications.as_view()),
     # Update a business
     path('business/update', UpdateBusiness.as_view()),

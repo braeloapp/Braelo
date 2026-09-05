@@ -23,7 +23,7 @@ from rest_framework_mongoengine import generics
 from helpers.model_map import MODEL_MAP
 from listings.models import SavedItem
 from helpers.models import ListSync
-from helpers.notifications import SAVED_EVENT_DATA
+from helpers.notifications import listing_saved_event
 from listings.api.upsert_listing import Listing
 from listings.serializers import SavedItemSerializer
 from helpers.constants import USER_LISTINGS_THRESHOLD
@@ -50,11 +50,11 @@ class SaveListing(generics.CreateAPIView):
         return SavedItem.objects.all()
 
     def send_notification(self, request):
-        SAVED_EVENT_DATA['data']['listing_id'] = request.data.get('listing_id')
-        SAVED_EVENT_DATA['user_id'] = [request.user.id]
         try:
             event_serializer = EventNotificationSerializer(
-                data=SAVED_EVENT_DATA
+                data=listing_saved_event(
+                    request.user.id, request.data.get('listing_id')
+                )
             )
             event_serializer.is_valid(raise_exception=True)
             event_serializer.save()

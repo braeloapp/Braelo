@@ -97,6 +97,13 @@ class Logout(generics.CreateAPIView):
         refresh_token = request.data.get('refresh')
         token = RefreshToken(refresh_token)
         token.blacklist()
+        device_token = (request.data.get('device_token') or '').strip()
+        from users.models.devices import UserDeviceToken
+
+        if device_token:
+            UserDeviceToken.objects(
+                user_id=request.user.id, token=device_token
+            ).delete()
         return response(
             status=status.HTTP_200_OK,
             message='Logged out successfully.',

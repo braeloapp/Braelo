@@ -175,21 +175,14 @@ def notify_new_chat_message(chat, message, recipient_id):
     if is_blocked_between(sender, recipient):
         return
 
-    payload = {
-        'type': 'new_message',
-        'title': 'New message received',
-        'body': 'You got a new message',
-        'user_id': [recipient],
-        'data': {
-            'type': 'new_message',
-            'entity_type': 'chat',
-            'entity_id': str(chat.chat_id),
-            'action': 'open',
-            'chat_id': str(chat.chat_id),
-            'sender_id': sender,
-            'message_id': str(getattr(message, 'id', '') or ''),
-        },
-    }
+    from helpers.notifications import chat_message_event
+
+    payload = chat_message_event(
+        recipient,
+        chat.chat_id,
+        sender,
+        getattr(message, 'id', '') or '',
+    )
     try:
         from notifications.serializers.events import EventNotificationSerializer
 

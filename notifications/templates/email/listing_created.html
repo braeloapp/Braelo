@@ -1,0 +1,5 @@
+{% extends "email/base.html" %}
+{% block content %}
+  <p>Hi {{ name|default:"there" }},</p>
+  <p>Your listing{% if listing_title %} "{{ listing_title }}"{% endif %} was created successfully{% if category %} in {{ category }}{% endif %}.</p>
+{% endblock %}

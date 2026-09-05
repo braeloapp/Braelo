@@ -28,7 +28,8 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from users.models import User, Business
 from helpers.constants import CATEGORIES
 from helpers.normalize import resolve_category
-from helpers import upload_pictures, BUSSINESS_EVENT_DATA
+from helpers import upload_pictures
+from helpers.notifications import business_created_event
 from helpers import response, handle_exceptions
 from admin_panel.models import AdminBusinessBanner
 from listings.api.fetch_listings import get_user_recommendations
@@ -108,18 +109,33 @@ class BussinessListing(generics.CreateAPIView):
         return Business.objects.all()
 
     def send_notification(self, serialized_data):
-        BUSSINESS_EVENT_DATA['data']['business_id'] = serialized_data['id']
-        BUSSINESS_EVENT_DATA['data']['business_type'] = serialized_data[
-            'business_category'
-        ]
-        BUSSINESS_EVENT_DATA['data']['user_id'] = serialized_data['user_id']
-        BUSSINESS_EVENT_DATA['user_id'] = [serialized_data['user_id']]
         try:
             event_serializer = EventNotificationSerializer(
-                data=BUSSINESS_EVENT_DATA
+                data=business_created_event(
+                    serialized_data['user_id'],
+                    serialized_data['id'],
+                    serialized_data.get('business_category') or '',
+                )
             )
             event_serializer.is_valid(raise_exception=True)
             event_serializer.save()
+            from notifications.services.email import email_service
+            from notifications.services.preferences import is_preference_enabled
+            from users.models import User
+
+            owner_id = serialized_data['user_id']
+            if is_preference_enabled(owner_id, 'business_created'):
+                owner = User.objects.filter(id=owner_id).first()
+                if owner and owner.email:
+                    email_service.send_best_effort(
+                        to=owner.email,
+                        template_key='business_activated',
+                        context={
+                            'name': owner.name or owner.first_name or '',
+                            'business_name': serialized_data.get('business_name')
+                            or '',
+                        },
+                    )
         except Exception:
             pass
 

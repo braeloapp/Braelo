@@ -273,13 +273,21 @@ class SendAdminNotification(generics.CreateAPIView):
             body=body,
             type='admin',
             data={
-                'message': 'this is admin',
+                'type': 'admin_announcement',
+                'entity_type': 'admin',
+                'entity_id': '',
+                'action': 'open',
             },
         )
+        notification.data['entity_id'] = str(notification.id)
+        notification.data['notification_id'] = str(notification.id)
+        notification.save()
         message = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             topic='Braelo',
-            data={'notification_id': str(notification.id)},
+            data={
+                key: str(value) for key, value in notification.data.items()
+            },
         )
         messaging.send(message)
 

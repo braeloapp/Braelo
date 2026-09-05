@@ -1,0 +1,5 @@
+{% extends "email/base.html" %}
+{% block content %}
+  <p>Hi {{ name|default:"there" }},</p>
+  <p>Your business profile{% if business_name %} "{{ business_name }}"{% endif %} is ready on Braelo.</p>
+{% endblock %}

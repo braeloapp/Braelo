@@ -11,7 +11,7 @@ notifications for events (like, saved) endpoints.
 '''
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser
 from rest_framework_mongoengine import generics
 
 from helpers import handle_exceptions, response
@@ -20,10 +20,10 @@ from notifications.serializers.events import EventNotificationSerializer
 
 class EventNotificationAPI(generics.CreateAPIView):
     '''
-    API endpoint to trigger notifications for specific events (likes, chats, etc.).
+    Staff-only event trigger. Product events call the serializer in-process.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     serializer_class = EventNotificationSerializer
 
     @handle_exceptions

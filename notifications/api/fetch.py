@@ -47,8 +47,6 @@ class FetchNotificationsAPI(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        notifications = Notification.objects.filter(
+        return Notification.objects.filter(
             Q(type='admin') | Q(user_id=user.id)
         )
-
-        return notifications

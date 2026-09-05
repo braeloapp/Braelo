@@ -1,46 +1,50 @@
-'''
----------------------------------------------------
-Project:        Braelo
-Date:           Aug 14, 2024
-Author:         Hamid
----------------------------------------------------
+'''Device token registration and invalidation.'''
 
-Description:
-User Login end-points module.
----------------------------------------------------
-'''
-
-from rest_framework import status, generics
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 
 from helpers import handle_exceptions, response
-from users.serializers.devices import DeviceTokenSerializer
+from users.models.devices import UserDeviceToken
+from users.serializers.devices import (
+    DeleteDeviceTokenSerializer,
+    DeviceTokenSerializer,
+)
 
 
-class SaveDeviceToken(generics.CreateAPIView):
-
+class SaveDeviceToken(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = DeviceTokenSerializer
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):
-        '''
-        POST method to save user device token.
-        :param request: request object. (dict)
-        :return: user's signed up status. (json)
-        '''
-        data = request.data
-        data['user_id'] = request.user.id
         serializer = self.get_serializer(
-            data=data, context={'request': request}
-        ) 
+            data=request.data, context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
-        resp = serializer.save()
-        if not resp:
-            # todo: needs better logic
-            raise Exception('Cannot Add interests to Database')
+        device = serializer.save()
         return response(
             status=status.HTTP_201_CREATED,
             message='Device token Added successfully.',
-            data=data,
+            data={
+                'platform': device.platform,
+                'user_id': device.user_id,
+            },
+        )
+
+    @handle_exceptions
+    def delete(self, request, *args, **kwargs):
+        payload = dict(request.data or {})
+        if not payload.get('token'):
+            payload['token'] = request.query_params.get('token') or ''
+        serializer = DeleteDeviceTokenSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        token = (serializer.validated_data.get('token') or '').strip()
+        query = UserDeviceToken.objects(user_id=request.user.id)
+        if token:
+            query = query.filter(token=token)
+        deleted = query.delete()
+        return response(
+            status=status.HTTP_200_OK,
+            message='Device token removed successfully.',
+            data={'deleted': int(deleted or 0)},
         )

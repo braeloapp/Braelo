@@ -1,0 +1,6 @@
+{{ brand_name }}
+
+{% block content %}{% endblock %}
+
+You received this email because you have a {{ brand_name }} account.
+{% if support_email %}Contact {{ support_email }} if this was unexpected.{% endif %}

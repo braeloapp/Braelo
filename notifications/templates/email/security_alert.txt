@@ -1,0 +1,4 @@
+Hi {{ name|default:"there" }},
+
+{{ message|default:"We noticed a security-related change on your Braelo account." }}
+If this was not you, reset your password and review your account activity.

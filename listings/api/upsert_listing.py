@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework_mongoengine import generics
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
-from helpers.notifications import LISTINGS_EVENT_DATA
+from helpers.notifications import listing_created_event
 from notifications.serializers.events import EventNotificationSerializer
 
 
@@ -132,15 +132,27 @@ class Listing(generics.CreateAPIView):
             listing_id = serializer.data['id']
             category = serializer.data['category']
             user_id = serializer.data['user_id']
-            LISTINGS_EVENT_DATA['data']['listing_id'] = listing_id
-            LISTINGS_EVENT_DATA['data']['category'] = category
-            LISTINGS_EVENT_DATA['data']['user_id'] = user_id
-            LISTINGS_EVENT_DATA['user_id'] = [user_id]
             event_serializer = EventNotificationSerializer(
-                data=LISTINGS_EVENT_DATA
+                data=listing_created_event(user_id, listing_id, category)
             )
             event_serializer.is_valid(raise_exception=True)
             event_serializer.save()
+            from notifications.services.email import email_service
+            from notifications.services.preferences import is_preference_enabled
+            from users.models import User
+
+            if is_preference_enabled(user_id, 'listing_created'):
+                owner = User.objects.filter(id=user_id).first()
+                if owner and owner.email:
+                    email_service.send_best_effort(
+                        to=owner.email,
+                        template_key='listing_created',
+                        context={
+                            'name': owner.name or owner.first_name or '',
+                            'listing_title': serializer.data.get('title') or '',
+                            'category': category,
+                        },
+                    )
         except Exception:
             pass
 

@@ -1,0 +1,3 @@
+Hi {{ name|default:"there" }},
+
+Your business profile{% if business_name %} "{{ business_name }}"{% endif %} is ready on Braelo.

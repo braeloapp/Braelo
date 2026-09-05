@@ -14,6 +14,7 @@ from rest_framework import serializers
 from rest_framework.serializers import ValidationError
 from django.contrib.auth.password_validation import validate_password
 
+from notifications.services.email import email_service
 from users.models import User, OTP
 
 
@@ -61,7 +62,12 @@ class ChangePasswordSerializer(serializers.Serializer):
             user = User.objects.get(email=email)
             user.set_password(new_password)
             user.save()
-            return {'email': user.email}
+        email_service.send_best_effort(
+            to=user.email,
+            template_key='password_changed',
+            context={'name': user.name or user.first_name or ''},
+        )
+        return {'email': user.email}
 
 
 class CreatePasswordSerializer(serializers.Serializer):
@@ -105,7 +111,12 @@ class CreatePasswordSerializer(serializers.Serializer):
             user = User.objects.get(email=email)
             user.set_password(new_password)
             user.save()
-            return {'email': user.email}
+        email_service.send_best_effort(
+            to=user.email,
+            template_key='password_changed',
+            context={'name': user.name or user.first_name or ''},
+        )
+        return {'email': user.email}
 
 
 class VerifyOtpSerializer(serializers.Serializer):

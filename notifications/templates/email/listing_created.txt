@@ -1,0 +1,3 @@
+Hi {{ name|default:"there" }},
+
+Your listing{% if listing_title %} "{{ listing_title }}"{% endif %} was created successfully{% if category %} in {{ category }}{% endif %}.

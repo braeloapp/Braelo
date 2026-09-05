@@ -1,0 +1,6 @@
+{% extends "email/base.html" %}
+{% block content %}
+  <p>Hi {{ name|default:"there" }},</p>
+  <p>{{ message|default:"We noticed a security-related change on your Braelo account." }}</p>
+  <p>If this was not you, reset your password and review your account activity.</p>
+{% endblock %}

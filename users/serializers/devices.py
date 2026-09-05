@@ -1,54 +1,51 @@
-'''
----------------------------------------------------
-Project:        Braelo
-Date:           Aug 14, 2024
-Author:         Hamid
----------------------------------------------------
-Description:
-Serializer file for users device token endpoints.
----------------------------------------------------
-'''
+'''Device token registration. Identity always comes from the JWT user.'''
 
-from rest_framework_mongoengine import serializers
-
+from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
 from users.models.devices import UserDeviceToken
 
 
-class DeviceTokenSerializer(serializers.DocumentSerializer):
+class DeviceTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(required=True, max_length=4096)
+    platform = serializers.ChoiceField(choices=['android', 'ios'])
+    previous_token = serializers.CharField(
+        required=False, allow_blank=True, max_length=4096
+    )
 
-    class Meta:
-        model = UserDeviceToken
-        fields = '__all__'
-
-    def validate(self, data):
-        token = data.get('token')
-        platform = data.get('platform')  # 'android' or 'ios'
-
-        if not token or not platform:
-            raise ValidationError({'error': 'Token and platform are required.'})
-        return data
+    def validate_token(self, value):
+        token = (value or '').strip()
+        if not token:
+            raise ValidationError('Token is required.')
+        return token
 
     def save(self):
-        # Get the current authenticated user
         user = self.context['request'].user
         platform = self.validated_data['platform']
         token = self.validated_data['token']
-        # Check if token already exists for this user and platform
-        # todo
-        #  we may need to remove existed if token already existed for another user
-        existing_token = UserDeviceToken.objects(token=token).first()
-        if existing_token and existing_token.user_id != user.id:
-            existing_token.delete()
+        previous = (self.validated_data.get('previous_token') or '').strip()
+        if previous and previous != token:
+            UserDeviceToken.objects(user_id=user.id, token=previous).delete()
 
-        # Update or create the device token
-        device_token = UserDeviceToken.objects(
-            user_id=user.id, platform=platform
-        ).modify(
-            upsert=True,
-            new=True,
-            set__token=token,
-            set__email=user.email,
+        stolen = UserDeviceToken.objects(token=token).first()
+        if stolen and stolen.user_id != user.id:
+            stolen.delete()
+
+        device = UserDeviceToken.objects(token=token).first()
+        if device:
+            device.user_id = user.id
+            device.platform = platform
+            device.email = user.email or None
+            device.save()
+            return device
+
+        return UserDeviceToken.objects.create(
+            user_id=user.id,
+            platform=platform,
+            token=token,
+            email=user.email or None,
         )
-        return device_token
+
+
+class DeleteDeviceTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(required=False, allow_blank=True, max_length=4096)

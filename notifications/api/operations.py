@@ -1,50 +1,42 @@
 '''
----------------------------------------------------
-Project:        Braelo
-Date:           Aug 14, 2024
-Author:         Hamid
----------------------------------------------------
-
-Description:
-notifications operations endpoints.
----------------------------------------------------
+Notification read/delete endpoints.
 '''
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from notifications.models import Notification
 from rest_framework import generics
 from rest_framework.exceptions import ValidationError
 
-
 from helpers import handle_exceptions, response
-from notifications.serializers.operations import (
-    MarkReadSerializer,
-    DeleteNotificationSerializer,
-)
+from notifications.models import Notification
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_can_access(notification, user) -> bool:
+    if notification is None or user is None:
+        return False
+    if notification.type == 'admin':
+        return True
+    uid = _as_int(getattr(user, 'id', None))
+    return uid is not None and uid in list(notification.user_id or [])
 
 
 class MarkNotificationsAsReadAPI(generics.UpdateAPIView):
-    '''
-    API endpoint to mark one or multiple notifications as read.
-    '''
-
     permission_classes = [IsAuthenticated]
 
     @handle_exceptions
     def post(self, request, **kwargs):
-        '''
-        POST method to mark notifications as read.
-        :param request: request object. (dict)
-        :return: update status. (json)
-        '''
         notification_id = request.data.get('notification_id')
         if not notification_id:
-            raise ValidationError(
-                {'Notification': 'notfication_id is required'}
-            )
+            raise ValidationError({'notification_id': 'notification_id is required'})
         notification = Notification.objects(id=notification_id).first()
-        if not notification:
+        if not notification or not _user_can_access(notification, request.user):
             return response(
                 status=status.HTTP_404_NOT_FOUND,
                 message='Notification not found',
@@ -62,36 +54,23 @@ class MarkNotificationsAsReadAPI(generics.UpdateAPIView):
 
 
 class DeleteNotificationsAPI(generics.DestroyAPIView):
-    '''
-    API endpoint to delete specific notifications.
-    '''
-
     permission_classes = [IsAuthenticated]
 
     @handle_exceptions
     def post(self, request, **kwargs):
-        '''
-        POST method to delete notifications.
-        :param request: request object. (dict)
-        :return: delete status. (json)
-        '''
-        user_id = str(request.user.id)
         notification_id = request.data.get('notification_id')
         if not notification_id:
-            raise ValidationError({'ID': 'notification id required'})
-        delete_notification = Notification.objects.filter(
-            id=notification_id, user_id=user_id
-        ).first()
-        if not delete_notification:
+            raise ValidationError({'notification_id': 'notification id required'})
+        notification = Notification.objects(id=notification_id).first()
+        if not notification or not _user_can_access(notification, request.user):
             return response(
-                status=status.HTTP_204_NO_CONTENT,
+                status=status.HTTP_404_NOT_FOUND,
                 message='No notification found',
                 data={},
             )
-        delete_notification.delete()
-        delete_notification.save()
+        notification.delete()
         return response(
-            status=status.HTTP_204_NO_CONTENT,
-            message=' notification deleted successfully',
+            status=status.HTTP_200_OK,
+            message='notification deleted successfully',
             data={},
         )

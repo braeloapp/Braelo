@@ -11,9 +11,10 @@ User password management end-points module.
 '''
 
 import pyotp
-from django.core.mail import send_mail
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from notifications.services.email import email_service
 
 from users.models import OTP, User
 from users.serializers import (
@@ -53,12 +54,14 @@ class ForgotPassword(generics.CreateAPIView):
         email = user.validated_data['email']
         user = user.validated_data['user']
         OTP.objects.create(user=user, otp=otp)
-        # Send OTP to email
-        send_mail(
-            subject='Password Reset OTP',
-            message=f'Your OTP for password reset is {otp}.Do not give this to anyone.',
-            from_email='braelo.fl@gmail.com',
-            recipient_list=[email],
+        email_service.send(
+            to=email,
+            template_key='password_reset',
+            context={
+                'name': getattr(user, 'name', '') or '',
+                'otp': otp,
+                'ttl_minutes': 10,
+            },
         )
         return response(
             status=status.HTTP_200_OK,

@@ -1,1 +1,2 @@
 from notifications.models.notifications import Notification
+from notifications.models.preferences import NotificationPreference
