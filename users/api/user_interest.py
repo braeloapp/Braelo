@@ -27,8 +27,8 @@ class InterestListCreateView(generics.ListCreateAPIView):
     serializer_class = InterestSerializer
 
     def get_queryset(self):
-        """Lazy queryset so MongoEngine is not touched at import time (avoids startup / debug recursion loops)."""
-        return Interest.objects.all()
+        """Only the authenticated user's interests. Never return the full collection."""
+        return Interest.objects.filter(user_id=self.request.user.id)
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):

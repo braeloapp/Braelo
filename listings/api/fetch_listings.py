@@ -17,6 +17,7 @@ from mongoengine.errors import DoesNotExist
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from users.permissions import DenyAdminPathUnlessStaff, is_admin_path, is_staff_user
 
 from helpers import ListSync
 from helpers.model_map import MODEL_MAP
@@ -98,7 +99,7 @@ class SavedListing(generics.ListAPIView):
     Fetch User Saved listing.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def get(self, request, *args, **kwargs):
@@ -107,8 +108,7 @@ class SavedListing(generics.ListAPIView):
         :param request: request object. (dict)
         :return: saved items. (json)
         '''
-        admin_path = '/admin-panel/'
-        if request.path.startswith(admin_path) and request.user.is_superuser:
+        if is_admin_path(request) and is_staff_user(request.user):
             user_id = request.GET.get('user_id')
             if not user_id:
                 raise ValidationError({'Error': 'Admin Must Provide user_id'})
@@ -136,14 +136,13 @@ class UserListing(generics.CreateAPIView):
     Fetch User listed listing.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def get(self, request):
         # Get the logged-in user's ID
-        admin_path = '/admin-panel/'
         is_active = None
-        if request.path.startswith(admin_path) and request.user.is_superuser:
+        if is_admin_path(request) and is_staff_user(request.user):
             user_id = request.GET.get('user_id')
             is_active = request.query_params.get('is_active')
             if not user_id:

@@ -135,6 +135,8 @@ class Feedback(generics.ListCreateAPIView):
         )
 
     def get_queryset(self):
+        user_id = self.request.user.id
+        queryset = Feedbacks.objects.filter(user_id=user_id)
         if self.request.GET.get('feedback') is not None:
             feedback = self.request.GET.get('feedback')
             required_fields = ['Hate', 'Dislike', 'Neutral', 'Like', 'Love']
@@ -142,6 +144,5 @@ class Feedback(generics.ListCreateAPIView):
                 raise ValidationError(
                     {'review': f'feedback must be {required_fields}'}
                 )
-            return Feedbacks.objects.filter(feedback=feedback)
-
-        return Feedbacks.objects.all()
+            return queryset.filter(feedback=feedback)
+        return queryset

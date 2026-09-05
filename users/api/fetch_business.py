@@ -20,6 +20,7 @@ from rest_framework.permissions import (
     AllowAny,
     IsAuthenticatedOrReadOnly,
 )
+from users.permissions import DenyAdminPathUnlessStaff
 
 from users.models import Business
 from helpers.constants import CATEGORIES
@@ -37,7 +38,7 @@ class FetchBusinesses(generics.ListAPIView):
     returns data in pagination format
     '''
 
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly, DenyAdminPathUnlessStaff]
     pagination_class = Pagination
     serializer_class = BusinessSerailizer
 
@@ -93,7 +94,7 @@ class FetchListings(generics.ListAPIView):
     Fetch user listings created from his business account.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
     pagination_class = Pagination
     serializer_class = ListsyncSerializer
 

@@ -16,6 +16,7 @@ from users.models import User
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
+from users.permissions import DenyAdminPathUnlessStaff
 from rest_framework_mongoengine import generics
 
 
@@ -42,7 +43,7 @@ class SaveListing(generics.CreateAPIView):
     Save user listed listing.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
     serializer_class = SavedItemSerializer
 
     def get_queryset(self):
@@ -86,7 +87,11 @@ class SaveListing(generics.CreateAPIView):
         listing_id = req.get('listing_id')
         if not listing_id:
             raise ValidationError('listing_id is required.')
-        deleted_count = SavedItem.objects.filter(listing_id=listing_id).delete()
+        # Scope to the authenticated user. Never delete another user's save.
+        deleted_count = SavedItem.objects.filter(
+            listing_id=listing_id,
+            user_id=request.user.id,
+        ).delete()
         if deleted_count == 0:
             return response(
                 status=status.HTTP_204_NO_CONTENT,
@@ -106,7 +111,7 @@ class FlipListingStatus(generics.CreateAPIView):
     Flip listing status.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def post(self, request, **kwargs):
@@ -205,7 +210,7 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
     Admins can delete any listing, while regular users can only delete their own.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def delete(self, request):

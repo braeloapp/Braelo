@@ -15,6 +15,8 @@ from django.urls import path
 from admin_panel.api.admin import (
     AllUsers,
     ActiveUsers,
+    AdminMe,
+    AllAppFeedback,
     AllFeedback,
     AllNotifications,
     ReportedUsers,
@@ -70,6 +72,8 @@ urlpatterns = [
     path('realestate/<str:pk>', RealEstateUpdateAPI.as_view()),
     path('electronics/<str:pk>', ElectronicsUpdateAPI.as_view()),
     path('sportshobby/<str:pk>', SportsHobbyUpdateAPI.as_view()),
+    path('me', AdminMe.as_view()),
+    path('feedback', AllAppFeedback.as_view()),
     # All users fetch to admin
     path('users', AllUsers.as_view()),
     # admin adding banner

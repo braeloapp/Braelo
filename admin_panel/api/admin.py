@@ -22,8 +22,9 @@ from users.models import User
 from firebase_admin import messaging
 from notifications.models import Notification
 from admin_panel.serializers import UserSerializer
-from feedbacks.models import Requests, ReportMessage
-from feedbacks.serializers import RequestsSerializer
+from feedbacks.models import Requests, ReportMessage, Feedbacks
+from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
+from users.permissions import admin_role
 from notifications.serializers import NotificationSerializer
 from admin_panel.serializers import BusinessBannerSerializer
 from feedbacks.serializers.report_user import ReportMessageSerializer
@@ -100,6 +101,51 @@ class ActiveUsers(generics.ListAPIView):
     serializer_class = UserSerializer
     queryset = User.objects.filter(is_active=True)
     pagination_class = Pagination
+
+
+class AdminMe(APIView):
+    '''
+    Current admin identity and role for route guards.
+    '''
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        user = request.user
+        return response(
+            status=status.HTTP_200_OK,
+            message='OK',
+            data={
+                'id': user.id,
+                'email': user.email,
+                'name': user.name,
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
+                'role': admin_role(user),
+            },
+        )
+
+
+class AllAppFeedback(generics.ListAPIView):
+    '''
+    App reaction feedback for admin. Consumer GET is scoped to the caller.
+    '''
+
+    permission_classes = [IsAdminUser]
+    pagination_class = Pagination
+    serializer_class = FeedbacksSerializer
+
+    def get_queryset(self):
+        queryset = Feedbacks.objects.all()
+        feedback = self.request.GET.get('feedback')
+        if feedback:
+            required_fields = ['Hate', 'Dislike', 'Neutral', 'Like', 'Love']
+            if feedback not in required_fields:
+                raise ValidationError(
+                    {'review': f'feedback must be {required_fields}'}
+                )
+            queryset = queryset.filter(feedback=feedback)
+        return queryset
 
 
 class AllFeedback(generics.ListAPIView):

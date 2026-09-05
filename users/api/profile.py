@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from users.permissions import DenyAdminPathUnlessStaff, is_admin_path, require_staff
 from rest_framework.exceptions import ValidationError
 
 from users.models import User
@@ -65,7 +66,7 @@ class UpdateProfile(generics.CreateAPIView):
     '''
 
     serializer_class = UpdateProfileSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):
@@ -164,16 +165,15 @@ class PublicProfile(generics.CreateAPIView):
 
 class DeactivateUser(generics.CreateAPIView):
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):
         '''
         Handle the profile deactivation mechanism, either for admin or non-admin.
         '''
-        admin_path = '/admin-panel/user/deactivate'
-
-        if request.path.startswith(admin_path):
+        if is_admin_path(request):
+            require_staff(request)
             user_id = request.data.get('user_id')
             if not user_id:
                 raise ValidationError({'error': 'user_id is missing'})

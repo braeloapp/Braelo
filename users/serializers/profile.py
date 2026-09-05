@@ -141,6 +141,9 @@ class UpdateProfileSerializer(serializers.Serializer):
         '''
         admin_path = '/admin-panel/user/update'
         if self.context['request'].path.startswith(admin_path):
+            from users.permissions import require_staff
+
+            require_staff(self.context['request'])
             user_id = data.get('user_id')
             if not user_id:
                 raise ValidationError({'Field': 'Admin must provide user_id'})

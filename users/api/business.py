@@ -22,6 +22,7 @@ from rest_framework.permissions import (
     IsAuthenticated,
     AllowAny,
 )
+from users.permissions import DenyAdminPathUnlessStaff
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from users.models import User, Business
@@ -167,7 +168,7 @@ class DeactivateBusiness(generics.CreateAPIView):
     API endpoint to deactive a user
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def post(self, request):
@@ -219,7 +220,7 @@ class UpdateBusiness(generics.UpdateAPIView):
     Base API endpoint to update a listing.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
     serializer_class = BusinessSerailizer
 
     @handle_exceptions
@@ -309,7 +310,7 @@ class BusinessBanner(generics.ListCreateAPIView):
     Paginates business banners filtered by category or user interest.
     '''
 
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny, DenyAdminPathUnlessStaff]
     pagination_class = BusinessPagination
     serializer_class = BannerSearilizer
 

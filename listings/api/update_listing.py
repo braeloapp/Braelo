@@ -16,6 +16,7 @@ from rest_framework import status
 from mongoengine.errors import DoesNotExist
 from rest_framework_mongoengine import generics
 from rest_framework.permissions import IsAuthenticated
+from users.permissions import DenyAdminPathUnlessStaff
 from rest_framework.exceptions import ValidationError
 
 from listings.models import (
@@ -50,7 +51,7 @@ class UpdateListing(generics.UpdateAPIView):
     Base API endpoint to update a listing.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def put(self, request, *args, **kwargs):
