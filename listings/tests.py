@@ -1,12 +1,15 @@
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from helpers.normalize import resolve_subcategory
-from listings.api.fetch_listings import Recommendations
+from listings.api.fetch_listings import Recent, Recommendations
+from listings.api.search import Search
 from listings.field_contract import apply_field_aliases, extract_coordinates
+from listings.geo import parse_coordinates, parse_radius_meters
 from users.models import User
 
 
@@ -121,3 +124,184 @@ class AnonymousRecommendationTests(TestCase):
         mock_sync.objects.filter.assert_called_with(is_active=True)
         mock_sync.objects.all.assert_not_called()
         self.assertIs(queryset, filtered)
+
+
+class GeoHelperTests(TestCase):
+    def test_parse_coordinates_accepts_lng_lat_json(self):
+        self.assertEqual(parse_coordinates('[74.28, 31.45]'), (74.28, 31.45))
+
+    def test_parse_coordinates_blank_is_none(self):
+        self.assertIsNone(parse_coordinates(None))
+        self.assertIsNone(parse_coordinates(''))
+        self.assertIsNone(parse_coordinates('   '))
+
+    def test_parse_coordinates_rejects_bool_and_out_of_range(self):
+        with self.assertRaises(ValidationError):
+            parse_coordinates('[true, 31.45]')
+        with self.assertRaises(ValidationError):
+            parse_coordinates('[200, 31.45]')
+        with self.assertRaises(ValidationError):
+            parse_coordinates('not-json')
+
+    @override_settings(
+        LISTING_RADIUS_M=10000,
+        LISTING_RADIUS_MIN_M=500,
+        LISTING_RADIUS_MAX_M=100000,
+    )
+    def test_parse_radius_default_and_bounds(self):
+        self.assertEqual(parse_radius_meters(None), 10000)
+        self.assertEqual(parse_radius_meters('25000'), 25000)
+        with self.assertRaises(ValidationError):
+            parse_radius_meters('100')
+        with self.assertRaises(ValidationError):
+            parse_radius_meters('999999')
+        with self.assertRaises(ValidationError):
+            parse_radius_meters('wide')
+
+
+class RecommendationInterestTests(TestCase):
+    def _request(self, authenticated=True, user_id=9, params=None):
+        params = params or {}
+        request = MagicMock()
+        request.user.is_authenticated = authenticated
+        request.user.id = user_id
+        request.GET.get.side_effect = lambda key, default=None: params.get(
+            key, default
+        )
+        return request
+
+    @patch('listings.api.fetch_listings.get_user_recommendations')
+    @patch('listings.api.fetch_listings.ListSync')
+    def test_interests_apply_when_coordinates_present(
+        self, mock_sync, mock_interests
+    ):
+        mock_interests.return_value = ['Vehicles', 'Cars']
+        geo_qs = MagicMock()
+        interest_qs = MagicMock()
+        mock_sync.objects.filter.return_value = geo_qs
+        geo_qs.filter.return_value = interest_qs
+
+        view = Recommendations()
+        view.request = self._request(
+            params={'listing_coordinates': '[74.3, 31.5]'}
+        )
+        queryset = view.get_queryset()
+
+        self.assertIs(queryset, interest_qs)
+        kwargs = mock_sync.objects.filter.call_args.kwargs
+        self.assertTrue(kwargs.get('is_active'))
+        self.assertEqual(kwargs.get('listing_coordinates__near'), [74.3, 31.5])
+        self.assertEqual(kwargs.get('listing_coordinates__max_distance'), 10000)
+        geo_qs.filter.assert_called_once()
+
+    @patch('listings.api.fetch_listings.get_user_recommendations')
+    @patch('listings.api.fetch_listings.ListSync')
+    def test_interests_apply_without_coordinates(
+        self, mock_sync, mock_interests
+    ):
+        mock_interests.return_value = ['kids']
+        base_qs = MagicMock()
+        interest_qs = MagicMock()
+        mock_sync.objects.filter.return_value = base_qs
+        base_qs.filter.return_value = interest_qs
+
+        view = Recommendations()
+        view.request = self._request()
+        queryset = view.get_queryset()
+
+        mock_sync.objects.filter.assert_called_with(is_active=True)
+        self.assertIs(queryset, interest_qs)
+
+
+class RecentGeoTests(TestCase):
+    @patch('listings.api.fetch_listings.ListSync')
+    def test_empty_coordinates_do_not_use_geo_query(self, mock_sync):
+        filtered = MagicMock()
+        mock_sync.objects.filter.return_value = filtered
+        view = Recent()
+        request = MagicMock()
+        request.GET.get.return_value = ''
+        view.request = request
+
+        queryset = view.get_queryset()
+
+        mock_sync.objects.filter.assert_called_with(is_active=True)
+        self.assertIs(queryset, filtered)
+
+    @patch('listings.api.fetch_listings.ListSync')
+    def test_recent_uses_requested_radius(self, mock_sync):
+        filtered = MagicMock()
+        mock_sync.objects.filter.return_value = filtered
+        view = Recent()
+        request = MagicMock()
+        request.GET.get.side_effect = lambda key, default=None: {
+            'listing_coordinates': '[74.3, 31.5]',
+            'radius': '25000',
+        }.get(key, default)
+        view.request = request
+
+        view.get_queryset()
+        kwargs = mock_sync.objects.filter.call_args.kwargs
+        self.assertEqual(kwargs.get('listing_coordinates__max_distance'), 25000)
+        self.assertTrue(kwargs.get('is_active'))
+
+
+class SearchQueryTests(TestCase):
+    def _request(self, params, authenticated=False):
+        request = MagicMock()
+        request.user.is_authenticated = authenticated
+        request.user.id = 3
+        request.GET.get.side_effect = lambda key, default=None: params.get(
+            key, default
+        )
+        return request
+
+    @patch('listings.api.search.ListSync')
+    def test_search_requires_three_characters(self, _mock_sync):
+        view = Search()
+        view.request = self._request({'search': 'ab'})
+        with self.assertRaises(ValidationError):
+            view.get_queryset()
+
+    @patch('listings.api.search.User')
+    @patch('listings.api.search.ListSync')
+    def test_search_filters_active_and_text(self, mock_sync, mock_user):
+        base_qs = MagicMock()
+        text_qs = MagicMock()
+        mock_sync.objects.filter.return_value = base_qs
+        base_qs.filter.return_value = text_qs
+
+        view = Search()
+        view.request = self._request({'search': 'honda'})
+        queryset = view.get_queryset()
+
+        mock_sync.objects.filter.assert_called_with(is_active=True)
+        self.assertIs(queryset, text_qs)
+        mock_user.objects.filter.assert_not_called()
+
+    @patch('listings.api.search.User')
+    @patch('listings.api.search.ListSync')
+    def test_search_applies_geo_and_category(self, mock_sync, mock_user):
+        base_qs = MagicMock()
+        text_qs = MagicMock()
+        category_qs = MagicMock()
+        mock_sync.objects.filter.return_value = base_qs
+        base_qs.filter.return_value = text_qs
+        text_qs.filter.return_value = category_qs
+
+        view = Search()
+        view.request = self._request(
+            {
+                'search': 'honda',
+                'category': 'Vehicles',
+                'listing_coordinates': '[74.3, 31.5]',
+            }
+        )
+        queryset = view.get_queryset()
+
+        kwargs = mock_sync.objects.filter.call_args.kwargs
+        self.assertTrue(kwargs.get('is_active'))
+        self.assertEqual(kwargs.get('listing_coordinates__near'), [74.3, 31.5])
+        text_qs.filter.assert_called_with(category='Vehicles')
+        self.assertIs(queryset, category_qs)
+        mock_user.objects.filter.assert_not_called()
