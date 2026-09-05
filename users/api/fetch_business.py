@@ -29,6 +29,7 @@ from helpers import ListSync
 from helpers import response, handle_exceptions
 from listings.serializers import ListsyncSerializer
 from listings.api.paginate_listing import Pagination
+from listings.geo import geo_near_filter, parse_radius_meters
 from users.serializers.business import BusinessSerailizer
 
 
@@ -222,10 +223,16 @@ class ExploreBusiness(generics.ListAPIView):
             )
 
         search_business = {
-            'business_coordinates__near': [lon, lat],
-            'business_coordinates__max_distance': 10000,  # 10km or 10000 meters
             'is_active': True,
         }
+        search_business.update(
+            geo_near_filter(
+                lon,
+                lat,
+                parse_radius_meters(request.GET.get('radius')),
+                field='business_coordinates',
+            )
+        )
 
         if category != 'ALL' and category in CATEGORIES:
             search_business['business_category'] = category

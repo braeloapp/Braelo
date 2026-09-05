@@ -665,6 +665,11 @@ CHATBOT_DIRECTORY_FIRST_PAGE_SIZE = int(os.getenv('CHATBOT_DIRECTORY_FIRST_PAGE_
 CHATBOT_BRAZILIAN_EXCLUDE_PORTUGUESE_ONLY = os.getenv(
     'CHATBOT_BRAZILIAN_EXCLUDE_PORTUGUESE_ONLY', 'true'
 ).lower() in ('true', '1', 'yes', 'on')
+# Marketplace listing nearby/search radius (meters). Clients may override
+# with ?radius= within LISTING_RADIUS_MIN_M..LISTING_RADIUS_MAX_M.
+LISTING_RADIUS_M = int(os.getenv('LISTING_RADIUS_M', '10000'))
+LISTING_RADIUS_MIN_M = int(os.getenv('LISTING_RADIUS_MIN_M', '500'))
+LISTING_RADIUS_MAX_M = int(os.getenv('LISTING_RADIUS_MAX_M', '100000'))
 BUSINESS_RADIUS_MILES = float(os.getenv('BUSINESS_RADIUS_MILES', '25'))
 BUSINESS_RADIUS_FALLBACK_MILES = float(os.getenv('BUSINESS_RADIUS_FALLBACK_MILES', '50'))
 MIN_BUSINESS_RESULTS = int(os.getenv('MIN_BUSINESS_RESULTS', '3'))
