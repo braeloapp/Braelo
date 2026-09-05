@@ -305,3 +305,78 @@ class SearchQueryTests(TestCase):
         text_qs.filter.assert_called_with(category='Vehicles')
         self.assertIs(queryset, category_qs)
         mock_user.objects.filter.assert_not_called()
+
+
+class FlipListingIdempotencyTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="flipper@example.com",
+            email="flipper@example.com",
+            name="Flipper",
+            password="pass12345",
+            is_email_verified=True,
+            listings_count=1,
+        )
+        self.client = APIClient()
+        token = str(RefreshToken.for_user(self.user).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    @patch("listings.api.saved_listing.upsert_listing_directory_doc")
+    @patch("listings.api.saved_listing.ListSynchronize")
+    @patch("listings.api.saved_listing.MODEL_MAP")
+    def test_repeat_flip_does_not_increment_count(
+        self, mock_map, mock_sync, _mock_upsert
+    ):
+        listing = MagicMock()
+        listing.user_id = self.user.id
+        listing.is_active = True
+        model = MagicMock()
+        model.objects.filter.return_value.first.return_value = listing
+        mock_map.__contains__.return_value = True
+        mock_map.__getitem__.return_value = model
+        mock_sync.flip_status.return_value = False
+
+        with patch(
+            "listings.api.saved_listing.resolve_category",
+            return_value="Vehicles",
+        ):
+            first = self.client.post(
+                "/listing/flip/status",
+                data={
+                    "listing_id": "507f1f77bcf86cd799439011",
+                    "category": "Vehicles",
+                    "status": True,
+                },
+                format="json",
+            )
+            second = self.client.post(
+                "/listing/flip/status",
+                data={
+                    "listing_id": "507f1f77bcf86cd799439011",
+                    "category": "Vehicles",
+                    "status": True,
+                },
+                format="json",
+            )
+
+        self.assertEqual(first.json().get("status"), 200)
+        self.assertEqual(second.json().get("status"), 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.listings_count, 1)
+
+    def test_listsync_flip_is_idempotent(self):
+        from helpers.listsync import ListSynchronize
+
+        listing = MagicMock()
+        listing.is_active = True
+        model = MagicMock()
+        model.objects.return_value.first.return_value = listing
+
+        changed = ListSynchronize.flip_status(
+            listing_id="abc",
+            status=True,
+            user_id=1,
+            model=model,
+        )
+        self.assertFalse(changed)
+        model.objects.return_value.update_one.assert_not_called()
