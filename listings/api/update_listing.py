@@ -10,7 +10,6 @@ Populate Listing and save listings endpoints.
 ---------------------------------------------------
 '''
 
-import json
 from bson import ObjectId
 from rest_framework import status
 from mongoengine.errors import DoesNotExist
@@ -32,6 +31,7 @@ from listings.models import (
     FurnitureListing,
 )
 from helpers import response, handle_exceptions
+from listings.field_contract import apply_field_aliases, extract_coordinates
 from listings.serializers import (
     RealEstateUpdateSerializer,
     VehicleUpdateSerializer,
@@ -60,18 +60,28 @@ class UpdateListing(generics.UpdateAPIView):
         :param request: request object. (dict)
         :return: updated listing status. (json)
         '''
-        partial = kwargs.pop('partial', False)
+        partial = kwargs.pop('partial', True)
         instance = self.get_object()
-        try:
-            listing_coordinates = request.data.get('listing_coordinates')
-            listing_coordinates = json.loads(listing_coordinates)
-        except json.JSONDecodeError as exc:
-            raise ValidationError(
-                'Invalid JSON format for listing_coordinates.'
-            ) from exc
-
         mutable_data = request.data.copy()
-        mutable_data['listing_coordinates'] = listing_coordinates
+        raw_coords = mutable_data.get('listing_coordinates')
+        if raw_coords not in (None, ''):
+            listing_coordinates = extract_coordinates(raw_coords)
+            if listing_coordinates is None:
+                raise ValidationError(
+                    {
+                        'listing_coordinates': (
+                            'listing_coordinates must be a list with [longitude, latitude].'
+                        )
+                    }
+                )
+            mutable_data['listing_coordinates'] = listing_coordinates
+        else:
+            mutable_data.pop('listing_coordinates', None)
+        mutable_data = apply_field_aliases(
+            dict(mutable_data),
+            subcategory=mutable_data.get('subcategory')
+            or getattr(instance, 'subcategory', None),
+        )
         serializer = self.get_serializer(
             instance,
             data=mutable_data,

@@ -72,7 +72,7 @@ class QueryFilter(generics.ListAPIView):
             raise ValidationError(
                 {'configuration': 'Paginate view is missing model_class.'}
             )
-        qs = self.model_class.objects.all()
+        qs = self.model_class.objects.filter(is_active=True)
         category = getattr(self, 'category', None)
         subcategory = self.request.GET.get('subcategory')
 

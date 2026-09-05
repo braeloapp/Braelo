@@ -27,6 +27,11 @@ from helpers.constants import (
     KEYWORDS_LIMIT,
 )
 from helpers.normalize import resolve_category, resolve_subcategory
+from listings.field_contract import (
+    apply_field_aliases,
+    extract_coordinates,
+    point_to_lon_lat,
+)
 from helpers.listsync import ListSynchronize
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from listings.models import (
@@ -169,6 +174,7 @@ class Serializer(serializers.DocumentSerializer):
         Ensures category and subcategory validation and user association.
         '''
         user = self.context['request'].user
+        data = apply_field_aliases(dict(data), subcategory=data.get('subcategory'))
         data['from_business'] = data.get('from_business')
         data['user_id'] = user.id
         category = data.get('category')
@@ -180,9 +186,36 @@ class Serializer(serializers.DocumentSerializer):
         user_status = user
 
         # Check if this is an update call
-        is_update = self.context.get('is_update', False)
+        is_update = self.context.get('is_update', False) or self.instance is not None
+        instance = self.instance
 
-        # coordinates validation
+        if is_update and instance is not None:
+            if not category:
+                category = instance.category
+                data['category'] = category
+            if not subcategory:
+                subcategory = instance.subcategory
+                data['subcategory'] = subcategory
+            if keywords is None:
+                keywords = list(instance.keywords or [])
+                data['keywords'] = keywords
+            if data.get('from_business') is None:
+                data['from_business'] = instance.from_business
+            if not listing_coordinates:
+                listing_coordinates = point_to_lon_lat(
+                    instance.listing_coordinates
+                )
+                data['listing_coordinates'] = listing_coordinates
+            if not data.get('location') and getattr(instance, 'location', None):
+                data['location'] = instance.location
+            if status is None:
+                status = instance.is_active
+            keywords = data.get('keywords')
+            listing_coordinates = data.get('listing_coordinates')
+
+        # coordinates validation — GeoJSON Point or [longitude, latitude]
+        listing_coordinates = extract_coordinates(listing_coordinates)
+        data['listing_coordinates'] = listing_coordinates
         if (
             not isinstance(listing_coordinates, list)
             or len(listing_coordinates) != 2
@@ -264,9 +297,16 @@ class Serializer(serializers.DocumentSerializer):
                         {'pictures': 'Invalid picture format'}
                     )
 
-        # Timestamps
-        data['created_at'] = timezone.now()
+        location = data.get('location')
+        if location not in (None, ''):
+            data['location'] = str(location).strip()
+
+        # Timestamps — never rewrite created_at on update
         data['updated_at'] = timezone.now()
+        if not is_update:
+            data['created_at'] = timezone.now()
+        elif instance is not None:
+            data['created_at'] = instance.created_at
         return data
 
 

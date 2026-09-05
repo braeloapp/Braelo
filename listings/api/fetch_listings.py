@@ -274,16 +274,19 @@ class Recommendations(generics.ListAPIView):
     permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
-        user_id = self.request.user.id
-        interests = get_user_recommendations(user_id)
+        user = self.request.user
+        authenticated = bool(getattr(user, 'is_authenticated', False))
+        interests = (
+            get_user_recommendations(user.id) if authenticated else []
+        )
         coordinates = self.request.GET.get('listing_coordinates')
         if not coordinates:
             try:
-                if not interests:
-                    return ListSync.objects.all()
-                queryset = ListSync.objects.filter(
-                    Q(category__in=interests) | Q(subcategory__in=interests)
-                )
+                queryset = ListSync.objects.filter(is_active=True)
+                if interests:
+                    queryset = queryset.filter(
+                        Q(category__in=interests) | Q(subcategory__in=interests)
+                    )
             except Exception as exc:
                 raise ValidationError({'Listsync': str(exc)})
             return queryset

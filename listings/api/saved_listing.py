@@ -163,6 +163,16 @@ class FlipListingStatus(generics.CreateAPIView):
         if not listing_limit:
             raise ValidationError({'User': 'Listing owner account not found.'})
 
+        raw_status = listing_status
+        if isinstance(raw_status, str):
+            listing_status = raw_status.strip().lower() in (
+                'true',
+                '1',
+                'yes',
+            )
+        else:
+            listing_status = bool(raw_status)
+
         if (
             not admin
             and not listing_limit.is_business
@@ -217,8 +227,10 @@ class DeleteListing(generics.RetrieveDestroyAPIView):
         user = request.user
         user_id = user.id
         admin_path = "/admin-panel"
-        listing_id = request.data.get('listing_id')
-        category = request.data.get('category')
+        listing_id = request.data.get('listing_id') or request.GET.get(
+            'listing_id'
+        )
+        category = request.data.get('category') or request.GET.get('category')
 
         if not category or not listing_id:
             raise ValidationError(

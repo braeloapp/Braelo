@@ -36,6 +36,7 @@ class FashionListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     # category based
     # fashion attributes

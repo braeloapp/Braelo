@@ -266,6 +266,12 @@ class UpdateBusiness(generics.UpdateAPIView):
             user_id = self.request.data.get('user_id')
             if not user_id:
                 raise ValidationError({'Admin': 'Must provide user_id'})
+            try:
+                user_id = int(user_id)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    {'user_id': 'Must be a valid user id'}
+                ) from exc
         else:
             user_id = self.request.user.id
         try:

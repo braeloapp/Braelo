@@ -21,6 +21,15 @@ from helpers.constants import CATEGORIES
 
 _ALL_TOKENS = {'all'}
 
+# Flutter historically sent Kids slug "activities" for Sports & Hobby.
+# Canonical Sports subcategory is outdooractivities.
+_SUBCATEGORY_ALIASES = {
+    'sportsandhobby': {
+        'activities': 'outdooractivities',
+        'outdooractivity': 'outdooractivities',
+    },
+}
+
 
 def _normalize_token(value):
     '''Return a comparison key for a category/subcategory string.
@@ -80,4 +89,10 @@ def resolve_subcategory(category_key, value):
     for sub in CATEGORIES[category_key]:
         if _normalize_token(sub) == target:
             return sub
+    alias_target = _SUBCATEGORY_ALIASES.get(category_key, {}).get(target)
+    if alias_target:
+        for sub in CATEGORIES[category_key]:
+            if _normalize_token(sub) == _normalize_token(alias_target):
+                return sub
+        return alias_target
     return None

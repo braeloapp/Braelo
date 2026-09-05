@@ -36,6 +36,7 @@ class SportsHobbyListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     # Specific fields for Sports & Hobby
     item_type = StringField(required=True)

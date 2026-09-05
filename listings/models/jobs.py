@@ -35,6 +35,7 @@ class JobsListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     # category based
     job_tittle = StringField(required=True)

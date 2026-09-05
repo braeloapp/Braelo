@@ -35,6 +35,7 @@ class RealEstateListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     # Common Start fields
     property_type = StringField(required=True)

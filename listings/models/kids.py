@@ -36,6 +36,7 @@ class KidsListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     # Price-related fields
     donation = StringField(choices=KC.DONATION, required=True)

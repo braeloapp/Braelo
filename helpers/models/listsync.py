@@ -31,6 +31,7 @@ class ListSync(Document):
     title = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
     price = DecimalField(required=False)
     salary_range = StringField(required=False)
     pictures = ListField(required=True)

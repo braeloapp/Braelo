@@ -10,7 +10,6 @@ Populate Listing and save listings endpoints.
 ---------------------------------------------------
 '''
 
-import json
 from rest_framework import status
 from rest_framework_mongoengine import generics
 from rest_framework.exceptions import ValidationError
@@ -32,6 +31,7 @@ from listings.models import (
     VehicleListing,
 )
 from helpers import response, handle_exceptions
+from listings.field_contract import apply_field_aliases, extract_coordinates
 from listings.serializers import (
     RealEstateSerializer,
     ElectronicsSerializer,
@@ -115,7 +115,9 @@ def _listing_create_payload(request, listing_coordinates):
             'yes',
         )
     payload['keywords'] = _normalize_keywords(qd.get('keywords'))
-    return payload
+    return apply_field_aliases(
+        payload, subcategory=payload.get('subcategory')
+    )
 
 
 class Listing(generics.CreateAPIView):
@@ -149,32 +151,20 @@ class Listing(generics.CreateAPIView):
         :param request: request object. (dict)
         :return: listing status. (json)
         '''
-        try:
-            listing_coordinates = request.data.get('listing_coordinates')
-            if not listing_coordinates:
-                raise ValidationError(
-                    {'listing_coordinates': 'field is required'}
-                )
-            if isinstance(listing_coordinates, (dict, list)):
-                coords_raw = listing_coordinates
-            else:
-                coords_raw = json.loads(listing_coordinates)
-            if (
-                isinstance(coords_raw, dict)
-                and coords_raw.get('type') == 'Point'
-                and isinstance(coords_raw.get('coordinates'), list)
-                and len(coords_raw['coordinates']) >= 2
-            ):
-                listing_coordinates = [
-                    float(coords_raw['coordinates'][0]),
-                    float(coords_raw['coordinates'][1]),
-                ]
-            else:
-                listing_coordinates = coords_raw
-        except json.JSONDecodeError as exc:
+        listing_coordinates = request.data.get('listing_coordinates')
+        if not listing_coordinates:
             raise ValidationError(
-                'Invalid JSON format for listing_coordinates.'
-            ) from exc
+                {'listing_coordinates': 'field is required'}
+            )
+        listing_coordinates = extract_coordinates(listing_coordinates)
+        if listing_coordinates is None:
+            raise ValidationError(
+                {
+                    'listing_coordinates': (
+                        'listing_coordinates must be a list with [longitude, latitude].'
+                    )
+                }
+            )
         payload = _listing_create_payload(request, listing_coordinates)
         serializer = self.get_serializer(
             data=payload, context={'request': request}

@@ -38,6 +38,7 @@ class ServicesListing(Document):
     description = StringField(required=True)
     keywords = ListField(StringField(required=True), required=True)
     listing_coordinates = PointField(required=True)
+    location = StringField(required=False)
 
     other = StringField(required=False)
     certifications = StringField(choices=SC.CERTIFICATION, required=False)

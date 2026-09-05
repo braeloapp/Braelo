@@ -115,6 +115,8 @@ class ListSynchronize:
             'from_business': data['from_business'],
             'created_at': data['created_at'],
         }
+        if data.get('location') not in (None, ''):
+            obj['location'] = data['location']
         price = (
             data.get('service_fee')
             or data.get('ticket_price')
