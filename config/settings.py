@@ -24,6 +24,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 
+from config.environment import (
+    resolve_cors_allow_all,
+    resolve_debug,
+    resolve_django_env,
+    resolve_public_backend_url,
+    resolve_secret_key,
+    is_production_like,
+)
+
 try:
     from mongoengine import connect
 except ImportError:
@@ -139,14 +148,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    "SECRET_KEY",
-    "django-insecure-dev-only-change-me",
-)
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = _env_bool("DEBUG", default=True)
+DJANGO_ENV = resolve_django_env(os.environ)
+DEBUG = resolve_debug(os.environ, DJANGO_ENV)
+SECRET_KEY = resolve_secret_key(os.environ, DJANGO_ENV, DEBUG)
+PUBLIC_BACKEND_URL = resolve_public_backend_url(os.environ, DJANGO_ENV)
 
 _allowed_default = (
     "localhost,127.0.0.1,169.254.129.4,169.254.129.2,"
@@ -154,11 +159,9 @@ _allowed_default = (
 )
 ALLOWED_HOSTS = _env_csv("ALLOWED_HOSTS", _allowed_default)
 
-# django-cors-headers 4.x prefers CORS_ALLOW_ALL_ORIGINS; it falls back to CORS_ORIGIN_ALLOW_ALL if unset
-_cors_allow_all = _env_bool("CORS_ORIGIN_ALLOW_ALL", default=True)
-CORS_ALLOW_ALL_ORIGINS = _env_bool(
-    "CORS_ALLOW_ALL_ORIGINS", default=_cors_allow_all
-)
+# Production/staging default to an allowlist. Local DEBUG still allows all unless
+# CORS_ALLOW_ALL_ORIGINS / CORS_ORIGIN_ALLOW_ALL is set explicitly.
+CORS_ALLOW_ALL_ORIGINS = resolve_cors_allow_all(os.environ, DEBUG)
 CORS_ORIGIN_ALLOW_ALL = CORS_ALLOW_ALL_ORIGINS
 
 # Default False in django-cors-headers: when True + CORS_ALLOW_ALL_ORIGINS, the middleware
@@ -166,8 +169,8 @@ CORS_ORIGIN_ALLOW_ALL = CORS_ALLOW_ALL_ORIGINS
 # Authorization or credentials with a cross-origin SPA.
 CORS_ALLOW_CREDENTIALS = _env_bool("CORS_ALLOW_CREDENTIALS", default=True)
 
-# Optional explicit origins (comma-separated). If set, you usually want
-# CORS_ALLOW_ALL_ORIGINS=False in the same environment.
+# Optional explicit origins (comma-separated). Required for a non-Azure admin host
+# when CORS_ALLOW_ALL_ORIGINS=False (typical production).
 _cors_explicit_origins = _env_csv("CORS_ALLOWED_ORIGINS", "")
 if _cors_explicit_origins:
     CORS_ALLOWED_ORIGINS = _cors_explicit_origins
@@ -180,10 +183,26 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 
 _csrf_default = (
-    "https://braelo-v1-bdaqhdc4c7d9fdb7.canadacentral-01.azurewebsites.net,"
-    "http://localhost,http://127.0.0.1,http://192.168.18.4"
+    f"{PUBLIC_BACKEND_URL},"
+    "http://localhost,http://127.0.0.1"
 )
 CSRF_TRUSTED_ORIGINS = _env_csv("CSRF_TRUSTED_ORIGINS", _csrf_default)
+
+if is_production_like(DJANGO_ENV):
+    SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", default=True)
+    CSRF_COOKIE_SECURE = _env_bool("CSRF_COOKIE_SECURE", default=True)
+    SESSION_COOKIE_HTTPONLY = True
+    CSRF_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax").strip() or "Lax"
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_HSTS_SECONDS = _env_int("SECURE_HSTS_SECONDS", 31536000)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool(
+        "SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True
+    )
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # Azure terminates TLS in front of Daphne; do not force an app-level redirect
+    # unless explicitly enabled. Health probes may arrive as HTTP.
+    SECURE_SSL_REDIRECT = _env_bool("SECURE_SSL_REDIRECT", default=False)
 
 LOGGING = {
     "version": 1,

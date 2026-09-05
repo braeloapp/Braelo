@@ -67,9 +67,9 @@ def generate_QR(business_id, user_id, business_type):
     Generate a QR code for the business URL, save it as PNG in-memory,
     upload it, and return the upload result plus the URL.
     """
-    base_url = (
-        'https://braelo-fug5gcb6c0hpbpdn.canadacentral-01.azurewebsites.net'
-    )
+    from django.conf import settings
+
+    base_url = (getattr(settings, 'PUBLIC_BACKEND_URL', '') or '').rstrip('/')
     business_url = f'{base_url}/auth/business/{business_id}'
 
     img = qrcode.make(business_url)
