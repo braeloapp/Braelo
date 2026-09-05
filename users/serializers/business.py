@@ -124,27 +124,30 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         business_images = validated_data.pop('business_images', None)
         business_banner = validated_data.pop('business_banner', None)
 
-        validated_data['business_logo'] = self.update_media(
-            instance.business_logo,
-            instance.business_category,
-            business_logo,
-            user.id,
-            image_type='business_logo',
-        )
-        validated_data['business_images'] = self.update_media(
-            instance.business_images,
-            instance.business_category,
-            business_images,
-            user.id,
-            image_type='business_images',
-        )
-        validated_data['business_banner'] = self.update_media(
-            instance.business_banner,
-            instance.business_category,
-            business_banner,
-            user.id,
-            image_type='business_banner',
-        )
+        if business_logo:
+            validated_data['business_logo'] = self.update_media(
+                instance.business_logo,
+                instance.business_category,
+                business_logo,
+                user.id,
+                image_type='business_logo',
+            )
+        if business_images:
+            validated_data['business_images'] = self.update_media(
+                instance.business_images,
+                instance.business_category,
+                business_images,
+                user.id,
+                image_type='business_images',
+            )
+        if business_banner:
+            validated_data['business_banner'] = self.update_media(
+                instance.business_banner,
+                instance.business_category,
+                business_banner,
+                user.id,
+                image_type='business_banner',
+            )
 
         # Update other fields & Banner model as well
         banner_instance = AdminBusinessBanner.objects.filter(
@@ -160,11 +163,11 @@ class BusinessSerailizer(serializers.DocumentSerializer):
                 if second_model_value != value:
                     setattr(banner_instance, attr, value)
 
-        # Update timestamps
         instance.updated_at = timezone.now()
         instance.save()
-        banner_instance.updated_at = timezone.now()
-        banner_instance.save()
+        if banner_instance:
+            banner_instance.updated_at = timezone.now()
+            banner_instance.save()
         upsert_businesses_directory_doc(instance)
         return instance
 
@@ -179,6 +182,9 @@ class BusinessSerailizer(serializers.DocumentSerializer):
         business_banner = data.get('business_banner', [])
         business_images = data.get('business_images', [])
         business_coordinates = data.get('business_coordinates')
+        if isinstance(business_coordinates, dict):
+            business_coordinates = business_coordinates.get('coordinates')
+            data['business_coordinates'] = business_coordinates
         # if admin is updating, find the original user
         if request.path.startswith(admin_path):
             fetch_user = User.objects.filter(id=self.instance.user_id).first()
@@ -243,9 +249,18 @@ class BusinessSerailizer(serializers.DocumentSerializer):
 
         email_validation(business_email, 'Enter a valid business email address')
         validate_phone(business_number)
-        validate_image(business_logo, 'Logo')
-        validate_image(business_images, 'Images')
-        validate_image(business_banner, 'Banner')
+        if business_logo or not self.instance:
+            validate_image(business_logo, 'Logo')
+        elif self.instance:
+            data.pop('business_logo', None)
+        if business_images or not self.instance:
+            validate_image(business_images, 'Images')
+        elif self.instance:
+            data.pop('business_images', None)
+        if business_banner or not self.instance:
+            validate_image(business_banner, 'Banner')
+        elif self.instance:
+            data.pop('business_banner', None)
 
         # if admin is updating then we will check email & phone availability
         if request.path.startswith(admin_path):
@@ -292,9 +307,10 @@ class BusinessSerailizer(serializers.DocumentSerializer):
                     error_msg='business number already exists',
                 )
 
-        data['created_at'] = timezone.now()
         data['updated_at'] = timezone.now()
-        data['is_active'] = True
+        if not self.instance:
+            data['created_at'] = timezone.now()
+            data['is_active'] = True
 
         return data
 

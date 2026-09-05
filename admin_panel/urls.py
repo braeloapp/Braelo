@@ -25,6 +25,7 @@ from admin_panel.api.admin import (
     AdminBanner,
 )
 from admin_panel.api.collections import AdminMongoCollections
+from admin_panel.api.statistics import AdminStatistics
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
@@ -58,6 +59,8 @@ urlpatterns = [
     # MongoDB collection names (admin tools); with/without trailing slash
     path('collections/', AdminMongoCollections.as_view()),
     path('collections', AdminMongoCollections.as_view()),
+    path('statistics/', AdminStatistics.as_view()),
+    path('statistics', AdminStatistics.as_view()),
     # Active users only (some admin UIs call this path)
     path('users/active/', ActiveUsers.as_view()),
     path('users/active', ActiveUsers.as_view()),

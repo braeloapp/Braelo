@@ -34,6 +34,10 @@ from admin_panel.models import AdminBusinessBanner
 from listings.api.fetch_listings import get_user_recommendations
 from notifications.serializers.events import EventNotificationSerializer
 from users.serializers.business import BusinessSerailizer, BannerSearilizer
+from users.services.business_analytics import (
+    build_business_dashboard,
+    parse_period_days,
+)
 from users.services.businesses_directory_sync import (
     set_businesses_directory_active,
     upsert_businesses_directory_doc,
@@ -232,16 +236,28 @@ class UpdateBusiness(generics.UpdateAPIView):
         '''
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
-        try:
-            business_coordinates = request.data.get('business_coordinates')
-            business_coordinates = json.loads(business_coordinates)
-        except json.JSONDecodeError as exc:
-            raise ValidationError(
-                'Invalid JSON format for business_coordinates.'
-            ) from exc
-
         mutable_data = request.data.copy()
-        mutable_data['business_coordinates'] = business_coordinates
+        raw_coordinates = request.data.get('business_coordinates')
+        if raw_coordinates in (None, ''):
+            existing = instance.business_coordinates
+            if isinstance(existing, dict):
+                mutable_data['business_coordinates'] = existing.get(
+                    'coordinates', existing
+                )
+            else:
+                mutable_data['business_coordinates'] = existing
+        else:
+            try:
+                parsed_coordinates = (
+                    json.loads(raw_coordinates)
+                    if isinstance(raw_coordinates, str)
+                    else raw_coordinates
+                )
+            except json.JSONDecodeError as exc:
+                raise ValidationError(
+                    'Invalid JSON format for business_coordinates.'
+                ) from exc
+            mutable_data['business_coordinates'] = parsed_coordinates
         serializer = self.get_serializer(
             instance,
             data=mutable_data,
@@ -441,12 +457,8 @@ class BusinessDashboard(generics.CreateAPIView):
         user = request.user
         if not user.is_business:
             raise ValidationError({'User': 'Only Business Users Can Acesss'})
-        business_insights = {
-            'Clicks': user.listings_clicks,
-            'Interactions': user.business_interactions,
-            'Listing': user.listings_count,
-            'Featured': user.business_featured,
-        }
+        period_days = parse_period_days(request.query_params.get('period'))
+        business_insights = build_business_dashboard(user, period_days)
         return response(
             status=status.HTTP_200_OK,
             message='Dashboard Fetched Successfully',

@@ -196,6 +196,14 @@ class CreateChatroomApi(generics.CreateAPIView):
             chat_id=shortuuid.uuid(),
         )
         new_chatroom.save()
+        from users.services.business_analytics import record_new_inquiry
+        from users.services.business_settings import maybe_send_business_welcome
+
+        if receiver_type == 'business':
+            record_new_inquiry(second_user_id, user_id)
+        if sender_type == 'business':
+            record_new_inquiry(user_id, second_user_id)
+        maybe_send_business_welcome(new_chatroom, user_id)
         data = ChatSerializer(new_chatroom).data
         return response(
             status=status.HTTP_201_CREATED,

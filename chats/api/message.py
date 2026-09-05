@@ -119,6 +119,10 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         message = serializer.save()
         chatroom.update(set__updated_at=timezone.now())
         notify_new_chat_message(chatroom, message, peer)
+        from users.services.business_analytics import record_inbound_message
+
+        if peer:
+            record_inbound_message(peer, user_id)
         return response(
             status=status.HTTP_201_CREATED,
             message='Message sent successfully',

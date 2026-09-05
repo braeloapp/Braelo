@@ -76,6 +76,11 @@ class SaveListing(generics.CreateAPIView):
             serializer.is_valid(raise_exception=True)
             serializer.save()
             self.send_notification(request)
+            from users.services.business_analytics import record_listing_save
+
+            record_listing_save(
+                request.data.get('listing_id'), request.user.id
+            )
 
             return response(
                 status=status.HTTP_201_CREATED,

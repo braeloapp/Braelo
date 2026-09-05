@@ -34,6 +34,9 @@ from .api import (
     PublicProfile,
     FlipUserStatus,
     BusinessDashboard,
+    BusinessSavedReplyDetailApi,
+    BusinessSavedReplyListCreateApi,
+    BusinessSettingsApi,
     BussinessListing,
     FetchBusinesses,
     ScanBusinessQR,
@@ -87,6 +90,12 @@ urlpatterns = [
     path('device/token', SaveDeviceToken.as_view()),
     # Business Dashboard
     path('business/dashboard', BusinessDashboard.as_view()),
+    path('business/settings', BusinessSettingsApi.as_view()),
+    path('business/saved-replies', BusinessSavedReplyListCreateApi.as_view()),
+    path(
+        'business/saved-replies/<str:reply_id>',
+        BusinessSavedReplyDetailApi.as_view(),
+    ),
     # Business Lisitng (with and without trailing slash so POST is not redirected and Authorization is preserved)
     path('business/', BussinessListing.as_view()),
     path('business', BussinessListing.as_view()),

@@ -199,6 +199,13 @@ class LookupListing(generics.CreateAPIView):
                         listing.save()
                         listsync_listing.save()
                         update_user_clicks.save()
+                    from users.services.business_analytics import (
+                        record_listing_view,
+                    )
+
+                    record_listing_view(
+                        listing.user_id, user.id, listing_id
+                    )
 
             listing_data = listing.to_mongo().to_dict()  # Convert to dict
             listing_data.pop('_id', None)

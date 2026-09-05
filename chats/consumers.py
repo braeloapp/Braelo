@@ -242,6 +242,10 @@ class ChatroomConsumer(WebsocketConsumer):
                 {"type": "chat_message", "message": message_payload},
             )
             notify_new_chat_message(self.chatroom, message, self.second_user_id)
+            from users.services.business_analytics import record_inbound_message
+
+            if self.second_user_id:
+                record_inbound_message(self.second_user_id, self.user_id)
 
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning("WS bad payload from user=%s: %s", self.user_id, exc)
