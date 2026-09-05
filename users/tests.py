@@ -295,7 +295,7 @@ class EmailVerificationTests(TestCase):
     def setUp(self):
         reset_rate_limits()
 
-    @patch("users.services.email_verification.send_mail")
+    @patch("users.services.email_verification.email_service.send")
     def test_signup_does_not_issue_jwt_until_verified(self, mock_mail):
         response = self.client.post(
             "/auth/signup/email",
@@ -314,7 +314,7 @@ class EmailVerificationTests(TestCase):
         self.assertFalse(user.is_email_verified)
         mock_mail.assert_called_once()
 
-    @patch("users.services.email_verification.send_mail")
+    @patch("users.services.email_verification.email_service.send")
     def test_unverified_email_cannot_login(self, mock_mail):
         self.client.post(
             "/auth/signup/email",
@@ -334,8 +334,9 @@ class EmailVerificationTests(TestCase):
         self.assertEqual(body.get("status"), 400)
         self.assertIsNone((body.get("data") or {}).get("token"))
 
-    @patch("users.services.email_verification.send_mail")
-    def test_verify_email_issues_jwt(self, mock_mail):
+    @patch("users.services.email_verification.email_service.send_best_effort")
+    @patch("users.services.email_verification.email_service.send")
+    def test_verify_email_issues_jwt(self, mock_mail, mock_welcome):
         self.client.post(
             "/auth/signup/email",
             data={
