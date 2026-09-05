@@ -250,15 +250,6 @@ class Serializer(serializers.DocumentSerializer):
         # Check keywords limit
         if len(keywords) > KEYWORDS_LIMIT:
             raise ValidationError({'Keywords': 'Limit is 10'})
-        # If it's not an update, Increament in Listings Count
-        if not is_update:
-            if (
-                not data['from_business']
-                and user_status.listings_count == USER_LISTINGS_THRESHOLD
-            ):
-                raise ValidationError({'Listings': 'Normal User Limit Reached'})
-            user_status.listings_count += 1
-            user_status.save()
         # Validate category and subcategory (case/format-insensitive)
         canonical_category = resolve_category(category)
         if canonical_category != self.Meta.category:
@@ -284,6 +275,16 @@ class Serializer(serializers.DocumentSerializer):
                     {'year': f'Year must be between 1886 and {current_year}.'}
                 )
         data['is_active'] = True if status else False
+        # listings_count tracks *active* listings only. Creating a draft
+        # (is_active=False) must not consume a slot; flip-to-active does.
+        if not is_update and data['is_active']:
+            if (
+                not data['from_business']
+                and user_status.listings_count == USER_LISTINGS_THRESHOLD
+            ):
+                raise ValidationError({'Listings': 'Normal User Limit Reached'})
+            user_status.listings_count += 1
+            user_status.save()
         pictures = data.get('pictures', [])
         if pictures is None:
             pictures = []

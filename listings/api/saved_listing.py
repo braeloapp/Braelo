@@ -183,6 +183,7 @@ class FlipListingStatus(generics.CreateAPIView):
                 {'Listing Limit': 'Cannot Exceed 10 For Normal User'}
             )
 
+        previous_status = bool(getattr(listing_doc, 'is_active', False))
         ListSynchronize.flip_status(
             listing_id=listing_id,
             status=listing_status,
@@ -196,12 +197,18 @@ class FlipListingStatus(generics.CreateAPIView):
             user_id=owner_user_id,
             admin=admin,
         )
-        # Updates listings_count for the listing owner (not the admin acting user).
-        if listing_status:
-            listing_limit.listings_count += 1
-        elif not listing_limit.is_business and listing_limit.listings_count > 0:
-            listing_limit.listings_count -= 1
-        listing_limit.save()
+        # Count tracks active listings only. Skip when the request is a
+        # no-op (already at the requested status) so a double tap cannot
+        # increment twice.
+        if previous_status != listing_status:
+            if listing_status:
+                listing_limit.listings_count += 1
+            elif (
+                not listing_limit.is_business
+                and listing_limit.listings_count > 0
+            ):
+                listing_limit.listings_count -= 1
+            listing_limit.save()
 
         updated_listing = model.objects.filter(id=listing_id).first()
         if updated_listing:

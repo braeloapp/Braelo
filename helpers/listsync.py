@@ -64,9 +64,8 @@ class ListSynchronize:
                         )
                 raise ValidationError({'Listings': detail})
             if active_status.is_active == status:
-                raise ValidationError(
-                    {'Status': f'The status is already set to {status}'}
-                )
+                # Idempotent: a second flip to the same status is a no-op.
+                return False
             result = model.objects(**{filter_by: listing_id}).update_one(
                 set__is_active=status
             )
