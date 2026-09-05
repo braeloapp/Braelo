@@ -22,3 +22,4 @@ from listings.models.electronics import ElectronicsListing
 from listings.models.sports_hobby import SportsHobbyListing
 
 from listings.models.saved_listing import SavedItem
+from listings.models.taxonomy import TaxonomyOverride

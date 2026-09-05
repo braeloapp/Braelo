@@ -60,6 +60,23 @@ def business_created_event(user_id, business_id, business_type=''):
     }
 
 
+def support_reply_event(user_id, ticket_id):
+    ticket = '' if ticket_id is None else str(ticket_id)
+    return {
+        'type': 'support',
+        'title': 'Support reply',
+        'body': 'Support replied to your request.',
+        'user_id': [user_id],
+        'data': {
+            'type': 'support_reply',
+            'entity_type': 'support',
+            'entity_id': ticket,
+            'action': 'open_support',
+            'ticket_id': ticket,
+        },
+    }
+
+
 def chat_message_event(user_id, chat_id, sender_id, message_id=''):
     room = '' if chat_id is None else str(chat_id)
     return {

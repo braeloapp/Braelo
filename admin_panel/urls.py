@@ -16,8 +16,11 @@ from admin_panel.api.admin import (
     AllUsers,
     ActiveUsers,
     AdminMe,
+    AdminUserDetail,
+    AdminBusinessDetail,
     AllAppFeedback,
     AllFeedback,
+    SupportReply,
     AllNotifications,
     ReportedUsers,
     SendAdminNotification,
@@ -26,12 +29,14 @@ from admin_panel.api.admin import (
 )
 from admin_panel.api.collections import AdminMongoCollections
 from admin_panel.api.statistics import AdminStatistics
+from admin_panel.api.taxonomy import AdminTaxonomy
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
     UpdateBusiness,
     SignUpWithEmail,
     DeactivateUser,
+    ReactivateUser,
     LoginWithEmail,
     UpdateProfile,
     FetchListings,
@@ -64,6 +69,14 @@ urlpatterns = [
     # Active users only (some admin UIs call this path)
     path('users/active/', ActiveUsers.as_view()),
     path('users/active', ActiveUsers.as_view()),
+    path('users/<int:pk>', AdminUserDetail.as_view()),
+    path('users/<int:pk>/', AdminUserDetail.as_view()),
+    path('taxonomy/', AdminTaxonomy.as_view()),
+    path('taxonomy', AdminTaxonomy.as_view()),
+    path('support/search/', AllFeedback.as_view()),
+    path('support/search', AllFeedback.as_view()),
+    path('support/reply/', SupportReply.as_view()),
+    path('support/reply', SupportReply.as_view()),
     # Update api's
     path('jobs/<str:pk>', JobsUpdateAPI.as_view()),
     path('kids/<str:pk>', KidsUpdateAPI.as_view()),
@@ -108,6 +121,7 @@ urlpatterns = [
     path('business/update', UpdateBusiness.as_view()),
     # Deactivate a user
     path('user/deactivate', DeactivateUser.as_view()),
+    path('user/reactivate', ReactivateUser.as_view()),
     # Deleting business banner
     path('business/banner/delete', BusinessBanner.as_view()),
     # Update banner
@@ -116,6 +130,8 @@ urlpatterns = [
     path('business/fetch/listings', FetchListings.as_view()),
     # Delete a business
     path('business/deactivate', DeactivateBusiness.as_view()),
+    path('business/<str:pk>', AdminBusinessDetail.as_view()),
+    path('business/<str:pk>/', AdminBusinessDetail.as_view()),
     # Send Admin notification
     path('notification/send', SendAdminNotification.as_view()),
     # Delete notification by id

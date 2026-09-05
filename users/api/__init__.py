@@ -19,6 +19,7 @@ from users.api.profile import (
     AboutUser,
     PublicProfile,
     DeactivateUser,
+    ReactivateUser,
     FlipUserStatus,
 )
 from users.api.password import (

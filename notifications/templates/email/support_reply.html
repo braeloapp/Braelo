@@ -1,0 +1,7 @@
+{% extends "email/base.html" %}
+{% block content %}
+  <p>Hi {{ name|default:"there" }},</p>
+  <p>Support replied to your request{% if subject %} about <strong>{{ subject }}</strong>{% endif %}.</p>
+  <p style="background:#f9fafb;border-left:4px solid {{ brand_color }};padding:12px 16px;">{{ reply }}</p>
+  <p>Open the Braelo app to view the full conversation.</p>
+{% endblock %}

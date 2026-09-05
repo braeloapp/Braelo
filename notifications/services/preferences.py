@@ -25,6 +25,7 @@ EVENT_TO_PREFERENCE = {
     'business_status': 'business_activity',
     'admin_announcement': 'admin_announcements',
     'admin': 'admin_announcements',
+    'support_reply': 'system_security',
     'password_changed': 'system_security',
     'security_alert': 'system_security',
     'marketing': 'marketing',

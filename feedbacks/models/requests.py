@@ -30,6 +30,8 @@ class Requests(Document):
     attachments = ListField(required=False, default=None)
     is_active = BooleanField(default=True)
     created_at = DateTimeField()
+    updated_at = DateTimeField()
+    replies = ListField(default=list)
 
     meta = {
         'collection': 'report_issue',
@@ -38,5 +40,6 @@ class Requests(Document):
             {'fields': ['user_id']},
             {'fields': ['email']},
             {'fields': ['subject']},
+            {'fields': ['status']},
         ],
     }

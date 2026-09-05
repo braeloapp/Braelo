@@ -10,6 +10,9 @@ API classes for admin_panel.
 ---------------------------------------------------
 '''
 
+import uuid
+
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from helpers import response, handle_exceptions
@@ -19,13 +22,20 @@ from rest_framework.pagination import PageNumberPagination
 
 
 from users.models import User
+from users.models.business import Business
 from firebase_admin import messaging
 from notifications.models import Notification
 from admin_panel.serializers import UserSerializer
+from admin_panel.services.moderation import apply_user_moderation
+from admin_panel.services.support import apply_support_filters
 from feedbacks.models import Requests, ReportMessage, Feedbacks
 from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
 from users.permissions import admin_role
+from users.serializers.business import BusinessSerailizer
 from notifications.serializers import NotificationSerializer
+from notifications.services.delivery import deliver_event_notification
+from notifications.services.email import email_service
+from helpers.notifications import support_reply_event
 from admin_panel.serializers import BusinessBannerSerializer
 from feedbacks.serializers.report_user import ReportMessageSerializer
 
@@ -63,14 +73,28 @@ class PaginateReportedUsers(PageNumberPagination):
         paginate_results = paginated_data.get('results')
 
         for record in paginate_results:
-            user = User.objects.filter(
-                id=str(record.get('reported_to'))
+            reported_to = User.objects.filter(
+                id=record.get('reported_to')
             ).first()
-            record['reported_to_user'] = user.name
-            user = User.objects.filter(
-                id=str(record.get('reported_by'))
+            record['reported_to_user'] = (
+                reported_to.name if reported_to else None
+            )
+            record['reported_to_id'] = (
+                reported_to.id if reported_to else record.get('reported_to')
+            )
+            reported_by = User.objects.filter(
+                id=record.get('reported_by')
             ).first()
-            record['reported_by_user'] = user.name
+            record['reported_by_user'] = (
+                reported_by.name if reported_by else None
+            )
+            record['reported_by_id'] = (
+                reported_by.id if reported_by else record.get('reported_by')
+            )
+            record['reason'] = record.get('report_checkbox')
+            record['description'] = record.get('issue_description')
+            record['user_id'] = record.get('reported_to')
+            record['report_id'] = record.get('id')
 
         paginated_data['results'] = paginate_results
 
@@ -90,6 +114,46 @@ class AllUsers(generics.ListAPIView):
     serializer_class = UserSerializer
     queryset = User.objects.all()
     pagination_class = Pagination
+
+
+class AdminUserDetail(APIView):
+    '''GET /admin-panel/users/<id> — load a user without sessionStorage.'''
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, pk):
+        user = User.objects.filter(id=pk).first()
+        if not user:
+            return response(
+                status=status.HTTP_404_NOT_FOUND,
+                message='User not found',
+                data={},
+            )
+        return response(
+            status=status.HTTP_200_OK,
+            message='User fetched successfully',
+            data=UserSerializer(user).data,
+        )
+
+
+class AdminBusinessDetail(APIView):
+    '''GET /admin-panel/business/<id> — load a business without sessionStorage.'''
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, pk):
+        business = Business.objects(id=pk).first()
+        if not business:
+            return response(
+                status=status.HTTP_404_NOT_FOUND,
+                message='Business not found',
+                data={},
+            )
+        return response(
+            status=status.HTTP_200_OK,
+            message='Business fetched successfully',
+            data=BusinessSerailizer(business).data,
+        )
 
 
 class ActiveUsers(generics.ListAPIView):
@@ -158,7 +222,69 @@ class AllFeedback(generics.ListAPIView):
     serializer_class = RequestsSerializer
 
     def get_queryset(self):
-        return Requests.objects.filter(is_active=True)
+        return apply_support_filters(
+            Requests.objects.filter(is_active=True),
+            self.request.GET,
+        )
+
+
+class SupportReply(APIView):
+    '''Staff reply stored on the ticket and delivered in-app + email.'''
+
+    permission_classes = [IsAdminUser]
+
+    @handle_exceptions
+    def post(self, request):
+        ticket_id = request.data.get('ticket_id') or request.data.get(
+            'feedback_id'
+        )
+        message = (request.data.get('message') or '').strip()
+        if not ticket_id:
+            raise ValidationError({'ticket_id': 'ticket_id is required'})
+        if not message:
+            raise ValidationError({'message': 'Reply message is required'})
+        if len(message) > 4000:
+            raise ValidationError({'message': 'Reply is too long'})
+
+        ticket = Requests.objects.filter(id=ticket_id, is_active=True).first()
+        if not ticket:
+            raise ValidationError({'ticket_id': 'Support ticket not found'})
+
+        now = timezone.now()
+        reply = {
+            'id': str(uuid.uuid4()),
+            'author_type': 'admin',
+            'author_id': request.user.id,
+            'author_name': request.user.name or request.user.email,
+            'message': message,
+            'created_at': now.isoformat(),
+        }
+        replies = list(ticket.replies or [])
+        replies.append(reply)
+        ticket.replies = replies
+        ticket.updated_at = now
+        if ticket.status in (None, '', 'Active'):
+            ticket.status = 'In Progress'
+        ticket.save()
+
+        if ticket.user_id:
+            deliver_event_notification(
+                support_reply_event(ticket.user_id, str(ticket.id))
+            )
+        email_service.send_best_effort(
+            to=ticket.email,
+            template_key='support_reply',
+            context={
+                'name': ticket.email,
+                'subject': ticket.subject,
+                'reply': message,
+            },
+        )
+        return response(
+            status=status.HTTP_201_CREATED,
+            message='Reply sent',
+            data=RequestsSerializer(ticket).data,
+        )
 
 
 class AllNotifications(generics.ListAPIView):
@@ -187,7 +313,54 @@ class ReportedUsers(generics.ListCreateAPIView):
     serializer_class = ReportMessageSerializer
 
     def get_queryset(self):
-        return ReportMessage.objects.filter(is_active=True)
+        queryset = ReportMessage.objects.all()
+        params = self.request.GET
+        report_status = (params.get('report_status') or '').strip()
+        search_query = (params.get('search_query') or '').strip()
+        creation_date = (params.get('creation_date') or '').strip()
+
+        if report_status and report_status.lower() not in ('all', '*'):
+            if report_status.lower() in ('resolved', 'solved'):
+                queryset = queryset.filter(status__in=['Solved', 'Resolved'])
+            elif report_status.lower() == 'ignored':
+                queryset = queryset.filter(status='Ignored')
+            else:
+                queryset = queryset.filter(status=report_status)
+        if creation_date:
+            from admin_panel.services.support import day_bounds
+
+            start, end = day_bounds(creation_date)
+            if start is not None:
+                queryset = queryset.filter(
+                    created_at__gte=start, created_at__lt=end
+                )
+        if search_query:
+            matching_ids = list(
+                User.objects.filter(name__icontains=search_query).values_list(
+                    'id', flat=True
+                )
+            )
+            queryset = queryset.filter(
+                __raw__={
+                    '$or': [
+                        {'reported_to': {'$in': matching_ids}},
+                        {'reported_by': {'$in': matching_ids}},
+                        {
+                            'report_checkbox': {
+                                '$regex': search_query,
+                                '$options': 'i',
+                            }
+                        },
+                        {
+                            'issue_description': {
+                                '$regex': search_query,
+                                '$options': 'i',
+                            }
+                        },
+                    ]
+                }
+            )
+        return queryset
 
     @handle_exceptions
     def post(self, request):
@@ -199,6 +372,7 @@ class ReportedUsers(generics.ListCreateAPIView):
         report_id = request.data.get("report_id")
         user_id = request.data.get("user_id")
         action_type = request.data.get("action_type")
+        notes = (request.data.get("notes") or request.data.get("resolution_notes") or "").strip()
 
         # Validate required fields
         if not report_id:
@@ -215,37 +389,35 @@ class ReportedUsers(generics.ListCreateAPIView):
         if not user:
             raise ValidationError({"Error": "User not found"})
 
-        report = ReportMessage.objects.filter(
-            id=report_id, is_active=True
-        ).first()
+        report = ReportMessage.objects.filter(id=report_id).first()
         if not report:
             raise ValidationError({"Error": "No Report Found"})
-
-        if action_type == "warn":
-            user.is_warned = True
-            if user.is_warned:  # If already warned, ban the user
-                user.is_banned = True
-
-            user.save(
-                update_fields=(
-                    ["is_warned", "is_banned"]
-                    if user.is_banned
-                    else ["is_warned"]
-                )
+        if report.reported_to and int(report.reported_to) != int(user_id):
+            raise ValidationError(
+                {"Error": "user_id does not match this report"}
             )
 
-        elif action_type == "ban":
-            user.is_banned = True
-            user.save(update_fields=["is_banned"])
+        result = apply_user_moderation(user, action_type)
+        if result['update_fields']:
+            user.save(update_fields=result['update_fields'])
 
+        now = timezone.now()
         report.is_active = False
-        report.status = "Solved"
-        report.save(update_fields=["is_active", "status"])
+        report.status = 'Ignored' if action_type == 'ignore' else 'Resolved'
+        report.action_taken = action_type
+        report.resolution_notes = notes
+        report.resolved_by = request.user.id
+        report.resolved_at = now
+        report.save()
 
         return response(
             status=status.HTTP_200_OK,
             message='Case Solved',
-            data={},
+            data={
+                'action_type': action_type,
+                'banned': result['banned'],
+                'already_warned': result['already_warned'],
+            },
         )
 
 

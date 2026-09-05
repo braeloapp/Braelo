@@ -30,56 +30,104 @@ def _validate_email(email):
         raise ValidationError({'email': 'Enter a valid email address.'})
 
 
-# todo Add role in all
+STAFF_ROLE_VALUES = {'true', 'admin', 'subadmin', '1', 'yes'}
+CLIENT_ROLE_VALUES = {'false', 'user', 'client', '0', 'no', ''}
+
+
+def parse_signup_role(raw) -> str:
+    '''Return ``admin`` or ``user``. Accepts legacy booleans and UI labels.'''
+    if raw is True:
+        return 'admin'
+    if raw is False or raw is None:
+        return 'user'
+    value = str(raw).strip().lower()
+    if value in STAFF_ROLE_VALUES:
+        return 'admin'
+    if value in CLIENT_ROLE_VALUES:
+        return 'user'
+    raise ValidationError(
+        {'role': 'Role must be user, admin, or subadmin.'}
+    )
+
+
 class EmailSignup(serializers.Serializer):
     email = serializers.EmailField(required=True)
     name = serializers.CharField(required=True)
     password = serializers.CharField(write_only=True, required=True)
-    role = serializers.BooleanField(required=False, default=False)
+    phone_number = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default=''
+    )
+    role = serializers.CharField(required=False, allow_blank=True, default='user')
 
     class Meta:
         model = User
-        fields = ['name', 'email', 'password', 'role']
+        fields = ['name', 'email', 'password', 'phone_number', 'role']
         extra_kwargs = {'password': {'write_only': True}}
 
+    def validate_phone_number(self, value):
+        if not value:
+            return ''
+        digits = ''.join(ch for ch in str(value) if ch.isdigit() or ch == '+')
+        if len(''.join(ch for ch in digits if ch.isdigit())) < 8:
+            raise ValidationError('Enter a valid phone number.')
+        return digits[:15]
+
+    def validate_role(self, value):
+        return parse_signup_role(value)
+
     def validate(self, data):
-        admin_path = "/admin-panel/signup"
         request = self.context['request']
         email = data.get('email')
         password = data.get('password')
-        if request.path == admin_path:
-            role = request.data.get('role')
-            if not role:
+        path = getattr(request, 'path', '') or ''
+        if path.startswith('/admin-panel/'):
+            raw_role = request.data.get('role', data.get('role', 'user'))
+            if raw_role in (None, ''):
                 raise ValidationError({'role': 'Admin must add role.'})
+            data['role'] = parse_signup_role(raw_role)
         if not email:
             raise ValidationError({'email': 'Email is required.'})
         if not password:
             raise ValidationError({'password': 'Password is required.'})
+        if len(str(password)) < 6:
+            raise ValidationError(
+                {'password': 'Password must be at least 6 characters.'}
+            )
         email = _validate_email(email)
+        data['email'] = email
         if User.objects.filter(email=email).exists():
             raise ValidationError({'email': 'This email is already taken.'})
-        # Password validation
-        # data['password'] = make_password(password)
         return data
 
     def create(self, validated_data):
-        if validated_data:
-            validated_data['created_at'] = timezone.now()
-            validated_data['updated_at'] = timezone.now()
-            validated_data['is_staff'] = validated_data.get('role', False)
-            validated_data['is_active'] = True
-            request = self.context.get('request')
-            path = getattr(request, 'path', '') if request is not None else ''
-            # Admin-created accounts are trusted. Mobile email signup must verify.
-            validated_data['is_email_verified'] = path.startswith(
-                '/admin-panel/'
-            )
-            user = User.objects.create_user(**validated_data)
-            return user
-            # user = User(**validated_data)
-            # if user.save():
-            #     return user
-        return None
+        if not validated_data:
+            return None
+        request = self.context.get('request')
+        path = getattr(request, 'path', '') if request is not None else ''
+        admin_created = path.startswith('/admin-panel/')
+        requested_role = parse_signup_role(validated_data.pop('role', 'user'))
+        make_staff = admin_created and requested_role == 'admin'
+        if make_staff:
+            actor = getattr(request, 'user', None)
+            if not getattr(actor, 'is_superuser', False):
+                raise ValidationError(
+                    {
+                        'role': (
+                            'Only a Super Admin can create staff accounts.'
+                        )
+                    }
+                )
+        phone = validated_data.pop('phone_number', '') or ''
+        validated_data['created_at'] = timezone.now()
+        validated_data['updated_at'] = timezone.now()
+        validated_data['is_staff'] = make_staff
+        validated_data['is_superuser'] = False
+        validated_data['is_active'] = True
+        validated_data['role'] = 'Admin' if make_staff else 'Client'
+        validated_data['is_email_verified'] = admin_created
+        if phone:
+            validated_data['phone_number'] = phone
+        return User.objects.create_user(**validated_data)
 
     def update(self, instance, validated_data):
         instance.name = validated_data.get('name', instance.name)

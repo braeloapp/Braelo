@@ -1,0 +1,7 @@
+Hi {{ name|default:"there" }},
+
+Support replied to your request{% if subject %} about {{ subject }}{% endif %}.
+
+{{ reply }}
+
+Open the Braelo app to view the full conversation.

@@ -67,8 +67,12 @@ class SignUpWithEmail(generics.CreateAPIView):
             raise Exception('Cannot Add user to Database')
         if is_admin_path(request):
             admin_data = {
+                'id': user.id,
                 'email': user.email,
                 'name': user.name,
+                'phone_number': user.phone_number,
+                'is_staff': user.is_staff,
+                'role': user.role,
                 'created_at': user.created_at,
             }
             return response(

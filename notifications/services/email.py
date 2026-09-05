@@ -67,6 +67,12 @@ class EmailTemplateService:
             html='email/business_activated.html',
             text='email/business_activated.txt',
         ),
+        'support_reply': EmailTemplate(
+            key='support_reply',
+            subject='Support replied to your Braelo request',
+            html='email/support_reply.html',
+            text='email/support_reply.txt',
+        ),
     }
 
     def get(self, template_key: str) -> EmailTemplate:

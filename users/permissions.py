@@ -38,6 +38,22 @@ def require_staff(request):
     return request.user
 
 
+def is_superuser(user) -> bool:
+    return bool(
+        user
+        and getattr(user, 'is_authenticated', False)
+        and getattr(user, 'is_superuser', False)
+    )
+
+
+def require_superuser(request):
+    if not is_superuser(getattr(request, 'user', None)):
+        raise ValidationError(
+            {'error': 'Super Admin access is required for this action.'}
+        )
+    return request.user
+
+
 class DenyAdminPathUnlessStaff(BasePermission):
     '''
     Non-admin URLs are unchanged. Admin-panel URLs require staff/superuser.

@@ -199,6 +199,37 @@ class DeactivateUser(generics.CreateAPIView):
         )
 
 
+class ReactivateUser(generics.CreateAPIView):
+    '''Staff-only reactivation of a deactivated account.'''
+
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
+
+    @handle_exceptions
+    def post(self, request, *args, **kwargs):
+        require_staff(request)
+        user_id = request.data.get('user_id')
+        if not user_id:
+            raise ValidationError({'error': 'user_id is missing'})
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            raise ValidationError({'error': 'user not found'})
+        if user.is_banned:
+            raise ValidationError(
+                {'user': 'Banned accounts cannot be reactivated from here.'}
+            )
+        if user.is_active:
+            raise ValidationError({'user': 'This profile is already active.'})
+
+        user.is_active = True
+        user.updated_at = timezone.now()
+        user.save(update_fields=['is_active', 'updated_at'])
+        return response(
+            status=status.HTTP_200_OK,
+            message='Profile reactivated successfully',
+            data={'id': user.id, 'is_active': True},
+        )
+
+
 class FlipUserStatus(generics.CreateAPIView):
     '''
     Flips normal user into business user

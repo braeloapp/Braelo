@@ -20,6 +20,10 @@ class ReportMessage(Document):
     status = StringField(default='Pending')
     created_at = DateTimeField()
     is_active = BooleanField(default=True)
+    action_taken = StringField()
+    resolution_notes = StringField()
+    resolved_by = IntField()
+    resolved_at = DateTimeField()
 
     meta = {
         'collection': 'reported_users',
@@ -28,5 +32,6 @@ class ReportMessage(Document):
             {'fields': ['reported_by']},
             {'fields': ['reported_to']},
             {'fields': ['is_active']},
+            {'fields': ['status']},
         ],
     }
