@@ -51,6 +51,11 @@ class ListSync(Document):
             {'fields': ['listing_id']},
             {'fields': ['category']},
             {'fields': ['title']},
-            # {'fields': ['user_id', 'listing_id']},
+            {'fields': ['keywords']},
+            {'fields': ['location']},
+            {'fields': ['is_active', '-created_at']},
+            {'fields': ['is_active', 'category']},
+            {'fields': ['is_active', 'subcategory']},
+            {'fields': [('listing_coordinates', '2dsphere')]},
         ],
     }

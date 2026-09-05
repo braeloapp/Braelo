@@ -54,5 +54,7 @@ class Business(Document):
             {'fields': ['business_name']},
             {'fields': ['business_category']},
             {'fields': ['business_subcategory']},
+            {'fields': ['is_active', 'business_category']},
+            {'fields': [('business_coordinates', '2dsphere')]},
         ],
     }
