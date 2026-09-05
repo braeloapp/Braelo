@@ -24,6 +24,7 @@ from users.serializers import (
     CreatePasswordSerializer,
 )
 from helpers import handle_exceptions, response
+from users.services.rate_limit import enforce_rate_limit
 
 
 class ForgotPassword(generics.CreateAPIView):
@@ -48,6 +49,11 @@ class ForgotPassword(generics.CreateAPIView):
         :return: user's password status. (json)
         '''
         data = request.data
+        enforce_rate_limit(
+            request,
+            'forgot-password',
+            extra_key=(data.get('email') or '').strip().lower() or None,
+        )
         user = self.get_serializer(data=data)
         user.is_valid(raise_exception=True)
         otp = self._generate_otp()
@@ -83,6 +89,11 @@ class VerifyOTP(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
+        enforce_rate_limit(
+            request,
+            'password-otp',
+            extra_key=(data.get('email') or '').strip().lower() or None,
+        )
         user = self.get_serializer(data=data)
         user.is_valid(raise_exception=True)
         otp_rec = user.validated_data['otp_record']

@@ -99,11 +99,30 @@ def _parse_user_profile(data: dict) -> dict:
     return profile
 
 
+def _rate_limit_chatbot(request):
+    from users.services.rate_limit import RateLimitExceeded, enforce_rate_limit
+
+    try:
+        enforce_rate_limit(request, "chatbot")
+        return None
+    except RateLimitExceeded as exc:
+        return JsonResponse(
+            {
+                "error": str(exc),
+                "response": "Too many requests. Please try again later.",
+            },
+            status=429,
+        )
+
+
 @csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
 def api_chat(request):
     if request.method == "OPTIONS":
         return HttpResponse("", status=200)
+    limited = _rate_limit_chatbot(request)
+    if limited is not None:
+        return limited
     try:
         data = json.loads(request.body) if request.body else {}
         message = (data.get("message") or data.get("msg") or "").strip()
@@ -209,6 +228,9 @@ def api_chat(request):
 def legacy_get(request):
     if request.method == "OPTIONS":
         return HttpResponse("", status=200)
+    limited = _rate_limit_chatbot(request)
+    if limited is not None:
+        return limited
     msg = request.POST.get("msg") or ""
     if not msg:
         try:

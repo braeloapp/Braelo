@@ -46,14 +46,13 @@ def get_error_details(error_info):
     return 'Unknown error format'
 
 
-def response(status, message, data, error=None):
+def response(status, message, data, error=None, http_status=None, retry_after=None):
     '''
     Returns a structured response with validation errors.
-    :param status: Status code information. (dict)
-    :param error: Error information. (dict)
-    :param data: User information. (dict)
-    :param message: Information about response. (dict)
-    :return: Response object with formatted error details.
+
+    HTTP status stays 200 unless ``http_status`` is set. Existing Flutter
+    and admin clients read ``status`` from the JSON body. Rate limits and
+    health probes are the exception and set a real HTTP status.
     '''
 
     def _sanitize_for_json(value):
@@ -82,7 +81,12 @@ def response(status, message, data, error=None):
         'error': error,
         'data': data,
     }
-    return JsonResponse(resp)
+    payload = JsonResponse(resp)
+    if http_status is not None:
+        payload.status_code = int(http_status)
+    if retry_after is not None:
+        payload['Retry-After'] = str(int(retry_after))
+    return payload
 
 
 def get_token(user):

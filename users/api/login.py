@@ -16,7 +16,9 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from helpers import handle_exceptions, get_token, response
+from users.permissions import is_admin_path
 from users.serializers import EmailLogin, TokenBlacklistSerializer
+from users.services.rate_limit import enforce_rate_limit
 
 from users.models import Business
 
@@ -35,6 +37,9 @@ class LoginWithEmail(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
+        email = (data.get('email') or '').strip().lower()
+        scope = 'admin-login' if is_admin_path(request) else 'login'
+        enforce_rate_limit(request, scope, extra_key=email or None)
         user = self.get_serializer(data=data, context={'request': request})
         user.is_valid(raise_exception=True)
         user = user.validated_data
@@ -68,6 +73,7 @@ class TokenRefresh(TokenRefreshView):
         :param request: request object containing refresh token.
         :return: new access token if refresh token is valid.
         '''
+        enforce_rate_limit(request, 'token-refresh')
         refresh = super().post(request, *args, **kwargs)
         data = {
             'refresh': refresh.data.get('refresh', request.data['refresh']),

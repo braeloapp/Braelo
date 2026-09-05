@@ -130,3 +130,4 @@ yarl==1.15.2
 zope.interface==7.2
 setuptools>=65.5.0
 wheel>=0.40.0
+sentry-sdk>=2.0.0,<3

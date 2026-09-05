@@ -17,6 +17,7 @@ from pymongo.errors import PyMongoError
 from rest_framework.exceptions import ValidationError
 from sqlite3 import OperationalError as SQLITE_ERROR
 from helpers import get_error_details, response
+from users.services.rate_limit import RateLimitExceeded
 
 
 def _safe_request_data(request):
@@ -32,6 +33,15 @@ def handle_exceptions(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except RateLimitExceeded as err:
+            return response(
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+                message='Too many requests',
+                data={},
+                error=str(err),
+                http_status=429,
+                retry_after=err.retry_after,
+            )
         except ValidationError as err:
             error = get_error_details(err.detail)
             return response(

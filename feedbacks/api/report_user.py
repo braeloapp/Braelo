@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_mongoengine import generics
 from helpers import response, handle_exceptions
 from feedbacks.serializers import ReportMessageSerializer
+from users.services.rate_limit import enforce_rate_limit
 
 
 class ReportMessage(generics.GenericAPIView):
@@ -17,6 +18,7 @@ class ReportMessage(generics.GenericAPIView):
         :return: report object. (dict)
         '''
 
+        enforce_rate_limit(request, 'report', extra_key=str(request.user.id))
         serializer = self.get_serializer(
             data=request.data, context={"request": request}
         )

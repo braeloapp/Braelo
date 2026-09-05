@@ -204,19 +204,61 @@ if is_production_like(DJANGO_ENV):
     # unless explicitly enabled. Health probes may arrive as HTTP.
     SECURE_SSL_REDIRECT = _env_bool("SECURE_SSL_REDIRECT", default=False)
 
+_json_logs = is_production_like(DJANGO_ENV) or _env_bool(
+    "BRAELO_JSON_LOGS", default=False
+)
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+        "json": {
+            "()": "config.json_logging.JsonFormatter",
+        },
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+            "formatter": "json" if _json_logs else "verbose",
         },
     },
     "root": {
         "handlers": ["console"],
-        "level": "INFO",
+        "level": os.getenv("LOG_LEVEL", "INFO").strip() or "INFO",
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "braelo.health": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
+
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0") or 0)
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            environment=DJANGO_ENV,
+            send_default_pii=False,
+            traces_sample_rate=max(0.0, min(SENTRY_TRACES_SAMPLE_RATE, 1.0)),
+            integrations=[DjangoIntegration()],
+        )
+        _settings_log.info("Sentry initialized (env=%s)", DJANGO_ENV)
+    except Exception as exc:
+        _settings_log.warning("Sentry initialization skipped: %s", exc)
 
 # Email backend
 
@@ -274,6 +316,7 @@ REST_FRAMEWORK = {
         'django_filters.rest_framework.DjangoFilterBackend'
     ],
     'PAGE_SIZE': 15,
+    'EXCEPTION_HANDLER': 'config.exceptions.braelo_exception_handler',
 }
 
 # Set up JWT settings
@@ -681,14 +724,19 @@ MONGO_BUSINESS_COLLECTIONS = [
 # After a KB match, surface local providers when intent has category/subcategory + user location
 KB_PROVIDER_SUGGESTIONS = os.getenv('KB_PROVIDER_SUGGESTIONS', 'true').lower() in ('true', '1', 'yes')
 KB_PROVIDER_SUGGESTIONS_MAX = int(os.getenv('KB_PROVIDER_SUGGESTIONS_MAX', '3'))
-# Verbose [SessionGeo] logs in chat_flow (terminal). Set false in production to reduce noise.
-BRAELO_SESSION_GEO_DEBUG = os.getenv("BRAELO_SESSION_GEO_DEBUG", "true").lower() in (
+# Verbose [SessionGeo] logs in chat_flow (terminal). Off by default in production.
+_agent_debug_default = "false" if is_production_like(DJANGO_ENV) else "true"
+BRAELO_SESSION_GEO_DEBUG = os.getenv(
+    "BRAELO_SESSION_GEO_DEBUG", _agent_debug_default
+).lower() in (
     "1",
     "true",
     "yes",
 )
 # Verbose [BraeloAgent:…] logs for the agent wrapper layer (Tier 2a0 + learning).
-BRAELO_AGENT_DEBUG = os.getenv("BRAELO_AGENT_DEBUG", "true").lower() in (
+BRAELO_AGENT_DEBUG = os.getenv(
+    "BRAELO_AGENT_DEBUG", _agent_debug_default
+).lower() in (
     "1",
     "true",
     "yes",

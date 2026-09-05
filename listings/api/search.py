@@ -26,6 +26,7 @@ from listings.geo import request_geo_filter
 from listings.visibility import exclude_blocked_owners
 from listings.serializers import ListsyncSerializer
 from rest_framework.exceptions import ValidationError
+from users.services.rate_limit import enforce_rate_limit
 
 
 MIN_SEARCH_LENGTH = 3
@@ -59,6 +60,16 @@ class Search(generics.ListAPIView):
     pagination_class = Pagination
     permission_classes = [IsAuthenticatedOrReadOnly]
     serializer_class = ListsyncSerializer
+
+    def list(self, request, *args, **kwargs):
+        user = getattr(request, 'user', None)
+        extra = (
+            str(user.id)
+            if user is not None and getattr(user, 'is_authenticated', False)
+            else None
+        )
+        enforce_rate_limit(request, 'search', extra_key=extra)
+        return super().list(request, *args, **kwargs)
 
     def get_queryset(self):
         search = (self.request.GET.get('search') or '').strip()

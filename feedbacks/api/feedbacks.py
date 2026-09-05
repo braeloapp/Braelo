@@ -19,6 +19,7 @@ from rest_framework.pagination import PageNumberPagination
 from feedbacks.models import Requests, Feedbacks
 from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
 from users.permissions import is_staff_user
+from users.services.rate_limit import enforce_rate_limit
 
 
 class Pagination(PageNumberPagination):
@@ -76,6 +77,7 @@ class SupportRequest(generics.RetrieveUpdateDestroyAPIView):
 
     @handle_exceptions
     def post(self, request, **kwargs):
+        enforce_rate_limit(request, 'support', extra_key=str(request.user.id))
         serializer = self.get_serializer(
             data=request.data, context={'request': request}
         )
@@ -139,6 +141,7 @@ class Feedback(generics.ListCreateAPIView):
 
     @handle_exceptions
     def post(self, request, **kwargs):
+        enforce_rate_limit(request, 'feedback', extra_key=str(request.user.id))
         serializer = self.get_serializer(
             data=request.data, context={'request': request}
         )

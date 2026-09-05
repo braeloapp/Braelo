@@ -15,6 +15,8 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import path, include
 
+from config.health import healthz, readyz
+
 def home(request):
     return HttpResponse("Braelo is running.")
 
@@ -27,6 +29,10 @@ def azure_load_probe(request):
 urlpatterns = [
     path("", home),
     path("home/", home),
+    path("healthz", healthz),
+    path("healthz/", healthz),
+    path("readyz", readyz),
+    path("readyz/", readyz),
     path("robots933456.txt", azure_load_probe),
     path('admin/', admin.site.urls),
     path('auth/', include('users.urls')),

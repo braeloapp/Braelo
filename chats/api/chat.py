@@ -33,6 +33,7 @@ from chats.services import (
 )
 
 from helpers import response, handle_exceptions
+from users.services.rate_limit import enforce_rate_limit
 
 
 class ChatroomPagination(PageNumberPagination):
@@ -154,6 +155,7 @@ class CreateChatroomApi(generics.CreateAPIView):
         Handle the creation or retrieval of a chatroom.
         '''
         assert_user_can_chat(request.user)
+        enforce_rate_limit(request, 'chat-create', extra_key=str(request.user.id))
         user_id = str(request.user.id)  # Get the current user's ID
         second_user_id = request.data.get('user_id')
         receiver_type = request.data.get('receiver')

@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError
 
 from notifications.services.email import email_service
 from users.models.users import EmailVerificationToken, User
-from users.services.rate_limit import check_rate_limit, client_ip
+from users.services.rate_limit import enforce_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -31,33 +31,8 @@ def _generate_otp() -> str:
 
 
 def send_verification_email(user: User, request=None) -> EmailVerificationToken:
-    if request is not None:
-        ip = client_ip(request)
-        if not check_rate_limit(
-            f"email-verify-send:{ip}",
-            limit=RESEND_LIMIT,
-            window_seconds=RESEND_WINDOW_SECONDS,
-        ):
-            raise ValidationError(
-                {
-                    'detail': (
-                        'Too many verification emails. Please try again later.'
-                    )
-                }
-            )
     email_key = (user.email or '').strip().lower()
-    if email_key and not check_rate_limit(
-        f"email-verify-send-email:{email_key}",
-        limit=RESEND_LIMIT,
-        window_seconds=RESEND_WINDOW_SECONDS,
-    ):
-        raise ValidationError(
-            {
-                'detail': (
-                    'Too many verification emails. Please try again later.'
-                )
-            }
-        )
+    enforce_rate_limit(request, 'email-verify-send', extra_key=email_key or None)
 
     EmailVerificationToken.objects.filter(
         user=user, used_at__isnull=True
@@ -86,19 +61,7 @@ def verify_email_otp(email: str, otp: str, request=None) -> User:
     email = (email or '').strip().lower()
     otp = (otp or '').strip()
     if request is not None:
-        ip = client_ip(request)
-        if not check_rate_limit(
-            f"email-verify:{ip}",
-            limit=VERIFY_LIMIT,
-            window_seconds=VERIFY_WINDOW_SECONDS,
-        ):
-            raise ValidationError(
-                {
-                    'detail': (
-                        'Too many verification attempts. Please try again later.'
-                    )
-                }
-            )
+        enforce_rate_limit(request, 'email-verify', extra_key=email or None)
     if not email or not otp:
         raise ValidationError({'otp': 'Email and verification code are required.'})
 

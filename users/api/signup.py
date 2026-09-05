@@ -33,7 +33,7 @@ from users.services.firebase_identity import (
     verify_firebase_id_token,
 )
 from users.services.email_verification import send_verification_email
-from users.services.rate_limit import check_rate_limit, client_ip
+from users.services.rate_limit import enforce_rate_limit
 from helpers import (
     handle_exceptions,
     get_token,
@@ -55,6 +55,12 @@ class SignUpWithEmail(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
+        if not is_admin_path(request):
+            enforce_rate_limit(
+                request,
+                'signup',
+                extra_key=(data.get('email') or '').strip().lower() or None,
+            )
         if is_admin_path(request):
             require_staff(request)
         user = self.get_serializer(data=data, context={'request': request})
@@ -241,17 +247,7 @@ class LoginAuth(generics.CreateAPIView):
                 {'Type': 'Must be ["google","apple","phone"]'}
             )
         if login_type in ['google', 'apple']:
-            ip = client_ip(request)
-            if not check_rate_limit(
-                f"social-login:{ip}", limit=8, window_seconds=300
-            ):
-                raise ValidationError(
-                    {
-                        'detail': (
-                            'Too many login attempts. Please try again later.'
-                        )
-                    }
-                )
+            enforce_rate_limit(request, 'social-login')
             data = self.authenticate_user(login_type, request.data)
             return response(
                 status=status.HTTP_200_OK,
@@ -262,15 +258,7 @@ class LoginAuth(generics.CreateAPIView):
         # Phone login: JWT is issued only after a verified Firebase ID token.
         # Client-supplied phone_number is ignored for identity.
         if login_type == 'phone':
-            ip = client_ip(request)
-            if not check_rate_limit(f"phone-login:{ip}", limit=8, window_seconds=300):
-                raise ValidationError(
-                    {
-                        'detail': (
-                            'Too many phone login attempts. Please try again later.'
-                        )
-                    }
-                )
+            enforce_rate_limit(request, 'phone-login')
             claims = verify_firebase_id_token(extract_id_token(request.data))
             phone_number = phone_from_firebase_claims(claims)
             self.validate_phone_number(phone_number)

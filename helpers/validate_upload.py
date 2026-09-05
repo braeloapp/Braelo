@@ -95,9 +95,24 @@ def validate_phone(phone):
         raise ValidationError({'error': 'This is not valid phone number.'})
 
 
+ALLOWED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
+ALLOWED_IMAGE_CONTENT_TYPES = {
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+}
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+
 def validate_image(file, picture):
     # validate image to be in correct format for saving
     if isinstance(file, UploadedFile):
         name = (getattr(file, 'name', None) or '').lower()
-        if not name.endswith(('.jpg', '.jpeg', '.png')):
+        if not name.endswith(ALLOWED_IMAGE_EXTENSIONS):
             raise ValidationError({picture: f'Invalid {picture} format'})
+        content_type = (getattr(file, 'content_type', None) or '').lower()
+        if content_type and content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+            raise ValidationError({picture: f'Invalid {picture} type'})
+        size = getattr(file, 'size', None)
+        if size is not None and size > MAX_IMAGE_BYTES:
+            raise ValidationError({picture: f'{picture} exceeds 8MB limit'})
