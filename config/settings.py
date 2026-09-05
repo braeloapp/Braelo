@@ -282,9 +282,13 @@ from datetime import timedelta
 SIMPLE_JWT = {
     # Some clients send "bearer" (lowercase); SimpleJWT matches the scheme exactly otherwise auth is skipped → 401.
     'AUTH_HEADER_TYPES': ('Bearer', 'bearer', 'JWT'),
+    'ROTATE_REFRESH_TOKENS': _env_bool('JWT_ROTATE_REFRESH_TOKENS', default=True),
     'BLACKLIST_AFTER_ROTATION': _env_bool('JWT_BLACKLIST_AFTER_ROTATION', default=True),
     'ACCESS_TOKEN_LIFETIME': timedelta(
         minutes=_env_int('JWT_ACCESS_TOKEN_MINUTES', 2880)
+    ),
+    'REFRESH_TOKEN_LIFETIME': timedelta(
+        days=_env_int('JWT_REFRESH_TOKEN_DAYS', 7)
     ),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(
         days=_env_int('JWT_SLIDING_REFRESH_DAYS', 7)

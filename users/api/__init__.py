@@ -12,6 +12,7 @@ __init__.py file for endpoints imports.
 
 from users.api.login import LoginWithEmail, TokenRefresh, Logout
 from users.api.signup import SignUpWithEmail, LoginAuth
+from users.api.email_verification import VerifyEmail, ResendEmailVerification
 from users.api.profile import (
     UpdateProfile,
     UserProfile,

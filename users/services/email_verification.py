@@ -1,0 +1,137 @@
+"""
+Email verification OTP lifecycle.
+
+Tokens are stored hashed-equivalent as a short OTP with expiry and attempt
+limits. Identity is always the user record, never a client-supplied user id.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import pyotp
+from django.conf import settings
+from django.core.mail import send_mail
+from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
+from users.models.users import EmailVerificationToken, User
+from users.services.rate_limit import check_rate_limit, client_ip
+
+logger = logging.getLogger(__name__)
+
+RESEND_LIMIT = 3
+RESEND_WINDOW_SECONDS = 600
+VERIFY_LIMIT = 8
+VERIFY_WINDOW_SECONDS = 300
+
+
+def _generate_otp() -> str:
+    secret = pyotp.random_base32()
+    return pyotp.TOTP(secret, digits=6, interval=300).now()
+
+
+def send_verification_email(user: User, request=None) -> EmailVerificationToken:
+    if request is not None:
+        ip = client_ip(request)
+        if not check_rate_limit(
+            f"email-verify-send:{ip}",
+            limit=RESEND_LIMIT,
+            window_seconds=RESEND_WINDOW_SECONDS,
+        ):
+            raise ValidationError(
+                {
+                    'detail': (
+                        'Too many verification emails. Please try again later.'
+                    )
+                }
+            )
+    email_key = (user.email or '').strip().lower()
+    if email_key and not check_rate_limit(
+        f"email-verify-send-email:{email_key}",
+        limit=RESEND_LIMIT,
+        window_seconds=RESEND_WINDOW_SECONDS,
+    ):
+        raise ValidationError(
+            {
+                'detail': (
+                    'Too many verification emails. Please try again later.'
+                )
+            }
+        )
+
+    EmailVerificationToken.objects.filter(
+        user=user, used_at__isnull=True
+    ).delete()
+    otp = _generate_otp()
+    record = EmailVerificationToken.objects.create(user=user, otp=otp)
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or None
+    try:
+        send_mail(
+            subject='Verify your Braelo email',
+            message=(
+                f'Your Braelo verification code is {otp}. '
+                f'It expires in {EmailVerificationToken.TTL_MINUTES} minutes. '
+                'Do not share this code with anyone.'
+            ),
+            from_email=from_email,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception('Failed to send verification email to %s', user.email)
+        raise ValidationError(
+            {'email': 'Unable to send verification email. Please try again.'}
+        )
+    return record
+
+
+def verify_email_otp(email: str, otp: str, request=None) -> User:
+    email = (email or '').strip().lower()
+    otp = (otp or '').strip()
+    if request is not None:
+        ip = client_ip(request)
+        if not check_rate_limit(
+            f"email-verify:{ip}",
+            limit=VERIFY_LIMIT,
+            window_seconds=VERIFY_WINDOW_SECONDS,
+        ):
+            raise ValidationError(
+                {
+                    'detail': (
+                        'Too many verification attempts. Please try again later.'
+                    )
+                }
+            )
+    if not email or not otp:
+        raise ValidationError({'otp': 'Email and verification code are required.'})
+
+    user = User.objects.filter(email=email).first()
+    if not user:
+        raise ValidationError({'email': 'No account found for this email.'})
+    if user.is_email_verified:
+        return user
+
+    record = (
+        EmailVerificationToken.objects.filter(user=user, used_at__isnull=True)
+        .order_by('-created_at')
+        .first()
+    )
+    if record is None:
+        raise ValidationError({'otp': 'No verification code found. Please resend.'})
+    if record.has_expired():
+        raise ValidationError({'otp': 'Verification code has expired.'})
+    if record.attempts >= EmailVerificationToken.MAX_ATTEMPTS:
+        raise ValidationError(
+            {'otp': 'Too many incorrect attempts. Please resend a new code.'}
+        )
+    if record.otp != otp:
+        record.attempts += 1
+        record.save(update_fields=['attempts'])
+        raise ValidationError({'otp': 'Invalid verification code.'})
+
+    record.used_at = timezone.now()
+    record.save(update_fields=['used_at'])
+    user.is_email_verified = True
+    user.save(update_fields=['is_email_verified'])
+    return user

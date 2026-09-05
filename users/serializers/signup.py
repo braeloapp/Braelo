@@ -68,7 +68,12 @@ class EmailSignup(serializers.Serializer):
             validated_data['updated_at'] = timezone.now()
             validated_data['is_staff'] = validated_data.get('role', False)
             validated_data['is_active'] = True
-            validated_data['is_email_verified'] = True
+            request = self.context.get('request')
+            path = getattr(request, 'path', '') if request is not None else ''
+            # Admin-created accounts are trusted. Mobile email signup must verify.
+            validated_data['is_email_verified'] = path.startswith(
+                '/admin-panel/'
+            )
             user = User.objects.create_user(**validated_data)
             return user
             # user = User(**validated_data)

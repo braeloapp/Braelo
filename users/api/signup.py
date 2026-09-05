@@ -14,6 +14,7 @@ import random
 import phonenumbers
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
+from users.permissions import DenyAdminPathUnlessStaff, is_admin_path, require_staff
 from django.core.validators import validate_email
 from rest_framework.exceptions import ValidationError
 from django.views.decorators.csrf import csrf_exempt
@@ -24,10 +25,14 @@ from users.models import Business
 
 from users.serializers import EmailSignup
 from users.services.firebase_identity import (
+    email_from_firebase_claims,
     extract_id_token,
+    name_parts_from_firebase_claims,
     phone_from_firebase_claims,
+    uid_from_firebase_claims,
     verify_firebase_id_token,
 )
+from users.services.email_verification import send_verification_email
 from users.services.rate_limit import check_rate_limit, client_ip
 from helpers import (
     handle_exceptions,
@@ -40,7 +45,7 @@ class SignUpWithEmail(generics.CreateAPIView):
 
     queryset = User.objects.all()
     serializer_class = EmailSignup
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny, DenyAdminPathUnlessStaff]
 
     @handle_exceptions
     def post(self, request, *args, **kwargs):
@@ -50,7 +55,8 @@ class SignUpWithEmail(generics.CreateAPIView):
         :return: user's signed up status. (json)
         '''
         data = request.data
-        admin_path = "/admin-panel/signup"
+        if is_admin_path(request):
+            require_staff(request)
         user = self.get_serializer(data=data, context={'request': request})
         user.is_valid(raise_exception=True)
         # add username to the validated data
@@ -59,7 +65,7 @@ class SignUpWithEmail(generics.CreateAPIView):
         if not user:
             # todo: needs better logic
             raise Exception('Cannot Add user to Database')
-        if request.path == admin_path:
+        if is_admin_path(request):
             admin_data = {
                 'email': user.email,
                 'name': user.name,
@@ -71,18 +77,17 @@ class SignUpWithEmail(generics.CreateAPIView):
                 data=admin_data,
             )
 
-        # Generate JWT token after user creation
-        token = get_token(user)
-        # Combine user data with token data
+        send_verification_email(user, request=request)
         data = {
             'email': user.email,
             'name': user.name,
-            'token': token,
             'user_status': user.is_business,
+            'is_email_verified': False,
+            'email_verification_required': True,
         }
         return response(
             status=status.HTTP_201_CREATED,
-            message='User Signed Up',
+            message='Verification code sent to your email.',
             data=data,
         )
 
@@ -142,62 +147,55 @@ class LoginAuth(generics.CreateAPIView):
 
     def authenticate_user(self, login_type, data):
         '''
-        Handles sign_up/login for google and apple
-        :param request: login_type(apple/google), user_data
-        :return: user's signed up status. (json)
+        Google/Apple login. Identity comes only from a verified Firebase ID token.
+        Client-supplied email, name, and provider IDs are ignored.
         '''
-        required_fields = [
-            'email',
-            f'{login_type}_id',
-            'name',
-            'first_name',
-            'last_name',
-            'is_email_verified',
-        ]
-
-        missing_fields = [
-            field for field in required_fields if field not in data
-        ]
-        if missing_fields:
-            raise ValidationError(
-                {field: f"{field} is required." for field in missing_fields}
-            )
-
-        email = data.get('email')
-        provider_id = data.get(f'{login_type}_id')
+        claims = verify_firebase_id_token(extract_id_token(data))
+        email = email_from_firebase_claims(claims)
+        provider_id = uid_from_firebase_claims(claims)
         validate_email(email)
+        token_name, token_first, token_last = name_parts_from_firebase_claims(
+            claims
+        )
+        email_verified = bool(claims.get('email_verified'))
+        display_name = token_name or email.split('@')[0]
+        first_name = token_first or display_name
+        last_name = token_last or display_name
 
         user_data = {
             'email': email,
             f'{login_type}_id': provider_id,
-            'username': data.get('name'),
-            'name': data.get('name'),
-            'first_name': data.get('first_name'),
-            'last_name': data.get('last_name'),
-            'is_email_verified': data.get('is_email_verified'),
+            'username': email,
+            'name': display_name,
+            'first_name': first_name,
+            'last_name': last_name,
+            'is_email_verified': email_verified,
         }
 
         user = User.objects.filter(email=email).first()
+        if user is None:
+            user = User.objects.filter(
+                **{f'{login_type}_id': provider_id}
+            ).first()
 
-        # if user exits then update provider id
         if user:
             if user.is_banned:
                 raise ValidationError(
                     {'User': 'Sorry, Your Account is Banned.'}
                 )
+            update_fields = []
             existing_provider_id = getattr(user, f'{login_type}_id', None)
-            if (
-                existing_provider_id is not None
-                and existing_provider_id != provider_id
-            ):
-                raise ValidationError({f'{login_type}_id': 'incorrect'})
-
             if existing_provider_id is None:
                 setattr(user, f'{login_type}_id', provider_id)
-                user.save()
+                update_fields.append(f'{login_type}_id')
+            if email_verified and not user.is_email_verified:
+                user.is_email_verified = True
+                update_fields.append('is_email_verified')
+            if update_fields:
+                user.save(update_fields=update_fields)
 
             token = get_token(user)
-            response_data = {
+            return {
                 'email': user.email,
                 'name': user.name,
                 'business_name': self._business_name_for_user(user),
@@ -206,7 +204,6 @@ class LoginAuth(generics.CreateAPIView):
                 'is_warned': user.is_warned,
                 'is_banned': user.is_banned,
             }
-            return response_data
 
         provider_id_check = User.objects.filter(
             **{f'{login_type}_id': provider_id}
@@ -218,13 +215,12 @@ class LoginAuth(generics.CreateAPIView):
 
         new_user = User.objects.create(**user_data)
         new_token = get_token(new_user)
-        response_data = {
+        return {
             'email': new_user.email,
             'name': new_user.name,
             'token': new_token,
             'user_status': new_user.is_business,
         }
-        return response_data
 
     @handle_exceptions
     @csrf_exempt
@@ -241,6 +237,17 @@ class LoginAuth(generics.CreateAPIView):
                 {'Type': 'Must be ["google","apple","phone"]'}
             )
         if login_type in ['google', 'apple']:
+            ip = client_ip(request)
+            if not check_rate_limit(
+                f"social-login:{ip}", limit=8, window_seconds=300
+            ):
+                raise ValidationError(
+                    {
+                        'detail': (
+                            'Too many login attempts. Please try again later.'
+                        )
+                    }
+                )
             data = self.authenticate_user(login_type, request.data)
             return response(
                 status=status.HTTP_200_OK,

@@ -155,3 +155,33 @@ class OTP(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.otp}"
+
+
+class EmailVerificationToken(models.Model):
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='email_verifications'
+    )
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    MAX_ATTEMPTS = 5
+    TTL_MINUTES = 15
+
+    def save(self, *args, **kwargs):
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(
+                minutes=self.TTL_MINUTES
+            )
+        super().save(*args, **kwargs)
+
+    def has_expired(self):
+        return timezone.now() > self.expires_at
+
+    def is_usable(self):
+        return self.used_at is None and not self.has_expired()
+
+    def __str__(self):
+        return f"{self.user.email} - email verify"

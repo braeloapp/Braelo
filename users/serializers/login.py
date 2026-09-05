@@ -87,6 +87,15 @@ class EmailLogin(serializers.Serializer):
         # Check if the provided password matches the stored password
         if not check_password(password, user.password):
             raise ValidationError({'password': 'Incorrect password.'})
+        if request.path != admin_path and not user.is_email_verified:
+            raise ValidationError(
+                {
+                    'email_unverified': True,
+                    'email': (
+                        'Please verify your email before signing in.'
+                    ),
+                }
+            )
 
         # If the user is inactive, reactivate the account
         if not user.is_active:

@@ -48,6 +48,9 @@ class LoginWithEmail(generics.CreateAPIView):
             'user_status': user.is_business,
             'is_warned': user.is_warned,
             'is_banned': user.is_banned,
+            'is_email_verified': user.is_email_verified,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
         }
         return response(
             status=status.HTTP_200_OK,
@@ -67,7 +70,7 @@ class TokenRefresh(TokenRefreshView):
         '''
         refresh = super().post(request, *args, **kwargs)
         data = {
-            'refresh': request.data['refresh'],
+            'refresh': refresh.data.get('refresh', request.data['refresh']),
             'access': refresh.data['access'],
         }
         return response(

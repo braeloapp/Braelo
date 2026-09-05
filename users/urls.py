@@ -20,6 +20,8 @@ from .api import (
     VerifyOTP,
     SignUpWithEmail,
     LoginAuth,
+    VerifyEmail,
+    ResendEmailVerification,
     TokenRefresh,
     ForgotPassword,
     ChangePassword,
@@ -55,6 +57,8 @@ urlpatterns = [
     path('verifyotp', VerifyOTP.as_view()),
     # Sign up endpoints
     path('signup/email', SignUpWithEmail.as_view()),
+    path('verify/email', VerifyEmail.as_view()),
+    path('resend/verification', ResendEmailVerification.as_view()),
     # Sign_up/Login [Google, Apple, Phone]
     path('login', LoginAuth.as_view()),
     # Refresh token
