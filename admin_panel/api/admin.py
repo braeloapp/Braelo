@@ -502,6 +502,66 @@ class DeleteAdminNotification(APIView):
         )
 
 
+def _as_bool(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ('true', '1', 'yes'):
+            return True
+        if lowered in ('false', '0', 'no'):
+            return False
+    return default
+
+
+class ReadAdminNotification(APIView):
+    '''
+    Mark a notification as read or unread for the admin panel.
+
+    The mobile/user app uses POST /notifications/read (authenticated user,
+    read-only). The admin UI posts here so staff can toggle any notification.
+    POST body: { "notification_id": "<mongo id>", "is_read": true|false }
+    '''
+
+    permission_classes = [IsAdminUser]
+
+    @handle_exceptions
+    def post(self, request, **kwargs):
+        notification_id = request.data.get('notification_id')
+        if not notification_id:
+            raise ValidationError(
+                {'notification_id': 'notification id is required'}
+            )
+        notification = Notification.objects(id=notification_id).first()
+        if not notification:
+            return response(
+                status=status.HTTP_404_NOT_FOUND,
+                message='Notification not found',
+                data={},
+            )
+        is_read = _as_bool(request.data.get('is_read'), default=True)
+        notification.is_read = is_read
+        if is_read:
+            notification.sent = True
+        notification.save()
+        return response(
+            status=status.HTTP_200_OK,
+            message=(
+                'Notification marked as read'
+                if is_read
+                else 'Notification marked as unread'
+            ),
+            data={
+                'id': str(notification.id),
+                'is_read': notification.is_read,
+            },
+        )
+
+
 class AdminBanner(generics.CreateAPIView):
     '''
     View that allows an admin to create a banner for a business

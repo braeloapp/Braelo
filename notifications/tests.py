@@ -201,6 +201,10 @@ class NotificationApiTests(TestCase):
             resolve('/admin-panel/notificatons').func.view_class.__name__,
             'AllNotifications',
         )
+        self.assertEqual(
+            resolve('/admin-panel/notification/read').func.view_class.__name__,
+            'ReadAdminNotification',
+        )
 
 
 class DeviceTokenApiTests(TestCase):

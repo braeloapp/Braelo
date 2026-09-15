@@ -146,3 +146,77 @@ class AdminPanelApiTests(TestCase):
         body = response.json()
         self.assertEqual(body.get('status'), 200)
         self.assertTrue(body['data']['categories'])
+
+    def test_notification_read_route_exists(self):
+        from django.urls import resolve
+
+        self.assertEqual(
+            resolve('/admin-panel/notification/read').func.view_class.__name__,
+            'ReadAdminNotification',
+        )
+        self.assertEqual(
+            resolve('/admin-panel/notification/read/').func.view_class.__name__,
+            'ReadAdminNotification',
+        )
+
+    def test_notification_read_requires_staff(self):
+        anon = APIClient()
+        response = anon.post(
+            '/admin-panel/notification/read',
+            data={'notification_id': 'abc', 'is_read': True},
+            format='json',
+        )
+        self.assertIn(response.status_code, (401, 403))
+
+    @patch('admin_panel.api.admin.Notification')
+    def test_mark_notification_read(self, mock_notification):
+        notif = MagicMock()
+        notif.id = 'abc123'
+        notif.is_read = False
+        mock_notification.objects.return_value.first.return_value = notif
+        response = self.client.post(
+            '/admin-panel/notification/read',
+            data={'notification_id': 'abc123', 'is_read': True},
+            format='json',
+        )
+        body = response.json()
+        self.assertEqual(body.get('status'), 200)
+        self.assertTrue(notif.is_read)
+        notif.save.assert_called_once()
+
+    @patch('admin_panel.api.admin.Notification')
+    def test_mark_notification_unread(self, mock_notification):
+        notif = MagicMock()
+        notif.id = 'abc123'
+        notif.is_read = True
+        mock_notification.objects.return_value.first.return_value = notif
+        response = self.client.post(
+            '/admin-panel/notification/read',
+            data={'notification_id': 'abc123', 'is_read': False},
+            format='json',
+        )
+        body = response.json()
+        self.assertEqual(body.get('status'), 200)
+        self.assertFalse(notif.is_read)
+
+    @patch('admin_panel.api.admin.Notification')
+    def test_mark_notification_missing_id(self, mock_notification):
+        response = self.client.post(
+            '/admin-panel/notification/read',
+            data={'is_read': True},
+            format='json',
+        )
+        body = response.json()
+        self.assertEqual(body.get('status'), 400)
+        mock_notification.objects.assert_not_called()
+
+    @patch('admin_panel.api.admin.Notification')
+    def test_mark_notification_not_found(self, mock_notification):
+        mock_notification.objects.return_value.first.return_value = None
+        response = self.client.post(
+            '/admin-panel/notification/read',
+            data={'notification_id': 'missing', 'is_read': True},
+            format='json',
+        )
+        body = response.json()
+        self.assertEqual(body.get('status'), 404)
