@@ -6,6 +6,8 @@
 # ---------------------------------------------------
 #
 # Startup script for Azure App Service
+# Secrets (SECRET_KEY, DB, storage, etc.) come from App Settings / .env —
+# never hardcode them in this script.
 # ---------------------------------------------------
 
 # Set Python packages path
@@ -33,12 +35,31 @@ python3 manage.py migrate --noinput
 # Collect static files
 python3 manage.py collectstatic --noinput
 
-# Create default superuser if not exists
-echo "
+# Optional bootstrap admin — only when credentials are provided via env
+# (Azure App Settings / local .env). Never hardcode passwords here.
+if [ -n "${DJANGO_SUPERUSER_USERNAME:-}" ] && [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
+  DJANGO_SUPERUSER_USERNAME="$DJANGO_SUPERUSER_USERNAME" \
+  DJANGO_SUPERUSER_PASSWORD="$DJANGO_SUPERUSER_PASSWORD" \
+  DJANGO_SUPERUSER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-}" \
+  python3 manage.py shell <<'PY'
+import os
 from users.models import User
-if not User.objects.filter(username='admin').exists():
-    User.objects.create_superuser(username='admin', password='admin')
-" | python3 manage.py shell
+
+username = os.environ["DJANGO_SUPERUSER_USERNAME"].strip()
+password = os.environ["DJANGO_SUPERUSER_PASSWORD"]
+email = (os.environ.get("DJANGO_SUPERUSER_EMAIL") or username).strip()
+if username and password and not User.objects.filter(username=username).exists():
+    User.objects.create_superuser(
+        username=username,
+        password=password,
+        email=email,
+        name=username,
+    )
+    print(f"Created superuser {username!r}")
+else:
+    print("Superuser bootstrap skipped (exists or incomplete env)")
+PY
+fi
 
 echo "Setup complete. Starting Daphne (ASGI, Channels)…"
 

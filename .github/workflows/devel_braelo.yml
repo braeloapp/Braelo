@@ -65,7 +65,19 @@ jobs:
           DJANGO_SKIP_MONGOENGINE: "1"
 
       - name: Zip project for deployment
-        run: zip -r release.zip . -x "venv/*" ".git/*" "__pycache__/*"
+        # Never ship local secrets. App secrets live in Azure App Settings / Key Vault.
+        run: |
+          zip -r release.zip . \
+            -x "venv/*" \
+            -x ".venv/*" \
+            -x ".git/*" \
+            -x "__pycache__/*" \
+            -x "*.pyc" \
+            -x ".env" \
+            -x ".env.*" \
+            -x "*.pem" \
+            -x "**/credentials.json" \
+            -x "*firebase*adminsdk*.json"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,6 +108,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # AZURE_CREDENTIALS is a GitHub Actions secret (JSON with clientId,
+      # clientSecret, tenantId, subscriptionId). It is NOT read from .env.
+      # If login fails with AADSTS7000222, renew the app registration client
+      # secret in Azure Portal and update the GitHub secret.
       - name: Login to Azure
         uses: azure/login@v2
         with:
