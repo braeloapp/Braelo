@@ -37,6 +37,8 @@ from notifications.services.delivery import deliver_event_notification
 from notifications.services.email import email_service
 from helpers.notifications import support_reply_event
 from admin_panel.serializers import BusinessBannerSerializer
+from admin_panel.models import AdminBusinessBanner
+from users.serializers.business import BannerSearilizer
 from feedbacks.serializers.report_user import ReportMessageSerializer
 
 
@@ -112,8 +114,36 @@ class AllUsers(generics.ListAPIView):
 
     permission_classes = [IsAdminUser]
     serializer_class = UserSerializer
-    queryset = User.objects.all()
     pagination_class = Pagination
+
+    def get_queryset(self):
+        from django.db.models import Q
+        from admin_panel.services.support import day_bounds
+
+        qs = User.objects.all().order_by('-id')
+        params = self.request.query_params
+        search = (params.get('search') or params.get('search_query') or '').strip()
+        is_active = (params.get('is_active') or '').strip().lower()
+        verification = (params.get('verification') or '').strip().lower()
+        creation_date = (params.get('creation_date') or '').strip()
+
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone_number__icontains=search)
+                | Q(username__icontains=search)
+            )
+        if is_active in ('true', 'false', '1', '0'):
+            qs = qs.filter(is_active=is_active in ('true', '1'))
+        if verification in ('email', 'verify-email'):
+            qs = qs.filter(is_email_verified=True)
+        elif verification in ('phone', 'verify-phone'):
+            qs = qs.filter(is_phone_verified=True)
+        start, end = day_bounds(creation_date)
+        if start is not None:
+            qs = qs.filter(created_at__gte=start, created_at__lt=end)
+        return qs
 
 
 class AdminUserDetail(APIView):
@@ -562,19 +592,41 @@ class ReadAdminNotification(APIView):
         )
 
 
-class AdminBanner(generics.CreateAPIView):
+class AdminBanner(generics.ListCreateAPIView):
     '''
-    View that allows an admin to create a banner for a business
+    Admin create + full list of business banners (unfiltered metadata).
+    Public carousel still uses ``/auth/business/banner`` which strips fields.
     '''
 
     permission_classes = [IsAdminUser]
     serializer_class = BusinessBannerSerializer
 
+    def get_queryset(self):
+        return AdminBusinessBanner.objects.filter(is_active=True)
+
+    @handle_exceptions
+    def get(self, request, *args, **kwargs):
+        banners = list(self.get_queryset())
+        serialized = BannerSearilizer(banners, many=True).data
+        rows = []
+        for obj, item in zip(banners, serialized):
+            row = dict(item)
+            uid = getattr(obj, 'user_id', None)
+            row['user_id'] = uid
+            if row.get('business_id') is None and uid is not None:
+                row['business_id'] = uid
+            rows.append(row)
+        return response(
+            status=status.HTTP_200_OK,
+            message='Banners fetched successfully',
+            data={'results': rows},
+        )
+
     def post(self, request):
         '''
-        POST method to update a listing.
+        POST method to create a banner for a business.
         :param request: request object. (dict)
-        :return: Successfull message. (json)
+        :return: Successful message. (json)
         '''
         data = request.data
         serializer = self.get_serializer(data=data)

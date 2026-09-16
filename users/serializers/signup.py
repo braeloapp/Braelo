@@ -127,6 +127,10 @@ class EmailSignup(serializers.Serializer):
         validated_data['is_email_verified'] = admin_created
         if phone:
             validated_data['phone_number'] = phone
+            # Admin-created accounts trust the phone the admin entered,
+            # same as is_email_verified for admin signup.
+            if admin_created:
+                validated_data['is_phone_verified'] = True
         return User.objects.create_user(**validated_data)
 
     def update(self, instance, validated_data):

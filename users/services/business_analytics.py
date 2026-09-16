@@ -382,8 +382,10 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
         by_category[key] = by_category.get(key, 0) + 1
 
     reports_total = ReportMessage.objects.count()
+    reports_pending = ReportMessage.objects.filter(status='Pending').count()
     support_total = Requests.objects.count()
     support_open = Requests.objects.filter(status='Active').count()
+    support_in_progress = Requests.objects.filter(status='In Progress').count()
     messages_total = Message.objects.count()
     conversations_total = Chat.objects.count()
     listing_clicks = User.objects.aggregate(
@@ -440,10 +442,14 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             'inactive': max(listings_total - listings_active, 0),
             'by_category': by_category,
         },
-        'reports': {'total': reports_total},
+        'reports': {
+            'total': reports_total,
+            'pending': reports_pending,
+        },
         'support_requests': {
             'total': support_total,
             'open': support_open,
+            'in_progress': support_in_progress,
         },
         'messages': {
             'total': messages_total,

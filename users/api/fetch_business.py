@@ -44,7 +44,31 @@ class FetchBusinesses(generics.ListAPIView):
     serializer_class = BusinessSerailizer
 
     def get_queryset(self):
-        return Business.objects.all()
+        from mongoengine.queryset.visitor import Q
+        from admin_panel.services.support import day_bounds
+
+        qs = Business.objects.all().order_by('-created_at')
+        params = self.request.query_params
+        search = (params.get('search') or params.get('search_query') or '').strip()
+        is_active = (params.get('is_active') or '').strip().lower()
+        category = (params.get('category') or '').strip()
+        creation_date = (params.get('creation_date') or '').strip()
+
+        if search:
+            qs = qs.filter(
+                Q(business_name__icontains=search)
+                | Q(business_email__icontains=search)
+                | Q(business_number__icontains=search)
+            )
+        if is_active in ('true', 'false', '1', '0'):
+            qs = qs.filter(is_active=is_active in ('true', '1'))
+        if category and category.lower() not in ('all', '*'):
+            resolved = resolve_category(category)
+            qs = qs.filter(business_category=resolved or category)
+        start, end = day_bounds(creation_date)
+        if start is not None:
+            qs = qs.filter(created_at__gte=start, created_at__lt=end)
+        return qs
 
 
 class ScanBusinessQR(generics.ListAPIView):
@@ -102,9 +126,8 @@ class FetchListings(generics.ListAPIView):
     def get_queryset(self):
         admin_path = '/admin-panel/'
         is_active = None
-        if (
-            self.request.path.startswith(admin_path)
-            and self.request.user.is_superuser
+        if self.request.path.startswith(admin_path) and (
+            self.request.user.is_staff or self.request.user.is_superuser
         ):
             user_id = self.request.query_params.get('user_id')
             is_active = self.request.query_params.get('is_active')
@@ -119,9 +142,15 @@ class FetchListings(generics.ListAPIView):
 
         try:
 
-            queryset = ListSync.objects.filter(
-                user_id=user_id, from_business=True
-            )
+            # Admin business detail should show every listing owned by this
+            # user. ``from_business`` is a create-path flag and was hiding
+            # legitimate personal listings attached to the same account.
+            if self.request.path.startswith(admin_path):
+                queryset = ListSync.objects.filter(user_id=user_id)
+            else:
+                queryset = ListSync.objects.filter(
+                    user_id=user_id, from_business=True
+                )
             if is_active:
                 if is_active not in ('true', 'false'):
                     raise ValidationError(

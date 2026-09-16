@@ -491,6 +491,7 @@ class AdminAuthorizationTests(TestCase):
         self.assertTrue(created.is_email_verified)
         self.assertFalse(created.is_staff)
         self.assertEqual(created.phone_number, "15551234567")
+        self.assertTrue(created.is_phone_verified)
         self.assertEqual(created.role, "Client")
 
     def test_staff_cannot_create_staff_user(self):

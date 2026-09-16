@@ -11,6 +11,7 @@ class TaxonomyOverride(Document):
     label = StringField()
     icon = StringField()
     is_active = BooleanField(default=True)
+    is_removed = BooleanField(default=False)
     sort_order = IntField()
 
     meta = {
