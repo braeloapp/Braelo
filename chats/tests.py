@@ -111,7 +111,11 @@ class CreateChatBlockTests(TestCase):
         )
         self.assertEqual(response.json().get('status'), 400)
 
-    def test_create_chat_business_flag_without_business_is_friendly(self):
+    @patch('chats.api.chat.Business')
+    def test_create_chat_business_flag_without_business_is_friendly(
+        self, mock_business
+    ):
+        mock_business.objects.filter.return_value.first.return_value = None
         response = self.client.post(
             '/chats/create',
             data={
@@ -128,6 +132,7 @@ class CreateChatBlockTests(TestCase):
             'Unable to start chat. This user is not associated with a business.',
         )
         self.assertNotIn('user_id:', str(body.get('error')))
+        self.assertNotIn('default connection', str(body.get('error')).lower())
 
 
 class ReportUserValidationTests(TestCase):
