@@ -111,6 +111,24 @@ class CreateChatBlockTests(TestCase):
         )
         self.assertEqual(response.json().get('status'), 400)
 
+    def test_create_chat_business_flag_without_business_is_friendly(self):
+        response = self.client.post(
+            '/chats/create',
+            data={
+                'user_id': self.other.id,
+                'sender': 'true',
+                'receiver': 'false',
+            },
+            format='json',
+        )
+        body = response.json()
+        self.assertEqual(body.get('status'), 400)
+        self.assertEqual(
+            body.get('error'),
+            'Unable to start chat. This user is not associated with a business.',
+        )
+        self.assertNotIn('user_id:', str(body.get('error')))
+
 
 class ReportUserValidationTests(TestCase):
     def setUp(self):

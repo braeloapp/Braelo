@@ -30,18 +30,18 @@ def get_error_details(error_info):
     '''
 
     if isinstance(error_info, list):
-        return f'Error: {str(error_info[0])}' if error_info else 'Unknown error'
+        return str(error_info[0]) if error_info else 'Unknown error'
 
     elif isinstance(error_info, dict):
         for key, errors in error_info.items():
             if isinstance(errors, list):
-                return (
-                    f'{key}: {str(errors[0])}'
-                    if errors
-                    else f'{key}: Unknown error'
-                )
+                msg = str(errors[0]) if errors else 'Unknown error'
             else:
-                return f'{key}: {str(errors)}'
+                msg = str(errors)
+            # User-facing keys: return clean message without "error: " prefix.
+            if str(key) in {'error', 'detail', 'non_field_errors'}:
+                return msg
+            return f'{key}: {msg}'
 
     return 'Unknown error format'
 

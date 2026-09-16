@@ -119,15 +119,23 @@ class CreateChatroomApi(generics.CreateAPIView):
         '''
         validate and storing user and second user ids
         '''
+        user_type = self._normalize_role_flag(user_type)
         if user_type not in {'true', 'false'}:
             raise ValidationError(
-                {'detail': 'Invalid user_type. Must be "true" or "false".'}
+                {
+                    'error': (
+                        'Unable to start chat. Invalid chat role.'
+                    )
+                }
             )
         if user_type == 'true':
             if not Business.objects.filter(user_id=user_id, is_active=True):
                 raise ValidationError(
                     {
-                        'error': f'Cannot create room, No Business exists for user_id: {user_id}'
+                        'error': (
+                            'Unable to start chat. This user is not '
+                            'associated with a business.'
+                        )
                     }
                 )
 
@@ -135,6 +143,20 @@ class CreateChatroomApi(generics.CreateAPIView):
             'user_id': user_id,
             'user_type': 'business' if user_type == 'true' else 'user',
         }
+
+    @staticmethod
+    def _normalize_role_flag(value):
+        '''Accept bool / "true"|"false" / 1|0 from JSON or multipart.'''
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in {'true', '1', 'yes'}:
+            return 'true'
+        if text in {'false', '0', 'no'}:
+            return 'false'
+        return text
 
     def get_chatroom(self, user_id, second_user_id, receiver_type, sender_type):
         '''
@@ -162,9 +184,13 @@ class CreateChatroomApi(generics.CreateAPIView):
         sender_type = request.data.get('sender')
 
         if not second_user_id:
-            raise ValidationError({'detail': 'Second user ID is required.'})
+            raise ValidationError(
+                {'error': 'Unable to start chat. Please try again.'}
+            )
         if str(second_user_id) == user_id:
-            raise ValidationError({'user_id': 'Cannot create a chat with yourself.'})
+            raise ValidationError(
+                {'error': 'Unable to start chat with yourself.'}
+            )
         assert_not_blocked(user_id, second_user_id)
 
         receiver = self.assign_roles(second_user_id, receiver_type)
@@ -174,7 +200,13 @@ class CreateChatroomApi(generics.CreateAPIView):
 
         user_exist = User.objects.filter(id=second_user_id).exists()
         if not user_exist:
-            raise ValidationError({'id': 'User does not exists'})
+            raise ValidationError(
+                {
+                    'error': (
+                        'Unable to start chat. This user does not exist.'
+                    )
+                }
+            )
 
         chatroom = self.get_chatroom(
             user_id, second_user_id, receiver_type, sender_type
