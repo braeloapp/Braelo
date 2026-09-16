@@ -10,7 +10,6 @@ User model sql based.
 ---------------------------------------------------
 '''
 
-import random
 from django.db import models
 from datetime import timedelta
 from django.utils import timezone
@@ -20,15 +19,10 @@ from django.contrib.auth.base_user import BaseUserManager
 
 def get_random_profile_pic():
     '''
-    assigns a user random pic upon signup
+    Legacy Azure default profile blobs were removed (404). Leave blank so
+    clients can show a local placeholder avatar instead of a broken image.
     '''
-    PROFILE_PIC = [
-        "https://braelos3.blob.core.windows.net/braelo/business_listings/Vehicles/8/profile-1.png",
-        "https://braelos3.blob.core.windows.net/braelo/business_listings/Vehicles/8/profile-2.png",
-        "https://braelos3.blob.core.windows.net/braelo/business_listings/Vehicles/8/profile-3.png",
-        "https://braelos3.blob.core.windows.net/braelo/business_listings/Vehicles/8/profile-4.png",
-    ]
-    return random.choice(PROFILE_PIC)
+    return ''
 
 
 class CustomUserManager(BaseUserManager):

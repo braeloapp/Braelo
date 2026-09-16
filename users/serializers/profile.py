@@ -121,118 +121,120 @@ class InterestSerializer(serializers.Serializer):
 
 class UpdateProfileSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=False)
-    name = serializers.CharField(required=False)
-    first_name = serializers.CharField(required=False)
-    last_name = serializers.CharField(required=False)
-    email = serializers.EmailField(required=False)
-    phone = serializers.CharField(required=False)
-    dob = serializers.DateField(required=False)
-    gender = serializers.CharField(required=False)
-    address = serializers.CharField(required=False)
-    complement = serializers.CharField(required=False)
-    country = serializers.CharField(required=False)
-    state = serializers.CharField(required=False)
-    city = serializers.CharField(required=False)
-    zip_code = serializers.CharField(required=False)
+    name = serializers.CharField(required=False, allow_blank=True)
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    dob = serializers.CharField(required=False, allow_blank=True)
+    gender = serializers.CharField(required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    complement = serializers.CharField(required=False, allow_blank=True)
+    country = serializers.CharField(required=False, allow_blank=True)
+    state = serializers.CharField(required=False, allow_blank=True)
+    city = serializers.CharField(required=False, allow_blank=True)
+    zip_code = serializers.CharField(required=False, allow_blank=True)
+    role = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(required=False)
+    is_email_verified = serializers.BooleanField(required=False)
+    is_phone_verified = serializers.BooleanField(required=False)
 
     def validate(self, data):
         '''
-        Verify the provided email exists.
+        Validate profile updates. Staff on /admin-panel/user/update may edit
+        email, phone, role, status, and verification flags for any user.
         '''
+        request = self.context['request']
         admin_path = '/admin-panel/user/update'
-        if self.context['request'].path.startswith(admin_path):
+        is_admin_update = request.path.startswith(admin_path)
+        self.context['is_admin_update'] = is_admin_update
+
+        if is_admin_update:
             from users.permissions import require_staff
 
-            require_staff(self.context['request'])
+            require_staff(request)
             user_id = data.get('user_id')
             if not user_id:
                 raise ValidationError({'Field': 'Admin must provide user_id'})
             user = User.objects.filter(id=user_id).first()
             if not user:
                 raise ValidationError({'error': 'user not found'})
-            self.context['request'].user = user
+            self.context['target_user'] = user
         else:
-            user = self.context['request'].user
+            user = request.user
+            self.context['target_user'] = user
 
         email = data.get('email')
         phone = data.get('phone')
-        name = data.get('name')
-        first_name = data.get('first_name')
-        last_name = data.get('last_name')
-        dob = data.get('dob')
-        gender = data.get('gender')
-        address = data.get('address')
-        complement = data.get('complement')
-        country = data.get('country')
-        state = data.get('state')
-        city = data.get('city')
-        zip_code = data.get('zip_code')
-        # If the user already has an email, they can't add one
-        if email and phone:
+
+        if not is_admin_update and email and phone:
             raise ValidationError(
                 'Only one of email or phone should be provided.'
             )
-        if email:
-            if user.email:
+
+        if email not in (None, ''):
+            if not is_admin_update and user.email:
                 raise ValidationError(
                     {'email': 'Email is already set and cannot be changed.'}
                 )
-            if User.objects.filter(email=email).exists():
+            clash = User.objects.filter(email=email).exclude(id=user.id)
+            if clash.exists():
                 raise ValidationError(
                     {'email': 'This email is already in use.'}
                 )
-        # If the user already has a phone number, they can't add one
-        if phone:
-            if user.phone_number:
+
+        if phone not in (None, ''):
+            if not is_admin_update and user.phone_number:
                 raise ValidationError(
                     {
                         'phone': 'Phone number is already set and cannot be changed.'
                     }
                 )
-            if User.objects.filter(phone_number=phone).exists():
+            clash = User.objects.filter(phone_number=phone).exclude(id=user.id)
+            if clash.exists():
                 raise ValidationError(
                     {'phone': 'This phone number is already in use.'}
                 )
-        # todo dob, gender, address, complement , country, state, city, Zip code
-        if name and user.name == name:
-            raise ValidationError({'name': 'Already same.'})
-        if first_name and user.first_name == first_name:
-            raise ValidationError({'first_name': 'Already same.'})
-        if last_name and user.last_name == last_name:
-            raise ValidationError({'last_name': 'Already same.'})
-        if dob and user.dob == dob:
-            raise ValidationError({'date_of_birth': 'Already same.'})
-        if gender and user.gender == gender:
-            raise ValidationError({'gender': 'Already same.'})
-        if address and user.address == address:
-            raise ValidationError({'address': 'Already same.'})
-        if complement and user.complement == complement:
-            raise ValidationError({'complement': 'Already same.'})
-        if country and user.country == country:
-            raise ValidationError({'country': 'Already same.'})
-        if state and user.state == state:
-            raise ValidationError({'state': 'Already same.'})
-        if city and user.city == city:
-            raise ValidationError({'city': 'Already same.'})
-        if zip_code and user.zip_code == zip_code:
-            raise ValidationError({'zip_code': 'Already same.'})
+
+        if not is_admin_update:
+            # Self-service: reject no-op updates
+            same_checks = [
+                ('name', 'name', user.name),
+                ('first_name', 'first_name', user.first_name),
+                ('last_name', 'last_name', user.last_name),
+                ('dob', 'date_of_birth', user.dob),
+                ('gender', 'gender', user.gender),
+                ('address', 'address', user.address),
+                ('complement', 'complement', user.complement),
+                ('country', 'country', user.country),
+                ('state', 'state', user.state),
+                ('city', 'city', user.city),
+                ('zip_code', 'zip_code', user.zip_code),
+            ]
+            for key, err_key, current in same_checks:
+                value = data.get(key)
+                if value not in (None, '') and value == current:
+                    raise ValidationError({err_key: 'Already same.'})
+
         return data
 
     def save(self, **kwargs):
         '''
         Save or update the profile fields provided by user.
         '''
-        user = self.context['request'].user
+        user = self.context['target_user']
         validated_data = self.validated_data
+        is_admin_update = self.context.get('is_admin_update', False)
         if not validated_data:
             return {}
-        # Update user fields if present in validated_data
-        update_fields = [
-            'email',
-            'phone',
+
+        update_fields = []
+
+        text_fields = [
             'name',
             'first_name',
             'last_name',
+            'email',
             'dob',
             'gender',
             'address',
@@ -242,18 +244,40 @@ class UpdateProfileSerializer(serializers.Serializer):
             'city',
             'zip_code',
         ]
-        for field in update_fields:
+        for field in text_fields:
             if field in validated_data:
-                setattr(user, field, validated_data[field])
-        # # Update the missing information
-        # if validated_data.get('email'):
-        #     user.email = validated_data['email']
-        # if validated_data.get('phone'):
-        #     user.phone_number = validated_data['phone']
-        # user.name = validated_data.get('name', user.name)
-        # user.first_name = validated_data.get('first_name', user.first_name)
-        # user.last_name = validated_data.get('last_name', user.last_name)
-        user.save()
+                setattr(user, field, validated_data[field] or None)
+                update_fields.append(field)
+
+        if 'phone' in validated_data:
+            user.phone_number = validated_data['phone'] or None
+            update_fields.append('phone_number')
+
+        if is_admin_update:
+            if 'is_active' in validated_data:
+                user.is_active = bool(validated_data['is_active'])
+                update_fields.append('is_active')
+            if 'is_email_verified' in validated_data:
+                user.is_email_verified = bool(validated_data['is_email_verified'])
+                update_fields.append('is_email_verified')
+            if 'is_phone_verified' in validated_data:
+                user.is_phone_verified = bool(validated_data['is_phone_verified'])
+                update_fields.append('is_phone_verified')
+            if 'role' in validated_data and validated_data['role'] not in (
+                None,
+                '',
+            ):
+                raw = str(validated_data['role']).strip().lower()
+                if raw in ('admin', 'administrator'):
+                    user.role = 'Admin'
+                    user.is_staff = True
+                else:
+                    user.role = 'Client'
+                    user.is_staff = False
+                update_fields.extend(['role', 'is_staff'])
+
+        if update_fields:
+            user.save(update_fields=list(dict.fromkeys(update_fields)))
         return validated_data
 
 
