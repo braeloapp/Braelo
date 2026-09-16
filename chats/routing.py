@@ -20,12 +20,17 @@ bugs in production.
 
 from django.urls import re_path
 
-from .consumers import ChatroomConsumer
+from .consumers import ChatroomConsumer, UserInboxConsumer
 
 websocket_urlpatterns = [
     re_path(
         r"^chat_id/(?P<chat_id>[^/]+)/?$",
         ChatroomConsumer.as_asgi(),
         name="ws-chatroom",
+    ),
+    re_path(
+        r"^user/inbox/?$",
+        UserInboxConsumer.as_asgi(),
+        name="ws-user-inbox",
     ),
 ]

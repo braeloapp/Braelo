@@ -27,9 +27,12 @@ from chats.services import (
     assert_not_blocked,
     assert_user_can_chat,
     block_user,
+    first_media_url,
     is_participant,
+    message_preview,
     peer_user_id,
     unblock_user,
+    user_display_name,
 )
 
 from helpers import response, handle_exceptions
@@ -67,34 +70,47 @@ class ChatroomPagination(PageNumberPagination):
             elif str(sender_id) == user_id:
                 user_type = receiver.get('user_type')
 
-            if user_type == 'user':
-                second_user = User.objects.filter(id=second_user_id).first()
-            else:
-                second_user = Business.objects.filter(
-                    user_id=second_user_id
-                ).first()
-
             messages_count = messages.count()
             last_message = Message.objects.filter(chat=record.get('id')).first()
 
             if user_type == 'user':
-                record['user_picture'] = second_user.profile_picture
-                record['user_name'] = second_user.name
-
+                second_user = User.objects.filter(id=second_user_id).first()
+                record['user_picture'] = (
+                    first_media_url(getattr(second_user, 'profile_picture', None))
+                    if second_user
+                    else None
+                )
+                record['user_name'] = user_display_name(second_user) or 'User'
             elif user_type == 'business':
-                record['business_picture'] = second_user.business_logo
-                record['business_name'] = second_user.business_name
+                second_user = Business.objects.filter(
+                    user_id=second_user_id
+                ).first()
+                record['business_picture'] = (
+                    first_media_url(getattr(second_user, 'business_logo', None))
+                    if second_user
+                    else None
+                )
+                record['business_name'] = (
+                    getattr(second_user, 'business_name', None) or 'Business'
+                )
+                if second_user is None:
+                    fallback_user = User.objects.filter(id=second_user_id).first()
+                    record['user_name'] = user_display_name(fallback_user) or 'User'
             else:
-                record['user_picture'] = []
-                record['user_name'] = []
+                fallback_user = User.objects.filter(id=second_user_id).first()
+                record['user_picture'] = first_media_url(
+                    getattr(fallback_user, 'profile_picture', None)
+                ) if fallback_user else None
+                record['user_name'] = user_display_name(fallback_user) or 'User'
 
             record['unread_messages'] = messages_count
 
+            created_at = getattr(last_message, 'created_at', None)
             record['message_created_at'] = (
-                last_message.created_at if last_message else ''
+                created_at.isoformat() if created_at else ''
             )
             record['last_message'] = (
-                last_message.content if last_message else ''
+                message_preview(last_message) if last_message else ''
             )
 
         paginated_data['results'] = paginate_results
@@ -341,7 +357,7 @@ class ChatroomListApi(generics.ListAPIView):
         )
 
         # will return chatrooms based on the user status at the time of creation
-        return Chat.objects.filter(query)
+        return Chat.objects.filter(query).order_by('-updated_at')
 
 
 class ChatroomDetailApi(generics.ListAPIView):

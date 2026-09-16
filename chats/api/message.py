@@ -19,6 +19,8 @@ from chats.models import Message, Chat
 from chats.serializers import MessageSerializer
 from chats.services import (
     assert_not_blocked,
+    fanout_chat_message,
+    fanout_messages_read,
     get_chat_for_participant,
     is_blocked_between,
     notify_new_chat_message,
@@ -118,6 +120,7 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         serializer.is_valid(raise_exception=True)
         message = serializer.save()
         chatroom.update(set__updated_at=timezone.now())
+        fanout_chat_message(chatroom, message, user_id, peer)
         notify_new_chat_message(chatroom, message, peer)
         from users.services.business_analytics import record_inbound_message
 
@@ -162,6 +165,7 @@ class MarkMessagesReadApi(generics.UpdateAPIView):
 
         # Mark those messages as read
         messages_to_mark_as_read.update(read=True)
+        fanout_messages_read(chatroom, user_id)
         return response(
             status=status.HTTP_200_OK,
             message='Successfully Marked messages as read',

@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from chats.models import BlockedUser, Chat
+from chats.models import BlockedUser, Chat, Message
 from users.models import User
 
 logger = logging.getLogger('chats.services')
@@ -209,3 +209,174 @@ def notify_new_chat_message(chat, message, recipient_id):
             getattr(chat, 'chat_id', None),
             recipient,
         )
+
+
+def inbox_group(user_id) -> str:
+    return f'inbox_{normalize_user_id(user_id)}'
+
+
+def _isoformat(value) -> str:
+    if value is None:
+        return timezone.now().isoformat()
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
+def first_media_url(value):
+    if value is None or value == '':
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            url = first_media_url(item)
+            if url:
+                return url
+        return None
+    return str(value)
+
+
+def user_display_name(user) -> str:
+    if user is None:
+        return ''
+    full = ' '.join(
+        part
+        for part in (
+            getattr(user, 'first_name', None),
+            getattr(user, 'last_name', None),
+        )
+        if part
+    ).strip()
+    for candidate in (
+        getattr(user, 'name', None),
+        full,
+        getattr(user, 'username', None),
+        getattr(user, 'email', None),
+    ):
+        text = str(candidate or '').strip()
+        if text and text != 'temp_username':
+            return text
+    return ''
+
+
+def message_preview(message) -> str:
+    content = str(getattr(message, 'content', None) or '').strip()
+    if content:
+        return content
+    if getattr(message, 'media_url', None):
+        return 'Photo'
+    return ''
+
+
+def unread_count_for(chat, user_id) -> int:
+    return Message.objects.filter(
+        chat=chat, read=False, sender_id__ne=normalize_user_id(user_id)
+    ).count()
+
+
+def message_ws_payload(message, chat=None) -> dict:
+    chat = chat or getattr(message, 'chat', None)
+    chat_id = getattr(chat, 'chat_id', None) if chat is not None else None
+    return {
+        'type': 'message',
+        'id': str(getattr(message, 'id', '') or ''),
+        'sender_id': str(getattr(message, 'sender_id', '') or ''),
+        'content': message.content or '',
+        'created_at': _isoformat(getattr(message, 'created_at', None)),
+        'read': bool(getattr(message, 'read', False)),
+        'media_url': getattr(message, 'media_url', None) or None,
+        'chat_id': chat_id,
+    }
+
+
+def history_payload(chat, before=None, limit=40) -> dict:
+    limit = max(1, min(int(limit or 40), 50))
+    queryset = Message.objects.filter(chat=chat).order_by('-created_at')
+    if before is not None:
+        queryset = queryset.filter(created_at__lt=before)
+    rows = list(queryset[:limit])
+    rows.reverse()
+    return {
+        'type': 'history',
+        'chat_id': getattr(chat, 'chat_id', None),
+        'messages': [message_ws_payload(row, chat) for row in rows],
+        'has_more': len(rows) == limit,
+    }
+
+
+def fanout_chat_message(chat, message, sender_id, peer_id=None):
+    '''Broadcast a saved message to the room and both inbox groups.'''
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+
+    layer = get_channel_layer()
+    if layer is None:
+        return
+    payload = message_ws_payload(message, chat)
+    try:
+        async_to_sync(layer.group_send)(
+            chat.chat_id,
+            {'type': 'chat_message', 'message': payload},
+        )
+    except Exception:
+        logger.exception('WS room fanout failed chat=%s', getattr(chat, 'chat_id', None))
+
+    preview = message_preview(message)
+    created_at = payload['created_at']
+    for uid in {normalize_user_id(sender_id), normalize_user_id(peer_id)}:
+        if not uid:
+            continue
+        inbox = {
+            'type': 'chat_updated',
+            'chat_id': chat.chat_id,
+            'last_message': preview,
+            'message_created_at': created_at,
+            'sender_id': str(sender_id),
+            'unread_messages': unread_count_for(chat, uid),
+            'media_url': payload.get('media_url'),
+        }
+        try:
+            async_to_sync(layer.group_send)(
+                inbox_group(uid),
+                {'type': 'inbox_event', 'payload': inbox},
+            )
+        except Exception:
+            logger.exception('WS inbox fanout failed user=%s', uid)
+
+
+def fanout_messages_read(chat, reader_id):
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+
+    layer = get_channel_layer()
+    if layer is None:
+        return
+    payload = {
+        'type': 'messages_read',
+        'chat_id': chat.chat_id,
+        'reader_id': str(reader_id),
+    }
+    try:
+        async_to_sync(layer.group_send)(
+            chat.chat_id,
+            {'type': 'chat_event', 'payload': payload},
+        )
+    except Exception:
+        logger.exception('WS read fanout failed chat=%s', getattr(chat, 'chat_id', None))
+    peer = peer_user_id(chat, reader_id)
+    for uid in {normalize_user_id(reader_id), normalize_user_id(peer)}:
+        if not uid:
+            continue
+        inbox = {
+            'type': 'chat_updated',
+            'chat_id': chat.chat_id,
+            'unread_messages': unread_count_for(chat, uid),
+            'sender_id': str(reader_id),
+        }
+        try:
+            async_to_sync(layer.group_send)(
+                inbox_group(uid),
+                {'type': 'inbox_event', 'payload': inbox},
+            )
+        except Exception:
+            logger.exception('WS read inbox failed user=%s', uid)
+

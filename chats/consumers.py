@@ -48,9 +48,14 @@ from django.utils import timezone
 
 from chats.models import Chat, Message
 from chats.services import (
+    fanout_chat_message,
+    fanout_messages_read,
+    history_payload,
+    inbox_group,
     is_blocked_between,
     is_participant,
     notify_new_chat_message,
+    parse_before_cursor,
     peer_user_id,
 )
 
@@ -198,6 +203,14 @@ class ChatroomConsumer(WebsocketConsumer):
                 self.chat_id,
                 self.chat_type,
             )
+            try:
+                self._send_history()
+            except Exception:
+                logger.exception(
+                    "WS history bootstrap failed user=%s chat=%s",
+                    self.user_id,
+                    self.chat_id,
+                )
 
         except Exception:
             logger.exception(
@@ -215,8 +228,18 @@ class ChatroomConsumer(WebsocketConsumer):
         '''
         try:
             payload = json.loads(text_data)
-            if payload.get("type") == "ping":
+            event_type = payload.get("type")
+            if event_type == "ping":
                 self.send(text_data=json.dumps({"type": "pong"}))
+                return
+            if event_type == "history":
+                self._send_history(before=payload.get("before"))
+                return
+            if event_type == "typing":
+                self._broadcast_typing(payload.get("is_typing", True))
+                return
+            if event_type == "read":
+                self._mark_read()
                 return
 
             if self.chatroom is None:
@@ -246,17 +269,8 @@ class ChatroomConsumer(WebsocketConsumer):
             if hasattr(self.chatroom, "update"):
                 self.chatroom.update(set__updated_at=timezone.now())
 
-            message_payload = {
-                "id": str(message.id),
-                "sender_id": self.user_id,
-                "content": message_content,
-                "created_at": message.created_at.isoformat(),
-                "read": False,
-            }
-
-            async_to_sync(self.channel_layer.group_send)(
-                self.chat_id,
-                {"type": "chat_message", "message": message_payload},
+            fanout_chat_message(
+                self.chatroom, message, self.user_id, self.second_user_id
             )
             notify_new_chat_message(self.chatroom, message, self.second_user_id)
             from users.services.business_analytics import record_inbound_message
@@ -278,6 +292,41 @@ class ChatroomConsumer(WebsocketConsumer):
         Channel-layer fan-out handler.
         '''
         self.send(text_data=json.dumps(event["message"]))
+
+    def chat_event(self, event):
+        self.send(text_data=json.dumps(event["payload"]))
+
+    def _send_history(self, before=None):
+        if self.chatroom is None:
+            return
+        cursor = parse_before_cursor(before) if before else None
+        self.send(text_data=json.dumps(history_payload(self.chatroom, before=cursor)))
+
+    def _broadcast_typing(self, is_typing):
+        if not self.chat_id:
+            return
+        async_to_sync(self.channel_layer.group_send)(
+            self.chat_id,
+            {
+                "type": "chat_event",
+                "payload": {
+                    "type": "typing",
+                    "chat_id": self.chat_id,
+                    "user_id": self.user_id,
+                    "is_typing": bool(is_typing),
+                },
+            },
+        )
+
+    def _mark_read(self):
+        if self.chatroom is None:
+            return
+        Message.objects.filter(
+            chat=self.chatroom,
+            read=False,
+            sender_id__ne=self.user_id,
+        ).update(read=True)
+        fanout_messages_read(self.chatroom, self.user_id)
 
     def disconnect(self, close_code):
         '''
@@ -313,3 +362,60 @@ class ChatroomConsumer(WebsocketConsumer):
         raw = self.scope.get("query_string") or b""
         parsed = parse_qs(raw.decode("utf-8", errors="ignore"))
         return {k: v[0] for k, v in parsed.items() if v}
+
+
+class UserInboxConsumer(WebsocketConsumer):
+    '''Personal inbox channel for unread + chat-list reorder events.'''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user_id = None
+
+    def connect(self):
+        user = self.scope.get("user")
+        if not user or not getattr(user, "is_authenticated", False):
+            self.accept()
+            self.close(code=4401)
+            return
+        if getattr(user, "is_banned", False):
+            self.accept()
+            self.close(code=4401)
+            return
+        self.user_id = str(user.id)
+        self.channel_layer = self.channel_layer or get_channel_layer()
+        if self.channel_layer is None:
+            self.accept()
+            self.close(code=5000)
+            return
+        try:
+            async_to_sync(self.channel_layer.group_add)(
+                inbox_group(self.user_id), self.channel_name
+            )
+        except (redis.exceptions.RedisError, OSError, TimeoutError):
+            self.accept()
+            self.close(code=5000)
+            return
+        self.accept()
+        logger.info("WS inbox accepted user=%s", self.user_id)
+
+    def receive(self, text_data):
+        try:
+            payload = json.loads(text_data)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if payload.get("type") == "ping":
+            self.send(text_data=json.dumps({"type": "pong"}))
+
+    def inbox_event(self, event):
+        self.send(text_data=json.dumps(event["payload"]))
+
+    def disconnect(self, close_code):
+        try:
+            if self.channel_layer and self.user_id:
+                async_to_sync(self.channel_layer.group_discard)(
+                    inbox_group(self.user_id), self.channel_name
+                )
+        except Exception:
+            logger.exception("WS inbox discard failed user=%s", self.user_id)
+        raise StopConsumer()
+

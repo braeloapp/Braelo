@@ -14,6 +14,7 @@ from chats.services import (
     normalize_user_id,
     parse_before_cursor,
     peer_user_id,
+    user_display_name,
 )
 from users.models import User
 
@@ -45,6 +46,17 @@ class ChatHelperTests(TestCase):
     def test_parse_before_cursor_blank(self):
         self.assertIsNone(parse_before_cursor(''))
         self.assertIsNone(parse_before_cursor(None))
+
+    def test_user_display_name_fallbacks(self):
+        user = SimpleNamespace(
+            name='',
+            first_name='Ana',
+            last_name='Silva',
+            username='temp_username',
+            email='ana@example.com',
+        )
+        self.assertEqual(user_display_name(user), 'Ana Silva')
+        self.assertEqual(user_display_name(None), '')
 
 
 class ChatroomListApiTests(TestCase):
