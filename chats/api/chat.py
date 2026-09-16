@@ -148,14 +148,25 @@ class CreateChatroomApi(generics.CreateAPIView):
     def _user_has_active_business(user_id):
         '''True when an active Business doc exists for ``user_id``.'''
         try:
+            from mongoengine.connection import ConnectionFailure
+        except ImportError:  # pragma: no cover
+            ConnectionFailure = Exception  # type: ignore[misc, assignment]
+
+        try:
             return (
                 Business.objects.filter(user_id=user_id, is_active=True).first()
                 is not None
             )
+        except ConnectionFailure:
+            return False
         except Exception as exc:
             # CI / local without MongoEngine default connection
             message = str(exc).lower()
-            if 'default connection' in message or 'connection' in message:
+            if (
+                'default connection' in message
+                or 'not connected' in message
+                or 'connectionfailure' in message
+            ):
                 return False
             raise
 

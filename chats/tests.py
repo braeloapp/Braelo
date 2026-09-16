@@ -111,11 +111,13 @@ class CreateChatBlockTests(TestCase):
         )
         self.assertEqual(response.json().get('status'), 400)
 
-    @patch('chats.api.chat.Business')
+    @patch(
+        'chats.api.chat.CreateChatroomApi._user_has_active_business',
+        return_value=False,
+    )
     def test_create_chat_business_flag_without_business_is_friendly(
-        self, mock_business
+        self, _mock_has_business
     ):
-        mock_business.objects.filter.return_value.first.return_value = None
         response = self.client.post(
             '/chats/create',
             data={
