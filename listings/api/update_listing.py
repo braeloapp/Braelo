@@ -31,7 +31,7 @@ from listings.models import (
     FurnitureListing,
 )
 from helpers import response, handle_exceptions
-from listings.field_contract import apply_field_aliases, extract_coordinates
+from listings.multipart_payload import flatten_listing_request_data
 from listings.serializers import (
     RealEstateUpdateSerializer,
     VehicleUpdateSerializer,
@@ -62,11 +62,12 @@ class UpdateListing(generics.UpdateAPIView):
         '''
         partial = kwargs.pop('partial', True)
         instance = self.get_object()
-        mutable_data = request.data.copy()
-        raw_coords = mutable_data.get('listing_coordinates')
-        if raw_coords not in (None, ''):
-            listing_coordinates = extract_coordinates(raw_coords)
-            if listing_coordinates is None:
+        # Never dict(QueryDict) — that wraps every field in a list and breaks
+        # StringField ("category: Not a valid string") + int fields (mileage).
+        mutable_data = flatten_listing_request_data(request, for_update=True)
+        if 'listing_coordinates' in mutable_data:
+            coords = mutable_data.get('listing_coordinates')
+            if not isinstance(coords, list) or len(coords) != 2:
                 raise ValidationError(
                     {
                         'listing_coordinates': (
@@ -74,14 +75,8 @@ class UpdateListing(generics.UpdateAPIView):
                         )
                     }
                 )
-            mutable_data['listing_coordinates'] = listing_coordinates
-        else:
-            mutable_data.pop('listing_coordinates', None)
-        mutable_data = apply_field_aliases(
-            dict(mutable_data),
-            subcategory=mutable_data.get('subcategory')
-            or getattr(instance, 'subcategory', None),
-        )
+        if not mutable_data.get('subcategory'):
+            mutable_data['subcategory'] = getattr(instance, 'subcategory', None)
         serializer = self.get_serializer(
             instance,
             data=mutable_data,

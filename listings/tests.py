@@ -10,8 +10,59 @@ from listings.api.fetch_listings import Recent, Recommendations
 from listings.api.search import Search
 from listings.api.upsert_listing import _normalize_keywords
 from listings.field_contract import apply_field_aliases, extract_coordinates
+from listings.multipart_payload import flatten_listing_request_data
 from listings.geo import parse_coordinates, parse_radius_meters
 from users.models import User
+
+
+class MultipartListingPayloadTests(TestCase):
+    def test_querydict_scalars_are_not_lists(self):
+        from django.http import QueryDict
+
+        class FakeFiles:
+            def getlist(self, _key):
+                return []
+
+        class FakeRequest:
+            def __init__(self, data):
+                self.data = data
+                self.FILES = FakeFiles()
+
+        qd = QueryDict(mutable=True)
+        qd['category'] = 'Vehicles'
+        qd['subcategory'] = 'Cars'
+        qd['mileage'] = '700'
+        qd['year'] = '2025'
+        qd['keywords'] = 'Cars, Sedan'
+        qd['listing_coordinates'] = (
+            '{"type":"Point","coordinates":[74.35,31.52]}'
+        )
+        qd['existingPictures[0]'] = 'https://cdn.example/a.png'
+        qd['existingPictures[1]'] = 'https://cdn.example/b.png'
+
+        # Reproduce the historical bug: dict(QueryDict) wraps values in lists.
+        self.assertEqual(dict(qd)['category'], ['Vehicles'])
+
+        payload = flatten_listing_request_data(
+            FakeRequest(qd), for_update=True
+        )
+        self.assertEqual(payload['category'], 'Vehicles')
+        self.assertIsInstance(payload['category'], str)
+        self.assertEqual(payload['mileage'], 700)
+        self.assertEqual(payload['year'], 2025)
+        self.assertEqual(payload['keywords'], ['Cars', 'Sedan'])
+        self.assertEqual(
+            payload['pictures'],
+            ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+        )
+        self.assertEqual(payload['listing_coordinates'], [74.35, 31.52])
+
+    def test_coerce_optional_int_mileage(self):
+        from listings.field_contract import coerce_optional_int_fields
+
+        payload = coerce_optional_int_fields({'mileage': '700', 'year': '2024'})
+        self.assertEqual(payload['mileage'], 700)
+        self.assertEqual(payload['year'], 2024)
 
 
 class UnsaveListingAuthorizationTests(TestCase):

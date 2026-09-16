@@ -138,11 +138,30 @@ class Serializer(serializers.DocumentSerializer):
                     {'Error': 'You cannot change someone else listings'}
                 )
 
-        if pictures:
-            # Delete already existed ones
-            if instance.pictures:
-                for picture_url in instance.pictures:
-                    # Extract the blob name from the URL
+        if pictures is not None:
+            if not isinstance(pictures, (list, tuple)):
+                pictures = [pictures]
+            kept_urls = []
+            new_files = []
+            for picture in pictures:
+                if isinstance(picture, UploadedFile):
+                    new_files.append(picture)
+                elif isinstance(picture, str) and picture.strip():
+                    kept_urls.append(picture.strip())
+
+            uploaded_urls = (
+                self.upload_pictures(new_files, instance.category, user)
+                if new_files
+                else []
+            )
+            final_urls = kept_urls + uploaded_urls
+
+            # Delete blobs that are no longer referenced
+            old_urls = list(instance.pictures or [])
+            for picture_url in old_urls:
+                if picture_url in final_urls:
+                    continue
+                try:
                     blob_name = picture_url.split(f'{AZURE_CONTAINER_NAME}/')[
                         -1
                     ]
@@ -150,11 +169,11 @@ class Serializer(serializers.DocumentSerializer):
                         container=AZURE_CONTAINER_NAME, blob=blob_name
                     )
                     blob_client.delete_blob()
-                    # Upload New ones
-            s3_urls = self.upload_pictures(pictures, instance.category, user)
+                except Exception:
+                    pass
 
-            # Replace existing picture URLs
-            validated_data['pictures'] = s3_urls
+            if final_urls:
+                validated_data['pictures'] = final_urls
 
         # Update other fields
         user_id = validated_data.get('user_id')
@@ -181,14 +200,29 @@ class Serializer(serializers.DocumentSerializer):
         Common validation logic for listings.
         Ensures category and subcategory validation and user association.
         '''
+        from listings.field_contract import coerce_optional_int_fields
+        from listings.multipart_payload import normalize_keywords
+
         user = self.context['request'].user
         data = apply_field_aliases(dict(data), subcategory=data.get('subcategory'))
-        data['from_business'] = data.get('from_business')
+        data = coerce_optional_int_fields(data)
+        # Unwrap accidental list-wrapped scalars (defensive)
+        for key, value in list(data.items()):
+            if isinstance(value, list) and len(value) == 1 and key != 'keywords' and key != 'pictures':
+                data[key] = value[0]
+        fb = data.get('from_business')
+        if isinstance(fb, str):
+            data['from_business'] = fb.strip().lower() in ('true', '1', 'yes')
+        else:
+            data['from_business'] = data.get('from_business')
         data['user_id'] = user.id
         category = data.get('category')
         subcategory = data.get('subcategory')
         year = data.get('year')
         keywords = data.get('keywords')
+        if keywords is not None and not isinstance(keywords, list):
+            keywords = normalize_keywords(keywords)
+            data['keywords'] = keywords
         status = data.get('is_active')
         listing_coordinates = data.get('listing_coordinates')
         user_status = user
