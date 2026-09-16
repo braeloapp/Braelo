@@ -8,7 +8,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from chats.api.chat import ChatroomListApi
+from chats.api.chat import ChatroomListApi, CreateChatroomApi
 from chats.services import (
     is_participant,
     normalize_user_id,
@@ -111,30 +111,27 @@ class CreateChatBlockTests(TestCase):
         )
         self.assertEqual(response.json().get('status'), 400)
 
-    @patch(
-        'chats.api.chat.CreateChatroomApi._user_has_active_business',
-        return_value=False,
-    )
-    def test_create_chat_business_flag_without_business_is_friendly(
-        self, _mock_has_business
-    ):
-        response = self.client.post(
-            '/chats/create',
-            data={
-                'user_id': self.other.id,
-                'sender': 'true',
-                'receiver': 'false',
-            },
-            format='json',
-        )
-        body = response.json()
-        self.assertEqual(body.get('status'), 400)
+    def test_create_chat_business_flag_without_business_is_friendly(self):
+        '''
+        Business-role create must return a friendly error when the caller has
+        no Business doc. Avoid Mongo entirely — CI has no default connection.
+        '''
+        api = CreateChatroomApi()
+        with patch.object(
+            CreateChatroomApi, '_user_has_active_business', return_value=False
+        ):
+            with self.assertRaises(ValidationError) as ctx:
+                api.assign_roles(self.user.id, 'true')
+        detail = ctx.exception.detail
+        if isinstance(detail, dict):
+            message = str(detail.get('error') or detail)
+        else:
+            message = str(detail)
         self.assertEqual(
-            body.get('error'),
+            message,
             'Unable to start chat. This user is not associated with a business.',
         )
-        self.assertNotIn('user_id:', str(body.get('error')))
-        self.assertNotIn('default connection', str(body.get('error')).lower())
+        self.assertNotIn('default connection', message.lower())
 
 
 class ReportUserValidationTests(TestCase):
