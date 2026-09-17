@@ -349,6 +349,9 @@ def _month_counts_from_datetimes(datetimes, starts, now):
 
 
 def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
+    from django.db.models import Count, Q, Sum
+    from django.db.models.functions import TruncMonth
+
     from chats.models import Chat, Message
     from feedbacks.models import ReportMessage, Requests
     from helpers.models import ListSync
@@ -361,58 +364,65 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
         months = ADMIN_GROWTH_MONTHS
     months = max(3, min(months, 24))
     week_ago = now - timedelta(days=7)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     labels, starts = build_month_axis(now, months)
     series_start = starts[0]
 
-    users_total = User.objects.count()
-    users_active = User.objects.filter(is_active=True).count()
-    users_new_7d = User.objects.filter(created_at__gte=week_ago).count()
-    users_new_today = User.objects.filter(
-        created_at__gte=now.replace(hour=0, minute=0, second=0, microsecond=0)
-    ).count()
+    user_stats = User.objects.aggregate(
+        total=Count('id'),
+        active=Count('id', filter=Q(is_active=True)),
+        new_7d=Count('id', filter=Q(created_at__gte=week_ago)),
+        new_today=Count('id', filter=Q(created_at__gte=today_start)),
+        listing_clicks=Sum('listings_clicks'),
+    )
+    business_stats = Business.objects.aggregate(
+        total=Count('id'),
+        active=Count('id', filter=Q(is_active=True)),
+    )
+    listing_stats = ListSync.objects.aggregate(
+        total=Count('id'),
+        active=Count('id', filter=Q(is_active=True)),
+    )
+    report_stats = ReportMessage.objects.aggregate(
+        total=Count('id'),
+        pending=Count('id', filter=Q(status='Pending')),
+    )
+    support_stats = Requests.objects.aggregate(
+        total=Count('id'),
+        open=Count('id', filter=Q(status='Active')),
+        in_progress=Count('id', filter=Q(status='In Progress')),
+    )
 
-    businesses_total = Business.objects.count()
-    businesses_active = Business.objects.filter(is_active=True).count()
-    listings_total = ListSync.objects.count()
-    listings_active = ListSync.objects.filter(is_active=True).count()
+    by_category = {
+        (row['category'] or 'unknown'): row['c']
+        for row in ListSync.objects.values('category').annotate(c=Count('id'))
+    }
 
-    by_category = {}
-    for listing in ListSync.objects.only('category'):
-        key = listing.category or 'unknown'
-        by_category[key] = by_category.get(key, 0) + 1
-
-    reports_total = ReportMessage.objects.count()
-    reports_pending = ReportMessage.objects.filter(status='Pending').count()
-    support_total = Requests.objects.count()
-    support_open = Requests.objects.filter(status='Active').count()
-    support_in_progress = Requests.objects.filter(status='In Progress').count()
-    messages_total = Message.objects.count()
-    conversations_total = Chat.objects.count()
-    listing_clicks = User.objects.aggregate(
-        total=Sum('listings_clicks')
-    ).get('total') or 0
-
-    user_created = [
-        user.created_at
-        for user in User.objects.filter(created_at__gte=series_start).only(
-            'created_at'
+    def month_series(model):
+        rows = (
+            model.objects.filter(created_at__gte=series_start)
+            .annotate(month=TruncMonth('created_at'))
+            .values('month')
+            .annotate(c=Count('id'))
         )
-    ]
-    business_created = [
-        business.created_at
-        for business in Business.objects.filter(created_at__gte=series_start).only(
-            'created_at'
-        )
-    ]
-    listing_created = [
-        listing.created_at
-        for listing in ListSync.objects.filter(created_at__gte=series_start).only(
-            'created_at'
-        )
-    ]
+        counts_by_month = {}
+        for row in rows:
+            month = row['month']
+            if month is None:
+                continue
+            if timezone.is_naive(month):
+                month = timezone.make_aware(month, timezone.get_current_timezone())
+            counts_by_month[month.date().replace(day=1)] = row['c']
+        out = []
+        for start in starts:
+            key = start.date().replace(day=1)
+            out.append(int(counts_by_month.get(key, 0)))
+        return out
 
     recent_users = []
-    for user in User.objects.filter(is_active=True).order_by('-id')[:8]:
+    for user in User.objects.filter(is_active=True).order_by('-id').only(
+        'id', 'name', 'email', 'city', 'created_at'
+    )[:8]:
         recent_users.append(
             {
                 'id': user.id,
@@ -425,16 +435,19 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             }
         )
 
+    listings_total = int(listing_stats['total'] or 0)
+    listings_active = int(listing_stats['active'] or 0)
+
     return {
         'users': {
-            'total': users_total,
-            'active': users_active,
-            'new_7d': users_new_7d,
-            'new_today': users_new_today,
+            'total': int(user_stats['total'] or 0),
+            'active': int(user_stats['active'] or 0),
+            'new_7d': int(user_stats['new_7d'] or 0),
+            'new_today': int(user_stats['new_today'] or 0),
         },
         'businesses': {
-            'total': businesses_total,
-            'active': businesses_active,
+            'total': int(business_stats['total'] or 0),
+            'active': int(business_stats['active'] or 0),
         },
         'listings': {
             'total': listings_total,
@@ -443,28 +456,26 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             'by_category': by_category,
         },
         'reports': {
-            'total': reports_total,
-            'pending': reports_pending,
+            'total': int(report_stats['total'] or 0),
+            'pending': int(report_stats['pending'] or 0),
         },
         'support_requests': {
-            'total': support_total,
-            'open': support_open,
-            'in_progress': support_in_progress,
+            'total': int(support_stats['total'] or 0),
+            'open': int(support_stats['open'] or 0),
+            'in_progress': int(support_stats['in_progress'] or 0),
         },
         'messages': {
-            'total': messages_total,
-            'conversations': conversations_total,
+            'total': Message.objects.count(),
+            'conversations': Chat.objects.count(),
         },
-        'engagement': {'listing_clicks': int(listing_clicks)},
+        'engagement': {
+            'listing_clicks': int(user_stats['listing_clicks'] or 0),
+        },
         'growth': {
             'labels': labels,
-            'users': _month_counts_from_datetimes(user_created, starts, now),
-            'businesses': _month_counts_from_datetimes(
-                business_created, starts, now
-            ),
-            'listings': _month_counts_from_datetimes(
-                listing_created, starts, now
-            ),
+            'users': month_series(User),
+            'businesses': month_series(Business),
+            'listings': month_series(ListSync),
         },
         'recent_active_users': recent_users,
     }
