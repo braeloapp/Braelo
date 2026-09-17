@@ -7,7 +7,8 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 
 from helpers import get_token, handle_exceptions, response
-from users.models import Business, User
+from users.models import User
+from users.services.business_lookup import find_user_business
 from users.services.email_verification import (
     send_verification_email,
     verify_email_otp,

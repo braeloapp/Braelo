@@ -150,7 +150,9 @@ class LoginAuth(generics.CreateAPIView):
     @staticmethod
     def _business_name_for_user(user):
         try:
-            business = Business.objects.filter(user_id=user.id).first()
+            from users.services.business_lookup import find_user_business
+
+            business = find_user_business(user.id)
         except Exception:
             return None
         return business.business_name if business else None

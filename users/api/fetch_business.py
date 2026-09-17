@@ -31,6 +31,7 @@ from listings.serializers import ListsyncSerializer
 from listings.api.paginate_listing import Pagination
 from listings.geo import geo_near_filter, parse_radius_meters
 from users.serializers.business import BusinessSerailizer
+from users.services.business_lookup import find_user_business
 
 
 class FetchBusinesses(generics.ListAPIView):
@@ -177,7 +178,13 @@ class FetchSingleBusiness(generics.ListAPIView):
     def get(self, request):
         try:
             user_id = request.user.id
-            business = Business.objects.get(user_id=user_id)
+            business = find_user_business(user_id)
+            if business is None:
+                return response(
+                    status=status.HTTP_204_NO_CONTENT,
+                    message='Business Not Found',
+                    data={},
+                )
             business_data = self.get_serializer(business)
             return response(
                 status=status.HTTP_200_OK,

@@ -19,8 +19,7 @@ from helpers import handle_exceptions, get_token, response
 from users.permissions import is_admin_path
 from users.serializers import EmailLogin, TokenBlacklistSerializer
 from users.services.rate_limit import enforce_rate_limit
-
-from users.models import Business
+from users.services.business_lookup import find_user_business
 
 # login part
 
@@ -44,7 +43,7 @@ class LoginWithEmail(generics.CreateAPIView):
         user.is_valid(raise_exception=True)
         user = user.validated_data
         token = get_token(user)
-        business = Business.objects.filter(user_id=user.id).first()
+        business = find_user_business(user.id)
         response_data = {
             'email': user.email,
             'name': user.name,
