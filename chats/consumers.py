@@ -236,7 +236,14 @@ class ChatroomConsumer(WebsocketConsumer):
                 self._send_history(before=payload.get("before"))
                 return
             if event_type == "typing":
-                self._broadcast_typing(payload.get("is_typing", True))
+                is_typing = bool(payload.get("is_typing", True))
+                logger.info(
+                    "WS typing pulse chat=%s user=%s is_typing=%s",
+                    self.chat_id,
+                    self.user_id,
+                    is_typing,
+                )
+                self._broadcast_typing(is_typing)
                 return
             if event_type == "read":
                 self._mark_read()
@@ -269,14 +276,30 @@ class ChatroomConsumer(WebsocketConsumer):
             if hasattr(self.chatroom, "update"):
                 self.chatroom.update(set__updated_at=timezone.now())
 
+            logger.info(
+                "WS message pulse chat=%s user=%s message_id=%s",
+                self.chat_id,
+                self.user_id,
+                getattr(message, "id", None),
+            )
+            # Fan out on the room first so both clients see the message ASAP.
             fanout_chat_message(
                 self.chatroom, message, self.user_id, self.second_user_id
             )
+            # Push + analytics must not block websocket delivery latency.
             notify_new_chat_message(self.chatroom, message, self.second_user_id)
-            from users.services.business_analytics import record_inbound_message
-
             if self.second_user_id:
-                record_inbound_message(self.second_user_id, self.user_id)
+                import threading
+
+                from users.services.business_analytics import record_inbound_message
+
+                peer_id = self.second_user_id
+                sender_id = self.user_id
+                threading.Thread(
+                    target=record_inbound_message,
+                    args=(peer_id, sender_id),
+                    daemon=True,
+                ).start()
 
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning("WS bad payload from user=%s: %s", self.user_id, exc)
@@ -303,18 +326,19 @@ class ChatroomConsumer(WebsocketConsumer):
         self.send(text_data=json.dumps(history_payload(self.chatroom, before=cursor)))
 
     def _broadcast_typing(self, is_typing):
-        if not self.chat_id:
+        if not self.chat_id or not self.channel_layer:
             return
+        payload = {
+            "type": "typing",
+            "chat_id": self.chat_id,
+            "user_id": str(self.user_id),
+            "is_typing": bool(is_typing),
+        }
         async_to_sync(self.channel_layer.group_send)(
             self.chat_id,
             {
                 "type": "chat_event",
-                "payload": {
-                    "type": "typing",
-                    "chat_id": self.chat_id,
-                    "user_id": self.user_id,
-                    "is_typing": bool(is_typing),
-                },
+                "payload": payload,
             },
         )
 

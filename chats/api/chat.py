@@ -27,6 +27,7 @@ from chats.services import (
     assert_not_blocked,
     assert_user_can_chat,
     block_user,
+    enrich_chat_for_viewer,
     first_media_url,
     is_participant,
     message_preview,
@@ -256,10 +257,13 @@ class CreateChatroomApi(generics.CreateAPIView):
         )
 
         if chatroom:
+            data = enrich_chat_for_viewer(
+                ChatSerializer(chatroom).data, user_id
+            )
             return response(
                 status=status.HTTP_201_CREATED,
                 message='Chat fetched successfully',
-                data=ChatSerializer(chatroom).data,
+                data=data,
             )
 
         # If the chatroom doesn't exist, create a new one
@@ -281,7 +285,9 @@ class CreateChatroomApi(generics.CreateAPIView):
         if sender_type == 'business':
             record_new_inquiry(user_id, second_user_id)
         maybe_send_business_welcome(new_chatroom, user_id)
-        data = ChatSerializer(new_chatroom).data
+        data = enrich_chat_for_viewer(
+            ChatSerializer(new_chatroom).data, user_id
+        )
         return response(
             status=status.HTTP_201_CREATED,
             message='Chat created successfully',

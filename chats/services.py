@@ -180,35 +180,42 @@ def unblock_user(blocker_id, blocked_id):
 def notify_new_chat_message(chat, message, recipient_id):
     '''Best-effort structured FCM for a new chat message.
 
+    Runs off the websocket critical path so delivery is not blocked by push.
     Failures are logged and never raised to the message pipeline.
     '''
     recipient = normalize_user_id(recipient_id)
-    sender = normalize_user_id(message.sender_id)
+    sender = normalize_user_id(getattr(message, 'sender_id', None))
+    chat_id = getattr(chat, 'chat_id', None)
+    message_id = getattr(message, 'id', '') or ''
     if not recipient or recipient == sender:
         return
     if is_blocked_between(sender, recipient):
         return
 
-    from helpers.notifications import chat_message_event
+    def _send():
+        try:
+            from helpers.notifications import chat_message_event
+            from notifications.serializers.events import EventNotificationSerializer
 
-    payload = chat_message_event(
-        recipient,
-        chat.chat_id,
-        sender,
-        getattr(message, 'id', '') or '',
-    )
-    try:
-        from notifications.serializers.events import EventNotificationSerializer
+            payload = chat_message_event(
+                recipient,
+                chat_id,
+                sender,
+                message_id,
+            )
+            serializer = EventNotificationSerializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        except Exception:
+            logger.exception(
+                'Chat push failed chat=%s recipient=%s',
+                chat_id,
+                recipient,
+            )
 
-        serializer = EventNotificationSerializer(data=payload)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-    except Exception:
-        logger.exception(
-            'Chat push failed chat=%s recipient=%s',
-            getattr(chat, 'chat_id', None),
-            recipient,
-        )
+    import threading
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def inbox_group(user_id) -> str:
@@ -256,6 +263,71 @@ def user_display_name(user) -> str:
         if text and text != 'temp_username':
             return text
     return ''
+
+
+def enrich_chat_for_viewer(record: dict, viewer_id) -> dict:
+    '''Attach peer display name/picture fields for create/open chat responses.'''
+    if not isinstance(record, dict):
+        return record
+    viewer = normalize_user_id(viewer_id)
+    participants = record.get('participants') or []
+    peer = None
+    for participant in participants:
+        pid = normalize_user_id(participant)
+        if pid and pid != viewer:
+            peer = pid
+            break
+    if not peer:
+        receiver = record.get('receiver') or {}
+        sender = record.get('sender') or {}
+        receiver_id = normalize_user_id(receiver.get('user_id'))
+        sender_id = normalize_user_id(sender.get('user_id'))
+        if receiver_id and receiver_id != viewer:
+            peer = receiver_id
+        elif sender_id and sender_id != viewer:
+            peer = sender_id
+
+    receiver = record.get('receiver') or {}
+    sender = record.get('sender') or {}
+    if normalize_user_id(receiver.get('user_id')) == viewer:
+        peer_type = (sender or {}).get('user_type')
+    elif normalize_user_id(sender.get('user_id')) == viewer:
+        peer_type = (receiver or {}).get('user_type')
+    else:
+        peer_type = (receiver or {}).get('user_type') or (sender or {}).get(
+            'user_type'
+        )
+
+    if not peer:
+        return record
+
+    from users.models import Business
+
+    if peer_type == 'business':
+        business = Business.objects.filter(user_id=peer).first()
+        record['business_picture'] = (
+            first_media_url(getattr(business, 'business_logo', None))
+            if business
+            else None
+        )
+        record['business_name'] = (
+            getattr(business, 'business_name', None) or 'Business'
+        )
+        if business is None:
+            fallback = User.objects.filter(id=peer).first()
+            record['user_name'] = user_display_name(fallback) or 'User'
+            record['user_picture'] = first_media_url(
+                getattr(fallback, 'profile_picture', None)
+            )
+    else:
+        peer_user = User.objects.filter(id=peer).first()
+        record['user_picture'] = (
+            first_media_url(getattr(peer_user, 'profile_picture', None))
+            if peer_user
+            else None
+        )
+        record['user_name'] = user_display_name(peer_user) or 'User'
+    return record
 
 
 def message_preview(message) -> str:
@@ -322,16 +394,19 @@ def fanout_chat_message(chat, message, sender_id, peer_id=None):
 
     preview = message_preview(message)
     created_at = payload['created_at']
-    for uid in {normalize_user_id(sender_id), normalize_user_id(peer_id)}:
+    sender_norm = normalize_user_id(sender_id)
+    for uid in {sender_norm, normalize_user_id(peer_id)}:
         if not uid:
             continue
+        # Sender's unread stays 0 for their own outbound message.
+        unread = 0 if uid == sender_norm else unread_count_for(chat, uid)
         inbox = {
             'type': 'chat_updated',
             'chat_id': chat.chat_id,
             'last_message': preview,
             'message_created_at': created_at,
             'sender_id': str(sender_id),
-            'unread_messages': unread_count_for(chat, uid),
+            'unread_messages': unread,
             'media_url': payload.get('media_url'),
         }
         try:
