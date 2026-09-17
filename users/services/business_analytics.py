@@ -350,7 +350,6 @@ def _month_counts_from_datetimes(datetimes, starts, now):
 
 def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
     from django.db.models import Count, Q, Sum
-    from django.db.models.functions import TruncMonth
 
     from chats.models import Chat, Message
     from feedbacks.models import ReportMessage, Requests
@@ -368,39 +367,33 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
     labels, starts = build_month_axis(now, months)
     series_start = starts[0]
 
-    user_stats = User.objects.aggregate(
-        total=Count('id'),
-        active=Count('id', filter=Q(is_active=True)),
-        new_7d=Count('id', filter=Q(created_at__gte=week_ago)),
-        new_today=Count('id', filter=Q(created_at__gte=today_start)),
-        listing_clicks=Sum('listings_clicks'),
-    )
-    business_stats = Business.objects.aggregate(
-        total=Count('id'),
-        active=Count('id', filter=Q(is_active=True)),
-    )
-    listing_stats = ListSync.objects.aggregate(
-        total=Count('id'),
-        active=Count('id', filter=Q(is_active=True)),
-    )
-    report_stats = ReportMessage.objects.aggregate(
-        total=Count('id'),
-        pending=Count('id', filter=Q(status='Pending')),
-    )
-    support_stats = Requests.objects.aggregate(
-        total=Count('id'),
-        open=Count('id', filter=Q(status='Active')),
-        in_progress=Count('id', filter=Q(status='In Progress')),
-    )
+    def mongo_count(queryset):
+        try:
+            return int(queryset.count())
+        except Exception:
+            logger.exception('mongo_count failed')
+            return 0
 
-    by_category = {
-        (row['category'] or 'unknown'): row['c']
-        for row in ListSync.objects.values('category').annotate(c=Count('id'))
-    }
+    def mongo_month_series(queryset):
+        '''Bucket MongoEngine created_at values into the month axis.'''
+        try:
+            values = [
+                doc.created_at
+                for doc in queryset.filter(created_at__gte=series_start).only(
+                    'created_at'
+                )
+                if getattr(doc, 'created_at', None)
+            ]
+        except Exception:
+            logger.exception('mongo_month_series failed')
+            values = []
+        return bucket_datetimes(values, starts, now)
 
-    def month_series(model):
+    def sql_month_series():
+        from django.db.models.functions import TruncMonth
+
         rows = (
-            model.objects.filter(created_at__gte=series_start)
+            User.objects.filter(created_at__gte=series_start)
             .annotate(month=TruncMonth('created_at'))
             .values('month')
             .annotate(c=Count('id'))
@@ -419,6 +412,38 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             out.append(int(counts_by_month.get(key, 0)))
         return out
 
+    user_stats = User.objects.aggregate(
+        total=Count('id'),
+        active=Count('id', filter=Q(is_active=True)),
+        new_7d=Count('id', filter=Q(created_at__gte=week_ago)),
+        new_today=Count('id', filter=Q(created_at__gte=today_start)),
+        listing_clicks=Sum('listings_clicks'),
+    )
+
+    listings_total = mongo_count(ListSync.objects)
+    listings_active = mongo_count(ListSync.objects.filter(is_active=True))
+    businesses_total = mongo_count(Business.objects)
+    businesses_active = mongo_count(Business.objects.filter(is_active=True))
+    reports_total = mongo_count(ReportMessage.objects)
+    reports_pending = mongo_count(ReportMessage.objects.filter(status='Pending'))
+    support_total = mongo_count(Requests.objects)
+    support_open = mongo_count(Requests.objects.filter(status='Active'))
+    support_progress = mongo_count(Requests.objects.filter(status='In Progress'))
+
+    by_category = {}
+    try:
+        pipeline = [{'$group': {'_id': '$category', 'c': {'$sum': 1}}}]
+        for row in ListSync.objects.aggregate(*pipeline):
+            key = row.get('_id') or 'unknown'
+            by_category[str(key)] = int(row.get('c') or 0)
+    except Exception:
+        try:
+            for doc in ListSync.objects.only('category'):
+                key = getattr(doc, 'category', None) or 'unknown'
+                by_category[key] = by_category.get(key, 0) + 1
+        except Exception:
+            logger.exception('listing category breakdown failed')
+
     recent_users = []
     for user in User.objects.filter(is_active=True).order_by('-id').only(
         'id', 'name', 'email', 'city', 'created_at'
@@ -435,8 +460,12 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             }
         )
 
-    listings_total = int(listing_stats['total'] or 0)
-    listings_active = int(listing_stats['active'] or 0)
+    try:
+        messages_total = Message.objects.count()
+        conversations_total = Chat.objects.count()
+    except Exception:
+        messages_total = 0
+        conversations_total = 0
 
     return {
         'users': {
@@ -446,8 +475,8 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             'new_today': int(user_stats['new_today'] or 0),
         },
         'businesses': {
-            'total': int(business_stats['total'] or 0),
-            'active': int(business_stats['active'] or 0),
+            'total': businesses_total,
+            'active': businesses_active,
         },
         'listings': {
             'total': listings_total,
@@ -456,26 +485,26 @@ def build_admin_statistics(months=ADMIN_GROWTH_MONTHS):
             'by_category': by_category,
         },
         'reports': {
-            'total': int(report_stats['total'] or 0),
-            'pending': int(report_stats['pending'] or 0),
+            'total': reports_total,
+            'pending': reports_pending,
         },
         'support_requests': {
-            'total': int(support_stats['total'] or 0),
-            'open': int(support_stats['open'] or 0),
-            'in_progress': int(support_stats['in_progress'] or 0),
+            'total': support_total,
+            'open': support_open,
+            'in_progress': support_progress,
         },
         'messages': {
-            'total': Message.objects.count(),
-            'conversations': Chat.objects.count(),
+            'total': messages_total,
+            'conversations': conversations_total,
         },
         'engagement': {
             'listing_clicks': int(user_stats['listing_clicks'] or 0),
         },
         'growth': {
             'labels': labels,
-            'users': month_series(User),
-            'businesses': month_series(Business),
-            'listings': month_series(ListSync),
+            'users': sql_month_series(),
+            'businesses': mongo_month_series(Business.objects),
+            'listings': mongo_month_series(ListSync.objects),
         },
         'recent_active_users': recent_users,
     }
