@@ -20,17 +20,15 @@ from django.core.files.uploadedfile import UploadedFile
 from helpers.azure import blob_service_client
 
 
-def _upload_body_from_django_file(picture) -> bytes:
+def _upload_body_from_django_file(picture, *, close=False) -> bytes:
     """
     Read upload into bytes before Azure upload_blob.
 
     Passing TemporaryUploadedFile / BufferedRandom streams to the Azure SDK can
     trigger \"cannot pickle 'BufferedRandom' instances\" on some platforms.
 
-    Always call ``UploadedFile.close()`` after reading so Django's Windows
-    ``TemporaryFile`` is finalized in normal code flow. If it is only closed from
-    ``__del__`` during GC, ``close_called`` can be missing and stderr shows
-    AttributeError (harmless but noisy).
+    Do not close by default — serializers/validators may still need the handle.
+    Pass close=True only for one-shot helpers that own the upload lifecycle.
     """
     try:
         if hasattr(picture, 'read'):
@@ -47,7 +45,7 @@ def _upload_body_from_django_file(picture) -> bytes:
             return bytes(picture)
         raise TypeError(f'Unsupported upload type: {type(picture)!r}')
     finally:
-        if isinstance(picture, UploadedFile):
+        if close and isinstance(picture, UploadedFile):
             try:
                 picture.close()
             except Exception:

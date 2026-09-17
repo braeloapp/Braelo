@@ -22,7 +22,12 @@ class _LazyBlobServiceClient:
                     "Azure Blob Storage is not configured. Set AZURE_STORAGE_CONNECTION_STRING "
                     "or both AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY in the environment."
                 )
-            self._client = BlobServiceClient.from_connection_string(cs)
+            # Fail fast on hung uploads instead of blocking the request for minutes.
+            self._client = BlobServiceClient.from_connection_string(
+                cs,
+                connection_timeout=20,
+                read_timeout=60,
+            )
         return self._client
 
     def __getattr__(self, name):

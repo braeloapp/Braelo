@@ -306,13 +306,30 @@ def apply_field_aliases(payload, subcategory=None):
     if location not in (None, ''):
         remapped['location'] = str(location).strip()
 
-    # Homemade Food FE swaps chip targets for these two fields.
+    # Some older Homemade Food clients post food types under
+    # service_availability and delivery modes under homemade_service.
+    # Only unswap when values clearly belong on the opposite fields.
     if sub_key == 'homemadefood':
-        food_types = remapped.get('service_availability')
-        availability = remapped.get('homemade_service')
-        if food_types is not None or availability is not None:
-            remapped['homemade_service'] = food_types
-            remapped['service_availability'] = availability
+        from helpers.constants.services import ServicesConstants as SC
+
+        food_choices = set(SC.AVAILABLE_HOMEMADE_FOOD)
+        availability_choices = set(SC.HOMEMADE_SERVICE)
+        under_availability = remapped.get('service_availability')
+        under_homemade = remapped.get('homemade_service')
+
+        def _as_choice(value):
+            return value.strip().upper() if isinstance(value, str) else None
+
+        avail_val = _as_choice(under_availability)
+        homemade_val = _as_choice(under_homemade)
+        clearly_swapped = (
+            (avail_val in food_choices and homemade_val in availability_choices)
+            or (avail_val in food_choices and homemade_val is None)
+            or (homemade_val in availability_choices and avail_val is None)
+        )
+        if clearly_swapped:
+            remapped['homemade_service'] = under_availability
+            remapped['service_availability'] = under_homemade
 
     return remapped
 

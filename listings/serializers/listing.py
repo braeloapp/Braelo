@@ -12,7 +12,6 @@ Listing (Upsert) Serializers.
 
 from django.db import transaction
 from django.utils import timezone
-from azure.storage.blob import BlobServiceClient
 from rest_framework.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
 
@@ -82,6 +81,10 @@ class Serializer(serializers.DocumentSerializer):
         '''
         Handles the uploading of pictures to Azure Blob Storage.
         Returns a list of URLs for the uploaded pictures.
+
+        Same blob path + response shape the mobile app already relies on.
+        We only buffer the file into bytes before Azure upload so the SDK
+        cannot retry on a consumed stream (which previously hung for minutes).
         '''
         if pictures is None:
             pictures = []
@@ -89,16 +92,44 @@ class Serializer(serializers.DocumentSerializer):
             pictures = [pictures]
         s3_urls = []
         for picture in pictures:
-            file_name = f'listings/{category}/{user.id}/{picture.name}'
+            name = getattr(picture, 'name', None) or 'image.png'
+            file_name = f'listings/{category}/{user.id}/{name}'
             blob_client = blob_service_client.get_blob_client(
                 container=AZURE_CONTAINER_NAME, blob=file_name
             )
-            blob_client.upload_blob(picture, overwrite=True)
+            body = self._picture_upload_bytes(picture)
+            blob_client.upload_blob(body, overwrite=True)
 
-            picture_url = f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{file_name}'
+            picture_url = (
+                f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/'
+                f'{AZURE_CONTAINER_NAME}/{file_name}'
+            )
             s3_urls.append(picture_url)
 
         return s3_urls
+
+    @staticmethod
+    def _picture_upload_bytes(picture):
+        '''Read upload bytes without closing the Django file handle.'''
+        if isinstance(picture, (bytes, bytearray)):
+            return bytes(picture)
+        if hasattr(picture, 'seek'):
+            try:
+                picture.seek(0)
+            except (OSError, AttributeError, ValueError, TypeError):
+                pass
+        if not hasattr(picture, 'read'):
+            raise ValidationError({'pictures': 'Invalid picture upload'})
+        try:
+            data = picture.read()
+        except ValueError as exc:
+            # Surface a clear error if the upload stream was already closed upstream.
+            raise ValidationError(
+                {'pictures': 'Could not read image upload. Please try again.'}
+            ) from exc
+        if isinstance(data, str):
+            return data.encode('utf-8')
+        return bytes(data)
 
     def create(self, validated_data):
         '''
