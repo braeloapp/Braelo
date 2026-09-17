@@ -24,6 +24,7 @@ class MessageSerializer(serializers.DocumentSerializer):
             'sender_id',
             'content',
             'media_url',
+            'media_urls',
             'read',
             'created_at',
         ]

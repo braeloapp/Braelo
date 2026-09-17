@@ -17,6 +17,7 @@ from mongoengine import (
     ReferenceField,
     DateTimeField,
     BooleanField,
+    ListField,
 )
 
 from chats.models.chat import Chat
@@ -31,7 +32,10 @@ class Message(Document):
     sender_id = StringField(required=True)
     content = StringField(required=False)
     read = BooleanField(default=False)
+    # Legacy single URL (kept for older clients / history).
     media_url = StringField()
+    # Up to 5 image URLs for album-style chat photos.
+    media_urls = ListField(StringField(), default=list)
     created_at = DateTimeField()
 
     meta = {

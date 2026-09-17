@@ -10,6 +10,9 @@ Message endpoints.
 ---------------------------------------------------
 '''
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import uuid
+
 from rest_framework.views import APIView
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
@@ -33,22 +36,55 @@ from rest_framework.pagination import PageNumberPagination
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from helpers import response, handle_exceptions, blob_service_client
 
+MAX_CHAT_IMAGES = 5
+
 
 def upload_media(chatroom_id, file):
     '''
     Handles the uploading of media to Azure Blob Storage.
     Returns path to uploaded media.
     '''
-    # Generate unique file name and upload
-    file_name = f'chats/{chatroom_id}/{file.name}'
+    safe_name = getattr(file, 'name', None) or 'photo.jpg'
+    file_name = f'chats/{chatroom_id}/{uuid.uuid4().hex}_{safe_name}'
     blob_client = blob_service_client.get_blob_client(
         container=AZURE_CONTAINER_NAME, blob=file_name
     )
 
     blob_client.upload_blob(file, overwrite=True)
-    # Generate URL to access the uploaded file
-    media_url = f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{file_name}'
+    media_url = (
+        f'https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/'
+        f'{AZURE_CONTAINER_NAME}/{file_name}'
+    )
     return media_url
+
+
+def _collect_upload_files(request):
+    '''Accept multi-file under ``file`` (getlist) with single-file fallback.'''
+    files = list(request.FILES.getlist('file') or [])
+    if not files:
+        single = request.FILES.get('file')
+        if single is not None:
+            files = [single]
+    return files
+
+
+def _upload_files_parallel(chatroom_id, files):
+    if not files:
+        return []
+    if len(files) == 1:
+        return [upload_media(chatroom_id, files[0])]
+
+    urls = [None] * len(files)
+    workers = min(len(files), MAX_CHAT_IMAGES)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(upload_media, chatroom_id, file_obj): index
+            for index, file_obj in enumerate(files)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            urls[index] = future.result()
+    return [url for url in urls if url]
 
 
 class Pagination(PageNumberPagination):
@@ -95,10 +131,18 @@ class MessageListCreateApi(generics.ListCreateAPIView):
 
     @handle_exceptions
     def create(self, request, *args, **kwargs):
-        media_url = None
         chatroom_id = kwargs['chat_id']
         user_id = str(request.user.id)
-        file = request.FILES.get('file')
+        files = _collect_upload_files(request)
+        if len(files) > MAX_CHAT_IMAGES:
+            raise ValidationError(
+                {
+                    'file': (
+                        f'You can send at most {MAX_CHAT_IMAGES} photos '
+                        'per message.'
+                    )
+                }
+            )
         chatroom = get_chat_for_participant(chatroom_id, user_id)
         peer = peer_user_id(chatroom, user_id)
         if chatroom.is_blocked or (peer and is_blocked_between(user_id, peer)):
@@ -109,13 +153,16 @@ class MessageListCreateApi(generics.ListCreateAPIView):
             )
         if peer:
             assert_not_blocked(user_id, peer)
-        data = request.data.copy()
-        if file:
-            media_url = upload_media(chatroom_id, file)
-            data['media_url'] = media_url
-        data['chat'] = chatroom.id
-        data['sender_id'] = user_id
-        data['created_at'] = timezone.now()
+        data = {
+            'content': request.data.get('content') or '',
+            'chat': chatroom.id,
+            'sender_id': user_id,
+            'created_at': timezone.now(),
+        }
+        media_urls = _upload_files_parallel(chatroom_id, files) if files else []
+        if media_urls:
+            data['media_urls'] = media_urls
+            data['media_url'] = media_urls[0]
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         message = serializer.save()
@@ -125,7 +172,13 @@ class MessageListCreateApi(generics.ListCreateAPIView):
         from users.services.business_analytics import record_inbound_message
 
         if peer:
-            record_inbound_message(peer, user_id)
+            import threading
+
+            threading.Thread(
+                target=record_inbound_message,
+                args=(peer, user_id),
+                daemon=True,
+            ).start()
         return response(
             status=status.HTTP_201_CREATED,
             message='Message sent successfully',

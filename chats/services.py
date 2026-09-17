@@ -334,7 +334,12 @@ def message_preview(message) -> str:
     content = str(getattr(message, 'content', None) or '').strip()
     if content:
         return content
-    if getattr(message, 'media_url', None):
+    urls = list(getattr(message, 'media_urls', None) or [])
+    single = getattr(message, 'media_url', None)
+    count = len(urls) if urls else (1 if single else 0)
+    if count > 1:
+        return f'{count} Photos'
+    if count == 1:
         return 'Photo'
     return ''
 
@@ -345,9 +350,22 @@ def unread_count_for(chat, user_id) -> int:
     ).count()
 
 
+def _message_media_urls(message) -> list:
+    urls = [
+        str(item).strip()
+        for item in (getattr(message, 'media_urls', None) or [])
+        if str(item or '').strip()
+    ]
+    if urls:
+        return urls
+    single = str(getattr(message, 'media_url', None) or '').strip()
+    return [single] if single else []
+
+
 def message_ws_payload(message, chat=None) -> dict:
     chat = chat or getattr(message, 'chat', None)
     chat_id = getattr(chat, 'chat_id', None) if chat is not None else None
+    media_urls = _message_media_urls(message)
     return {
         'type': 'message',
         'id': str(getattr(message, 'id', '') or ''),
@@ -355,7 +373,8 @@ def message_ws_payload(message, chat=None) -> dict:
         'content': message.content or '',
         'created_at': _isoformat(getattr(message, 'created_at', None)),
         'read': bool(getattr(message, 'read', False)),
-        'media_url': getattr(message, 'media_url', None) or None,
+        'media_url': media_urls[0] if media_urls else None,
+        'media_urls': media_urls,
         'chat_id': chat_id,
     }
 
