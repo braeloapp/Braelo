@@ -153,16 +153,22 @@ class MessageListCreateApi(generics.ListCreateAPIView):
             )
         if peer:
             assert_not_blocked(user_id, peer)
+        content = (request.data.get('content') or '').strip()
         data = {
-            'content': request.data.get('content') or '',
             'chat': chatroom.id,
             'sender_id': user_id,
             'created_at': timezone.now(),
         }
+        if content:
+            data['content'] = content
         media_urls = _upload_files_parallel(chatroom_id, files) if files else []
         if media_urls:
             data['media_urls'] = media_urls
             data['media_url'] = media_urls[0]
+        if not content and not media_urls:
+            raise ValidationError(
+                {'content': 'Message text or photo is required.'}
+            )
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         message = serializer.save()
