@@ -31,6 +31,13 @@ from admin_panel.api.admin import (
 from admin_panel.api.collections import AdminMongoCollections
 from admin_panel.api.statistics import AdminStatistics
 from admin_panel.api.taxonomy import AdminTaxonomy
+from admin_panel.api.audit import AdminAuditLogList
+from admin_panel.api.platform_settings import (
+    PlatformSettingsAdmin,
+    PlatformSettingsPublic,
+)
+from admin_panel.api.blocks import AdminBlockedUsers
+from admin_panel.api.analytics import AdminAnalyticsOverview
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
@@ -67,6 +74,16 @@ urlpatterns = [
     path('collections', AdminMongoCollections.as_view()),
     path('statistics/', AdminStatistics.as_view()),
     path('statistics', AdminStatistics.as_view()),
+    path('analytics/overview/', AdminAnalyticsOverview.as_view()),
+    path('analytics/overview', AdminAnalyticsOverview.as_view()),
+    path('audit-logs/', AdminAuditLogList.as_view()),
+    path('audit-logs', AdminAuditLogList.as_view()),
+    path('platform-settings/', PlatformSettingsAdmin.as_view()),
+    path('platform-settings', PlatformSettingsAdmin.as_view()),
+    path('platform-config/', PlatformSettingsPublic.as_view()),
+    path('platform-config', PlatformSettingsPublic.as_view()),
+    path('blocks/', AdminBlockedUsers.as_view()),
+    path('blocks', AdminBlockedUsers.as_view()),
     # Active users only (some admin UIs call this path)
     path('users/active/', ActiveUsers.as_view()),
     path('users/active', ActiveUsers.as_view()),

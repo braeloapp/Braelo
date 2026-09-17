@@ -27,6 +27,7 @@ from firebase_admin import messaging
 from notifications.models import Notification
 from admin_panel.serializers import UserSerializer
 from admin_panel.services.moderation import apply_user_moderation
+from admin_panel.services.audit import record_admin_action
 from admin_panel.services.support import apply_support_filters
 from feedbacks.models import Requests, ReportMessage, Feedbacks
 from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
@@ -427,6 +428,12 @@ class ReportedUsers(generics.ListCreateAPIView):
                 {"Error": "user_id does not match this report"}
             )
 
+        previous = {
+            'is_active': bool(getattr(user, 'is_active', True)),
+            'is_warned': bool(getattr(user, 'is_warned', False)),
+            'is_banned': bool(getattr(user, 'is_banned', False)),
+            'report_status': getattr(report, 'status', None),
+        }
         result = apply_user_moderation(user, action_type)
         if result['update_fields']:
             user.save(update_fields=result['update_fields'])
@@ -439,6 +446,24 @@ class ReportedUsers(generics.ListCreateAPIView):
         report.resolved_by = request.user.id
         report.resolved_at = now
         report.save()
+
+        record_admin_action(
+            actor=request.user,
+            action=action_type,
+            target_type='user',
+            target_id=str(user_id),
+            summary=f'Moderation {action_type} on user {user_id} (report {report_id})',
+            reason=notes,
+            previous_state=previous,
+            new_state={
+                'is_active': user.is_active,
+                'is_warned': bool(getattr(user, 'is_warned', False)),
+                'is_banned': bool(getattr(user, 'is_banned', False)),
+                'report_status': report.status,
+                'banned': result['banned'],
+            },
+            metadata={'report_id': str(report_id)},
+        )
 
         return response(
             status=status.HTTP_200_OK,
