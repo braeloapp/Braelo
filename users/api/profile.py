@@ -77,7 +77,28 @@ class UpdateProfile(generics.CreateAPIView):
             data=request.data, context={'request': request}
         )
         serializer.is_valid(raise_exception=True)
+        target = serializer.context.get('target_user')
+        previous = {}
+        if target is not None and is_admin_path(request):
+            previous = {
+                'name': target.name,
+                'email': target.email,
+                'phone_number': target.phone_number,
+                'is_active': target.is_active,
+            }
         updated_data = serializer.save()
+        if is_admin_path(request) and target is not None:
+            from admin_panel.services.audit import record_admin_action
+
+            record_admin_action(
+                actor=request.user,
+                action='update',
+                target_type='user',
+                target_id=str(target.id),
+                summary=f'Updated user profile {target.id}',
+                previous_state=previous,
+                new_state=updated_data if isinstance(updated_data, dict) else {},
+            )
         return response(
             status=status.HTTP_200_OK,
             message='Profile updated successfully',
@@ -188,9 +209,23 @@ class DeactivateUser(generics.CreateAPIView):
                 {'user': 'This profile is already deactivated.'}
             )
 
+        previous = {'is_active': True}
         user.is_active = False
         user.updated_at = timezone.now()
         user.save()
+
+        if is_admin_path(request):
+            from admin_panel.services.audit import record_admin_action
+
+            record_admin_action(
+                actor=request.user,
+                action='deactivate',
+                target_type='user',
+                target_id=str(user.id),
+                summary=f'Deactivated user {user.id}',
+                previous_state=previous,
+                new_state={'is_active': False},
+            )
 
         return response(
             status=status.HTTP_200_OK,
@@ -223,6 +258,18 @@ class ReactivateUser(generics.CreateAPIView):
         user.is_active = True
         user.updated_at = timezone.now()
         user.save(update_fields=['is_active', 'updated_at'])
+
+        from admin_panel.services.audit import record_admin_action
+
+        record_admin_action(
+            actor=request.user,
+            action='activate',
+            target_type='user',
+            target_id=str(user.id),
+            summary=f'Reactivated user {user.id}',
+            previous_state={'is_active': False},
+            new_state={'is_active': True},
+        )
         return response(
             status=status.HTTP_200_OK,
             message='Profile reactivated successfully',

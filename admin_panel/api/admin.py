@@ -478,21 +478,20 @@ class ReportedUsers(generics.ListCreateAPIView):
 
 class SendAdminNotification(generics.CreateAPIView):
     '''
-    Send notification to all users from admin using FCM.
+    Send notification from admin using FCM.
+    Body: { title, body, audience: "all" | "business" }
     '''
 
     permission_classes = [IsAdminUser]
 
     def post(self, request):
-        '''
-        POST method to send notification to all users.
-        :param request: request object. (dict)
-        :return: Sucessfull message. (json)
-        '''
         data = request.data
         user_id = request.user.id
         title = data.get('title')
         body = data.get('body')
+        audience = (data.get('audience') or 'all').strip().lower()
+        if audience not in ('all', 'business'):
+            audience = 'all'
 
         notification = Notification.objects.create(
             user_id=[user_id],
@@ -504,24 +503,60 @@ class SendAdminNotification(generics.CreateAPIView):
                 'entity_type': 'admin',
                 'entity_id': '',
                 'action': 'open',
+                'audience': audience,
             },
         )
         notification.data['entity_id'] = str(notification.id)
         notification.data['notification_id'] = str(notification.id)
         notification.save()
-        message = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            topic='Braelo',
-            data={
-                key: str(value) for key, value in notification.data.items()
+
+        payload_data = {
+            key: str(value) for key, value in notification.data.items()
+        }
+        delivered = 0
+        if audience == 'business':
+            from notifications.services.push import send_fcm, tokens_for_users
+
+            business_ids = list(
+                User.objects.filter(is_business=True, is_active=True).values_list(
+                    'id', flat=True
+                )
+            )
+            tokens = tokens_for_users(business_ids)
+            delivered, _failed = send_fcm(tokens, title, body, payload_data)
+            message_text = (
+                f'Notification sent to business users ({delivered} devices)'
+            )
+        else:
+            message = messaging.Message(
+                notification=messaging.Notification(title=title, body=body),
+                topic='Braelo',
+                data=payload_data,
+            )
+            messaging.send(message)
+            delivered = -1  # topic broadcast
+            message_text = 'Notification Sent To All Users'
+
+        record_admin_action(
+            actor=request.user,
+            action='notify',
+            target_type='notification',
+            target_id=str(notification.id),
+            summary=f'Admin notification ({audience}): {title}',
+            metadata={
+                'audience': audience,
+                'delivered_devices': delivered,
             },
         )
-        messaging.send(message)
 
         return response(
             status=status.HTTP_200_OK,
-            message='Notification Sent To All Users',
-            data={},
+            message=message_text,
+            data={
+                'id': str(notification.id),
+                'audience': audience,
+                'delivered_devices': delivered,
+            },
         )
 
 

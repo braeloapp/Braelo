@@ -38,6 +38,9 @@ from admin_panel.api.platform_settings import (
 )
 from admin_panel.api.blocks import AdminBlockedUsers
 from admin_panel.api.analytics import AdminAnalyticsOverview
+from admin_panel.api.search import AdminGlobalSearch
+from admin_panel.api.cms import LegalDocumentAdmin, LegalDocumentPublic
+from admin_panel.api.ai_ops import AdminAiOps
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
@@ -76,6 +79,14 @@ urlpatterns = [
     path('statistics', AdminStatistics.as_view()),
     path('analytics/overview/', AdminAnalyticsOverview.as_view()),
     path('analytics/overview', AdminAnalyticsOverview.as_view()),
+    path('search/', AdminGlobalSearch.as_view()),
+    path('search', AdminGlobalSearch.as_view()),
+    path('ai-ops/', AdminAiOps.as_view()),
+    path('ai-ops', AdminAiOps.as_view()),
+    path('cms/<str:doc_type>/', LegalDocumentAdmin.as_view()),
+    path('cms/<str:doc_type>', LegalDocumentAdmin.as_view()),
+    path('legal/<str:doc_type>/', LegalDocumentPublic.as_view()),
+    path('legal/<str:doc_type>', LegalDocumentPublic.as_view()),
     path('audit-logs/', AdminAuditLogList.as_view()),
     path('audit-logs', AdminAuditLogList.as_view()),
     path('platform-settings/', PlatformSettingsAdmin.as_view()),

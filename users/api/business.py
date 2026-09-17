@@ -220,13 +220,33 @@ class DeactivateBusiness(generics.CreateAPIView):
                 {'Business': 'Business not found or already deactivated'}
             )
 
+        deactivated_ids = []
         for business in active_businesses:
             business.is_active = False
             business.save(update_fields=['is_active'])
             set_businesses_directory_active(str(business.id), False)
+            deactivated_ids.append(str(business.id))
 
         user.is_business = False
         user.save(update_fields=['is_business'])
+
+        if request.path.startswith('/admin-panel/'):
+            from admin_panel.services.audit import record_admin_action
+
+            record_admin_action(
+                actor=request.user,
+                action='deactivate',
+                target_type='business',
+                target_id=deactivated_ids[0] if deactivated_ids else str(user_id),
+                summary=f'Deactivated business for user {user_id}',
+                previous_state={'is_active': True, 'is_business': True},
+                new_state={
+                    'is_active': False,
+                    'is_business': False,
+                    'business_ids': deactivated_ids,
+                },
+            )
+
         return response(
             status=status.HTTP_204_NO_CONTENT,
             message='Business Deactivated Successfully',

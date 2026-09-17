@@ -219,6 +219,22 @@ class FlipListingStatus(generics.CreateAPIView):
         if updated_listing:
             upsert_listing_directory_doc(updated_listing)
 
+        if admin:
+            from admin_panel.services.audit import record_admin_action
+
+            record_admin_action(
+                actor=request.user,
+                action='activate' if listing_status else 'deactivate',
+                target_type='listing',
+                target_id=str(listing_id),
+                summary=(
+                    f'{"Activated" if listing_status else "Deactivated"} '
+                    f'listing {listing_id} ({category})'
+                ),
+                previous_state={'is_active': previous_status},
+                new_state={'is_active': listing_status, 'category': category},
+            )
+
         return response(
             status=status.HTTP_200_OK,
             message='Flipped listing status successfully',

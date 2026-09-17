@@ -39,7 +39,6 @@ def resolve_range(params):
             hour=0, minute=0, second=0, microsecond=0
         )
         return start, now, period
-    # custom
     start_raw = params.get('start')
     end_raw = params.get('end')
     try:
@@ -60,7 +59,7 @@ def resolve_range(params):
     return start, end, period if period else 'custom'
 
 
-def daily_series(model, start, end, field='created_at'):
+def daily_series_sql(model, start, end, field='created_at'):
     rows = (
         model.objects.filter(**{f'{field}__gte': start, f'{field}__lte': end})
         .annotate(day=TruncDate(field))
@@ -81,10 +80,14 @@ def daily_series(model, start, end, field='created_at'):
 def mongo_daily_series(queryset, start, end):
     '''Best-effort daily buckets for MongoEngine querysets with created_at.'''
     buckets = {}
-    for doc in queryset.filter(created_at__gte=start, created_at__lte=end).only(
-        'created_at'
-    ):
-        when = doc.created_at
+    try:
+        docs = queryset.filter(created_at__gte=start, created_at__lte=end).only(
+            'created_at'
+        )
+    except Exception:
+        return []
+    for doc in docs:
+        when = getattr(doc, 'created_at', None)
         if not when:
             continue
         if timezone.is_naive(when):
@@ -92,6 +95,30 @@ def mongo_daily_series(queryset, start, end):
         key = when.date().isoformat()
         buckets[key] = buckets.get(key, 0) + 1
     return [{'date': key, 'value': buckets[key]} for key in sorted(buckets.keys())]
+
+
+def mongo_count(queryset):
+    try:
+        return int(queryset.count())
+    except Exception:
+        return 0
+
+
+def listing_category_counts():
+    by_category = {}
+    try:
+        pipeline = [{'$group': {'_id': '$category', 'c': {'$sum': 1}}}]
+        for row in ListSync.objects.aggregate(*pipeline):
+            key = row.get('_id') or 'unknown'
+            by_category[str(key)] = int(row.get('c') or 0)
+    except Exception:
+        try:
+            for doc in ListSync.objects.only('category'):
+                key = getattr(doc, 'category', None) or 'unknown'
+                by_category[key] = by_category.get(key, 0) + 1
+        except Exception:
+            pass
+    return by_category
 
 
 class AdminAnalyticsOverview(APIView):
@@ -113,36 +140,37 @@ class AdminAnalyticsOverview(APIView):
                 'id', filter=Q(created_at__gte=start, created_at__lte=end)
             ),
         )
-        listings = ListSync.objects.aggregate(
-            total=Count('id'),
-            active=Count('id', filter=Q(is_active=True)),
-            inactive=Count('id', filter=Q(is_active=False)),
-            new_today=Count('id', filter=Q(created_at__gte=today)),
-            new_7d=Count('id', filter=Q(created_at__gte=week_ago)),
-            new_period=Count(
-                'id', filter=Q(created_at__gte=start, created_at__lte=end)
-            ),
+
+        listings_total = mongo_count(ListSync.objects)
+        listings_active = mongo_count(ListSync.objects.filter(is_active=True))
+        listings_inactive = max(listings_total - listings_active, 0)
+        listings_new_today = mongo_count(
+            ListSync.objects.filter(created_at__gte=today)
         )
-        businesses = Business.objects.aggregate(
-            total=Count('id'),
-            active=Count('id', filter=Q(is_active=True)),
-            inactive=Count('id', filter=Q(is_active=False)),
-            new_period=Count(
-                'id', filter=Q(created_at__gte=start, created_at__lte=end)
-            ),
+        listings_new_7d = mongo_count(
+            ListSync.objects.filter(created_at__gte=week_ago)
+        )
+        listings_new_period = mongo_count(
+            ListSync.objects.filter(created_at__gte=start, created_at__lte=end)
         )
 
-        reports_pending = ReportMessage.objects.filter(status='Pending').count()
-        reports_resolved = ReportMessage.objects.filter(status='Resolved').count()
-        reports_ignored = ReportMessage.objects.filter(status='Ignored').count()
-        support_open = Requests.objects.filter(status='Active').count()
-        support_progress = Requests.objects.filter(status='In Progress').count()
-        support_resolved = Requests.objects.filter(status='Resolved').count()
+        businesses_total = mongo_count(Business.objects)
+        businesses_active = mongo_count(Business.objects.filter(is_active=True))
+        businesses_inactive = max(businesses_total - businesses_active, 0)
+        businesses_new_period = mongo_count(
+            Business.objects.filter(created_at__gte=start, created_at__lte=end)
+        )
 
-        by_category = {
-            (row['category'] or 'unknown'): row['c']
-            for row in ListSync.objects.values('category').annotate(c=Count('id'))
-        }
+        reports_pending = mongo_count(ReportMessage.objects.filter(status='Pending'))
+        reports_resolved = mongo_count(
+            ReportMessage.objects.filter(status='Resolved')
+        )
+        reports_ignored = mongo_count(ReportMessage.objects.filter(status='Ignored'))
+        support_open = mongo_count(Requests.objects.filter(status='Active'))
+        support_progress = mongo_count(
+            Requests.objects.filter(status='In Progress')
+        )
+        support_resolved = mongo_count(Requests.objects.filter(status='Resolved'))
 
         data = {
             'period': period,
@@ -158,18 +186,18 @@ class AdminAnalyticsOverview(APIView):
                     'new_period': int(users['new_period'] or 0),
                 },
                 'listings': {
-                    'total': int(listings['total'] or 0),
-                    'active': int(listings['active'] or 0),
-                    'inactive': int(listings['inactive'] or 0),
-                    'new_today': int(listings['new_today'] or 0),
-                    'new_7d': int(listings['new_7d'] or 0),
-                    'new_period': int(listings['new_period'] or 0),
+                    'total': listings_total,
+                    'active': listings_active,
+                    'inactive': listings_inactive,
+                    'new_today': listings_new_today,
+                    'new_7d': listings_new_7d,
+                    'new_period': listings_new_period,
                 },
                 'businesses': {
-                    'total': int(businesses['total'] or 0),
-                    'active': int(businesses['active'] or 0),
-                    'inactive': int(businesses['inactive'] or 0),
-                    'new_period': int(businesses['new_period'] or 0),
+                    'total': businesses_total,
+                    'active': businesses_active,
+                    'inactive': businesses_inactive,
+                    'new_period': businesses_new_period,
                 },
                 'moderation': {
                     'pending_reports': reports_pending,
@@ -183,13 +211,20 @@ class AdminAnalyticsOverview(APIView):
                 },
             },
             'series': {
-                'users': daily_series(User, start, end),
-                'listings': daily_series(ListSync, start, end),
-                'businesses': daily_series(Business, start, end),
+                'users': daily_series_sql(User, start, end),
+                'listings': mongo_daily_series(ListSync.objects, start, end),
+                'businesses': mongo_daily_series(Business.objects, start, end),
                 'reports': mongo_daily_series(ReportMessage.objects, start, end),
                 'support': mongo_daily_series(Requests.objects, start, end),
             },
-            'listings_by_category': by_category,
+            'listings_by_category': listing_category_counts(),
+            'drilldowns': {
+                'users': '/pages/users',
+                'listings': '/pages/listing',
+                'businesses': '/pages/business',
+                'reports': '/pages/reportedusers',
+                'support': '/pages/support',
+            },
         }
         return response(
             status=status.HTTP_200_OK,
