@@ -254,6 +254,86 @@ class DeactivateBusiness(generics.CreateAPIView):
         )
 
 
+class AdminActivateBusiness(generics.CreateAPIView):
+    '''
+    Staff endpoint to reactivate a business that was deactivated from admin.
+    Does not replace the app's self-serve Activate_Business.
+    '''
+
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
+
+    @handle_exceptions
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        if not user_id:
+            raise ValidationError(
+                {'field': 'user_id is required for admin path'}
+            )
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            raise ValidationError({'error': 'user not found'})
+
+        candidates = [user.id, str(user.id)]
+        try:
+            candidates.append(int(user_id))
+        except (TypeError, ValueError):
+            candidates.append(user_id)
+        candidates.append(str(user_id))
+        seen = set()
+        user_id_values = []
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            user_id_values.append(candidate)
+
+        businesses = list(
+            Business.objects(__raw__={'user_id': {'$in': user_id_values}})
+        )
+        if not businesses:
+            raise ValidationError({'Business': 'Business not found'})
+
+        inactive = [business for business in businesses if not business.is_active]
+        if not inactive:
+            raise ValidationError({'Business': 'Business is already active'})
+
+        activated_ids = []
+        for business in inactive:
+            business.is_active = True
+            business.save(update_fields=['is_active'])
+            set_businesses_directory_active(str(business.id), True)
+            upsert_businesses_directory_doc(business)
+            activated_ids.append(str(business.id))
+
+        user.is_business = True
+        user.save(update_fields=['is_business'])
+
+        from admin_panel.services.audit import record_admin_action
+
+        record_admin_action(
+            actor=request.user,
+            action='activate',
+            target_type='business',
+            target_id=activated_ids[0] if activated_ids else str(user.id),
+            summary=f'Reactivated business for user {user.id}',
+            previous_state={'is_active': False, 'is_business': False},
+            new_state={
+                'is_active': True,
+                'is_business': True,
+                'business_ids': activated_ids,
+            },
+        )
+
+        return response(
+            status=status.HTTP_200_OK,
+            message='Business reactivated successfully',
+            data={
+                'user_business_status': user.is_business,
+                'business_ids': activated_ids,
+            },
+        )
+
+
 class UpdateBusiness(generics.UpdateAPIView):
     '''
     Base API endpoint to update a listing.

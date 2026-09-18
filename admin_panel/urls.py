@@ -44,6 +44,7 @@ from admin_panel.api.ai_ops import AdminAiOps
 from users.api import (
     FetchBusinesses,
     DeactivateBusiness,
+    AdminActivateBusiness,
     UpdateBusiness,
     SignUpWithEmail,
     DeactivateUser,
@@ -159,6 +160,7 @@ urlpatterns = [
     path('business/fetch/listings', FetchListings.as_view()),
     # Delete a business
     path('business/deactivate', DeactivateBusiness.as_view()),
+    path('business/activate', AdminActivateBusiness.as_view()),
     path('business/<str:pk>', AdminBusinessDetail.as_view()),
     path('business/<str:pk>/', AdminBusinessDetail.as_view()),
     # Send Admin notification
