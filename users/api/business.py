@@ -352,6 +352,35 @@ class UpdateBusiness(generics.UpdateAPIView):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         mutable_data = request.data.copy()
+        admin_update = request.path.startswith('/admin-panel/business/update')
+        # Admin edits send text fields only. Keep the stored logo, banner,
+        # and gallery unless a new file is actually uploaded.
+        if admin_update:
+            partial = True
+            if hasattr(mutable_data, '_mutable'):
+                mutable_data._mutable = True
+            for media_key in (
+                'business_logo',
+                'business_banner',
+                'business_images',
+            ):
+                if media_key not in mutable_data:
+                    continue
+                if hasattr(mutable_data, 'getlist'):
+                    files = [
+                        item
+                        for item in mutable_data.getlist(media_key)
+                        if getattr(item, 'name', None)
+                    ]
+                else:
+                    raw = mutable_data.get(media_key)
+                    files = raw if isinstance(raw, list) else [raw]
+                    files = [item for item in files if getattr(item, 'name', None)]
+                mutable_data.pop(media_key, None)
+                if files and hasattr(mutable_data, 'setlist'):
+                    mutable_data.setlist(media_key, files)
+                elif files:
+                    mutable_data[media_key] = files
         raw_coordinates = request.data.get('business_coordinates')
         if raw_coordinates in (None, ''):
             existing = instance.business_coordinates
