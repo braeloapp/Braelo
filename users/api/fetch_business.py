@@ -177,8 +177,10 @@ class FetchSingleBusiness(generics.ListAPIView):
 
     def get(self, request):
         try:
-            user_id = request.user.id
-            business = find_user_business(user_id)
+            user = request.user
+            business = find_user_business(
+                user.id, email=getattr(user, 'email', None)
+            )
             if business is None:
                 return response(
                     status=status.HTTP_204_NO_CONTENT,

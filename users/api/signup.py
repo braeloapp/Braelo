@@ -152,7 +152,9 @@ class LoginAuth(generics.CreateAPIView):
         try:
             from users.services.business_lookup import find_user_business
 
-            business = find_user_business(user.id)
+            business = find_user_business(
+                user.id, email=getattr(user, 'email', None)
+            )
         except Exception:
             return None
         return business.business_name if business else None

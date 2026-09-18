@@ -34,9 +34,9 @@ from users.services.business_lookup import find_user_business
 logger = logging.getLogger(__name__)
 
 
-def _find_user_business(user_id):
+def _find_user_business(user_id, email=None):
     '''Backward-compatible alias for flip-status and related endpoints.'''
-    return find_user_business(user_id)
+    return find_user_business(user_id, email=email)
 
 
 class UpdateProfile(generics.CreateAPIView):
@@ -275,10 +275,11 @@ class FlipUserStatus(generics.CreateAPIView):
                 {'Status': 'Status must be either "user" or "business".'}
             )
 
-        # Mongo is the source of truth. The lookup is tolerant of legacy
-        # ``user_id`` values stored as strings (schema drift) so it stays in
-        # sync with ``auth/business/fetch-single``.
-        existing_business = _find_user_business(user_id)
+        # Mongo is the source of truth. Lookup is tolerant of legacy user_id
+        # type drift and can fall back to business_email.
+        existing_business = _find_user_business(
+            user_id, email=getattr(user, 'email', None)
+        )
 
         if existing_business is not None and not user.previous_business:
             # Self-heal: prior creation succeeded in Mongo but the SQL flag
@@ -310,30 +311,28 @@ class FlipUserStatus(generics.CreateAPIView):
                     data={},
                 )
 
-            if not user.previous_business:
-                logger.info(
-                    'flip_status.no_business user_id=%s is_business=%s previous_business=%s',
-                    user_id,
-                    user.is_business,
-                    user.previous_business,
-                )
-                return response(
-                    status=status.HTTP_406_NOT_ACCEPTABLE,
-                    message='Please Create Business First',
-                    data={},
-                )
-            if user.is_business:
-                raise ValidationError(
-                    {'User': 'User is already a Business User'}
-                )
+            # previous_business alone is not enough — Mongo business must exist.
+            logger.info(
+                'flip_status.no_business user_id=%s email=%s '
+                'is_business=%s previous_business=%s',
+                user_id,
+                getattr(user, 'email', None),
+                user.is_business,
+                user.previous_business,
+            )
+            return response(
+                status=status.HTTP_406_NOT_ACCEPTABLE,
+                message='Please Create Business First',
+                data={},
+            )
 
         # Handle 'user' status cases
         if user_status == 'user' and not user.is_business:
             raise ValidationError({'User': 'User is already a Normal User'})
 
-        # Flip user status
-        user.is_business = user_status == 'business'
-        user.save()
+        # Flip user status (personal mode)
+        user.is_business = False
+        user.save(update_fields=['is_business'])
         return response(
             status=status.HTTP_201_CREATED,
             message='Flipped User Status Successfully',

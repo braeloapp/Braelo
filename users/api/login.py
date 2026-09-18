@@ -43,7 +43,9 @@ class LoginWithEmail(generics.CreateAPIView):
         user.is_valid(raise_exception=True)
         user = user.validated_data
         token = get_token(user)
-        business = find_user_business(user.id)
+        business = find_user_business(
+            user.id, email=getattr(user, 'email', None)
+        )
         response_data = {
             'email': user.email,
             'name': user.name,

@@ -25,7 +25,9 @@ class VerifyEmail(generics.CreateAPIView):
         user = verify_email_otp(email, otp, request=request)
         token = get_token(user)
         try:
-            business = find_user_business(user.id)
+            business = find_user_business(
+                user.id, email=getattr(user, 'email', None)
+            )
             business_name = business.business_name if business else None
         except Exception:
             business_name = None
