@@ -72,7 +72,24 @@ class QueryFilter(generics.ListAPIView):
             raise ValidationError(
                 {'configuration': 'Paginate view is missing model_class.'}
             )
-        qs = self.model_class.objects.filter(is_active=True)
+        # Public and app feeds stay active-only. Admin passes include_inactive
+        # with a staff token so deactivated listings remain on the category tab.
+        user = getattr(self.request, 'user', None)
+        include_flag = (
+            self.request.GET.get('include_inactive') or ''
+        ).strip().lower()
+        staff = bool(
+            user
+            and getattr(user, 'is_authenticated', False)
+            and (
+                getattr(user, 'is_staff', False)
+                or getattr(user, 'is_superuser', False)
+            )
+        )
+        if staff and include_flag in ('1', 'true', 'yes'):
+            qs = self.model_class.objects.all()
+        else:
+            qs = self.model_class.objects.filter(is_active=True)
         category = getattr(self, 'category', None)
         subcategory = self.request.GET.get('subcategory')
 
