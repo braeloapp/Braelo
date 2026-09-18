@@ -18,6 +18,7 @@ from django.core.files.uploadedfile import UploadedFile
 
 from helpers import blob_service_client
 from users.models import User
+from users.services.business_lookup import find_user_business
 from rest_framework_mongoengine import serializers
 from rest_framework import serializers as SE
 from helpers.constants import (
@@ -47,7 +48,6 @@ from listings.models import (
     SavedItem,
 )
 
-from users.models import Business
 from users.services.listings_directory_sync import upsert_listing_directory_doc
 
 
@@ -318,7 +318,7 @@ class Serializer(serializers.DocumentSerializer):
         if data['from_business'] not in (True, False):
             raise ValidationError({'from_business': 'Must be ("True","False")'})
         if data['from_business']:
-            if not Business.objects.filter(user_id=user.id).first():
+            if find_user_business(user.id) is None:
                 raise ValidationError({'Error': 'Create Business First'})
         # Check keywords limit
         if len(keywords) > KEYWORDS_LIMIT:
