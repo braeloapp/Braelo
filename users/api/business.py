@@ -542,25 +542,50 @@ class BusinessBanner(generics.ListCreateAPIView):
     @handle_exceptions
     def put(self, request, *args, **kwargs):
         '''
-        PUT method to update a listing.
-        :param request: request object. (dict)
-        :return: updated listing status. (json)
+        Admin banner update. A new image replaces the stored banner.
+        Email, name, and category stay as they are unless a link is sent.
         '''
-        partial = kwargs.pop('partial', False)
+        from django.utils import timezone
+
         instance = self.get_object()
-        serializer = self.get_serializer(
-            instance,
-            data=request.data,
-            partial=partial,
-            context={'request': request},
-        )
-        # Validate and update the business if valid
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+        if hasattr(request.data, 'getlist'):
+            files = [
+                item
+                for item in request.data.getlist('business_banner')
+                if getattr(item, 'name', None)
+            ]
+        else:
+            raw = request.data.get('business_banner')
+            files = raw if isinstance(raw, list) else ([raw] if raw else [])
+            files = [item for item in files if getattr(item, 'name', None)]
+
+        url = request.data.get('url')
+        if url in (None, ''):
+            url = request.data.get('business_link')
+
+        if not files and url in (None, ''):
+            raise ValidationError(
+                {'business_banner': 'Upload a banner image to update.'}
+            )
+
+        if files:
+            updater = BusinessSerailizer()
+            instance.business_banner = updater.update_media(
+                list(instance.business_banner or []),
+                instance.business_category,
+                files,
+                instance.user_id,
+                image_type='business_banner',
+            )
+        if url not in (None, ''):
+            instance.url = url
+
+        instance.updated_at = timezone.now()
+        instance.save()
         return response(
             status=status.HTTP_200_OK,
-            message='Business updated successfully',
-            data=serializer.data,
+            message='Banner updated successfully',
+            data=self.get_serializer(instance).data,
         )
 
     def get_object(self):
