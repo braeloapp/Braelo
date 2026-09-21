@@ -30,6 +30,7 @@ from helpers import response, handle_exceptions
 from listings.serializers import ListsyncSerializer
 from listings.api.paginate_listing import Pagination
 from listings.geo import geo_near_filter, parse_radius_meters
+from listings.listing_read import HydratedListsyncListMixin
 from users.serializers.business import BusinessSerailizer
 from users.services.business_lookup import find_user_business
 
@@ -115,9 +116,12 @@ class ScanBusinessQR(generics.ListAPIView):
         )
 
 
-class FetchListings(generics.ListAPIView):
+class FetchListings(HydratedListsyncListMixin, generics.ListAPIView):
     '''
     Fetch user listings created from his business account.
+
+    Returns full category documents (make/model/year/etc.), not ListSync
+    card stubs — same shape as /listing/paginate/* used by admin listing tabs.
     '''
 
     permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
@@ -160,7 +164,7 @@ class FetchListings(generics.ListAPIView):
 
                 is_active = is_active == 'true'
                 queryset = queryset.filter(is_active=is_active)
-            return queryset
+            return queryset.order_by('-created_at')
         except Exception as exc:
             raise ValidationError(
                 {'ListSync': f'Error retrieving data: {str(exc)}'}
