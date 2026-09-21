@@ -23,6 +23,7 @@ PERIODS = {
     'today': 0,
     '7d': 7,
     '30d': 30,
+    '60d': 60,
     '90d': 90,
 }
 
@@ -104,16 +105,25 @@ def mongo_count(queryset):
         return 0
 
 
-def listing_category_counts():
+def listing_category_counts(start=None, end=None):
     by_category = {}
+    match = None
+    if start is not None and end is not None:
+        match = {'created_at': {'$gte': start, '$lte': end}}
     try:
-        pipeline = [{'$group': {'_id': '$category', 'c': {'$sum': 1}}}]
+        pipeline = []
+        if match:
+            pipeline.append({'$match': match})
+        pipeline.append({'$group': {'_id': '$category', 'c': {'$sum': 1}}})
         for row in ListSync.objects.aggregate(*pipeline):
             key = row.get('_id') or 'unknown'
             by_category[str(key)] = int(row.get('c') or 0)
     except Exception:
         try:
-            for doc in ListSync.objects.only('category'):
+            docs = ListSync.objects.only('category', 'created_at')
+            if start is not None and end is not None:
+                docs = docs.filter(created_at__gte=start, created_at__lte=end)
+            for doc in docs:
                 key = getattr(doc, 'category', None) or 'unknown'
                 by_category[key] = by_category.get(key, 0) + 1
         except Exception:
@@ -217,7 +227,7 @@ class AdminAnalyticsOverview(APIView):
                 'reports': mongo_daily_series(ReportMessage.objects, start, end),
                 'support': mongo_daily_series(Requests.objects, start, end),
             },
-            'listings_by_category': listing_category_counts(),
+            'listings_by_category': listing_category_counts(start, end),
             'drilldowns': {
                 'users': '/pages/users',
                 'listings': '/pages/listing',
