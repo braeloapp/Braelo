@@ -33,6 +33,7 @@ from listings.field_contract import (
     point_to_lon_lat,
 )
 from helpers.listsync import ListSynchronize
+from listings.services.taxonomy import apply_taxonomy_display_names
 from config import AZURE_ACCOUNT_NAME, AZURE_CONTAINER_NAME
 from listings.models import (
     ElectronicsListing,
@@ -75,6 +76,7 @@ class Serializer(serializers.DocumentSerializer):
         if pk is not None:
             data['id'] = str(pk)
             data['listing_id'] = str(pk)
+        apply_taxonomy_display_names(data)
         return data
 
     def upload_pictures(self, pictures, category, user):

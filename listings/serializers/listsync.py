@@ -15,6 +15,7 @@ from rest_framework import serializers as SE
 from rest_framework_mongoengine import serializers
 
 from listings.models import SavedItem
+from listings.services.taxonomy import apply_taxonomy_display_names
 
 
 class ListsyncSerializer(serializers.DocumentSerializer):
@@ -47,4 +48,5 @@ class ListsyncSerializer(serializers.DocumentSerializer):
             modify_fields.pop('price', None)
         if instance.salary_range is None:
             modify_fields.pop('salary_range', None)
+        apply_taxonomy_display_names(modify_fields)
         return modify_fields

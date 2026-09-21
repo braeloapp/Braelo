@@ -7,6 +7,7 @@ from helpers import handle_exceptions, response
 from listings.models.taxonomy import TaxonomyOverride
 from listings.services.taxonomy import (
     build_taxonomy_catalog,
+    clear_taxonomy_display_cache,
     create_taxonomy_entry,
     delete_taxonomy_entry,
     override_lookup_key,
@@ -33,6 +34,7 @@ class AdminTaxonomy(APIView):
             result = create_taxonomy_entry(request.data or {})
         except ValueError as exc:
             raise ValidationError({'detail': str(exc)}) from exc
+        clear_taxonomy_display_cache()
         overrides = list(TaxonomyOverride.objects.all())
         return response(
             status=status.HTTP_201_CREATED,
@@ -86,6 +88,7 @@ class AdminTaxonomy(APIView):
             row.icon = request.data.get('icon') or ''
         row.is_removed = False
         row.save()
+        clear_taxonomy_display_cache()
         overrides = list(TaxonomyOverride.objects.all())
         return response(
             status=status.HTTP_200_OK,
@@ -104,6 +107,7 @@ class AdminTaxonomy(APIView):
             )
         except ValueError as exc:
             raise ValidationError({'detail': str(exc)}) from exc
+        clear_taxonomy_display_cache()
         overrides = list(TaxonomyOverride.objects.all())
         return response(
             status=status.HTTP_200_OK,

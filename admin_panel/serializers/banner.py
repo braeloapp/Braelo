@@ -16,6 +16,7 @@ from rest_framework.exceptions import ValidationError
 
 from helpers.constants import CATEGORIES
 from helpers.normalize import resolve_category, resolve_subcategory
+from listings.services.taxonomy import apply_taxonomy_display_names
 from users.models.business import Business
 from admin_panel.models import AdminBusinessBanner
 from helpers import upload_pictures, email_validation, validate_image
@@ -26,6 +27,10 @@ class BusinessBannerSerializer(serializers.DocumentSerializer):
     class Meta:
         model = AdminBusinessBanner
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        return apply_taxonomy_display_names(data)
 
     def validate(self, data):
 

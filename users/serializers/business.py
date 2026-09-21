@@ -26,6 +26,7 @@ from helpers import (
     email_validation,
 )
 from helpers.normalize import resolve_category, resolve_subcategory
+from listings.services.taxonomy import apply_taxonomy_display_names
 from admin_panel.models import AdminBusinessBanner
 from admin_panel.serializers import BusinessBannerSerializer
 from users.services.businesses_directory_sync import upsert_businesses_directory_doc
@@ -39,6 +40,10 @@ class BusinessSerailizer(serializers.DocumentSerializer):
     class Meta:
         model = Business
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        return apply_taxonomy_display_names(data)
 
     def check_duplicate(self, field, value, exclude_id=None, error_msg=None):
         queryset = Business.objects.filter(**{field: value})
@@ -384,6 +389,10 @@ class BannerSearilizer(SQL_serializer.Serializer):
         # Return it as a string so it is JSON-serializable on the client.
         banner_id = getattr(obj, 'id', None) if not isinstance(obj, dict) else obj.get('id')
         return str(banner_id) if banner_id is not None else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        return apply_taxonomy_display_names(data)
 
     def get_business_link(self, obj):
         '''

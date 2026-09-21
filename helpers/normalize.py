@@ -69,7 +69,9 @@ def resolve_category(value):
     for key in CATEGORIES.keys():
         if _normalize_token(key) == target:
             return key
-    return None
+    from listings.services.taxonomy import category_key_for_label
+
+    return category_key_for_label(value)
 
 
 def resolve_subcategory(category_key, value):
@@ -95,4 +97,6 @@ def resolve_subcategory(category_key, value):
             if _normalize_token(sub) == _normalize_token(alias_target):
                 return sub
         return alias_target
-    return None
+    from listings.services.taxonomy import subcategory_key_for_label
+
+    return subcategory_key_for_label(category_key, value)

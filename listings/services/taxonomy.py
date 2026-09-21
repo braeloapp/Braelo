@@ -447,3 +447,163 @@ def _override_int(row, field, default):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_label_cache = None
+
+
+def clear_taxonomy_display_cache():
+    global _label_cache
+    _label_cache = None
+
+
+def _label_maps():
+    global _label_cache
+    if _label_cache is not None:
+        return _label_cache
+    categories = {}
+    subcategories = {}
+    try:
+        rows = TaxonomyOverride.objects(is_removed=False)
+    except Exception:
+        _label_cache = (categories, subcategories)
+        return _label_cache
+    for row in rows:
+        label = (getattr(row, 'label', None) or '').strip()
+        if not label:
+            continue
+        if row.kind == 'category':
+            categories[row.key] = label
+            continue
+        if row.kind != 'subcategory':
+            continue
+        parent = getattr(row, 'parent_key', '') or ''
+        sub_key = row.key.split(':', 1)[1] if ':' in (row.key or '') else row.key
+        subcategories[(parent, sub_key)] = label
+    _label_cache = (categories, subcategories)
+    return _label_cache
+
+
+def category_key_for_label(value):
+    '''Return the code category key whose display name matches ``value``.'''
+    if not isinstance(value, str) or not value.strip():
+        return None
+    target = (
+        value.strip().lower().replace('&', 'and').replace(' ', '')
+        .replace('_', '').replace('-', '')
+    )
+    categories, _subcategories = _label_maps()
+    for key, label in categories.items():
+        if key not in CATEGORIES:
+            continue
+        normalized_label = (
+            label.strip().lower().replace('&', 'and').replace(' ', '')
+            .replace('_', '').replace('-', '')
+        )
+        if normalized_label == target:
+            return key
+    return None
+
+
+def subcategory_key_for_label(category_key, value):
+    '''Return the code subcategory key whose display name matches ``value``.'''
+    if not isinstance(value, str) or not value.strip() or category_key not in CATEGORIES:
+        return None
+    target = (
+        value.strip().lower().replace('&', 'and').replace(' ', '')
+        .replace('_', '').replace('-', '')
+    )
+    parent_norm = (
+        str(category_key).strip().lower().replace('&', 'and').replace(' ', '')
+        .replace('_', '').replace('-', '')
+    )
+    _categories, subcategories = _label_maps()
+    for (parent, sub_key), label in subcategories.items():
+        parent_key = parent
+        if parent_key not in CATEGORIES:
+            matched = None
+            for key in CATEGORIES:
+                key_norm = (
+                    key.strip().lower().replace('&', 'and').replace(' ', '')
+                    .replace('_', '').replace('-', '')
+                )
+                if key_norm == parent_norm:
+                    matched = key
+                    break
+            parent_key = matched
+        if parent_key != category_key:
+            continue
+        if sub_key not in CATEGORIES[category_key]:
+            continue
+        normalized_label = (
+            label.strip().lower().replace('&', 'and').replace(' ', '')
+            .replace('_', '').replace('-', '')
+        )
+        if normalized_label == target:
+            return sub_key
+    return None
+
+
+def display_category_name(value):
+    if not isinstance(value, str) or not value.strip():
+        return value
+    categories, _subcategories = _label_maps()
+    target = (
+        value.strip().lower().replace('&', 'and').replace(' ', '')
+        .replace('_', '').replace('-', '')
+    )
+    for key, label in categories.items():
+        key_norm = (
+            str(key).strip().lower().replace('&', 'and').replace(' ', '')
+            .replace('_', '').replace('-', '')
+        )
+        if key_norm == target:
+            return label
+    return value
+
+
+def display_subcategory_name(category_value, subcategory_value):
+    if not isinstance(subcategory_value, str) or not subcategory_value.strip():
+        return subcategory_value
+    _categories, subcategories = _label_maps()
+    parent_norm = (
+        str(category_value or '').strip().lower().replace('&', 'and')
+        .replace(' ', '').replace('_', '').replace('-', '')
+    )
+    sub_norm = (
+        subcategory_value.strip().lower().replace('&', 'and').replace(' ', '')
+        .replace('_', '').replace('-', '')
+    )
+    for (parent, sub_key), label in subcategories.items():
+        parent_check = (
+            str(parent).strip().lower().replace('&', 'and').replace(' ', '')
+            .replace('_', '').replace('-', '')
+        )
+        sub_check = (
+            str(sub_key).strip().lower().replace('&', 'and').replace(' ', '')
+            .replace('_', '').replace('-', '')
+        )
+        if parent_check == parent_norm and sub_check == sub_norm:
+            return label
+    return subcategory_value
+
+
+def apply_taxonomy_display_names(data):
+    '''Replace stored category keys with the admin display name.'''
+    if not isinstance(data, dict):
+        return data
+    if data.get('category'):
+        raw_category = data.get('category')
+        data['category'] = display_category_name(raw_category)
+        if data.get('subcategory'):
+            data['subcategory'] = display_subcategory_name(
+                raw_category, data.get('subcategory')
+            )
+    if data.get('business_category'):
+        raw_category = data.get('business_category')
+        data['business_category'] = display_category_name(raw_category)
+        if data.get('business_subcategory'):
+            data['business_subcategory'] = display_subcategory_name(
+                raw_category, data.get('business_subcategory')
+            )
+    return data
