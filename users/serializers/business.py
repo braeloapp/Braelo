@@ -50,23 +50,33 @@ class BusinessSerailizer(serializers.DocumentSerializer):
     def update_media(
         self, instance_images, business_type, new_images, user_id, image_type
     ):
+        from azure.core.exceptions import ResourceNotFoundError
 
-        # Delete already existed ones
-        for picture_url in instance_images:
-            # Extract the blob name from the URL
-            blob_name = picture_url.split(f'/{AZURE_CONTAINER_NAME}/')[-1]
-            blob_client = blob_service_client.get_blob_client(
-                container=AZURE_CONTAINER_NAME, blob=blob_name
-            )
-            blob_client.delete_blob()
-            # Upload New ones
-        s3_urls = upload_pictures(
+        # Best-effort delete of previous blobs. Missing blobs must not block
+        # the upload (stale URLs / already-deleted files are common).
+        for picture_url in instance_images or []:
+            if not picture_url or not isinstance(picture_url, str):
+                continue
+            try:
+                blob_name = picture_url.split(f'/{AZURE_CONTAINER_NAME}/')[-1]
+                if not blob_name or blob_name == picture_url:
+                    continue
+                blob_client = blob_service_client.get_blob_client(
+                    container=AZURE_CONTAINER_NAME, blob=blob_name
+                )
+                blob_client.delete_blob()
+            except ResourceNotFoundError:
+                continue
+            except Exception:
+                # Ignore delete failures; new upload still proceeds.
+                continue
+
+        return upload_pictures(
             new_images,
             business_type,
             user_id,
             image_type,
         )
-        return s3_urls
 
     def create(self, validated_data):
         '''
@@ -149,10 +159,15 @@ class BusinessSerailizer(serializers.DocumentSerializer):
                 image_type='business_banner',
             )
 
-        # Update other fields & Banner model as well
+        # Update other fields & keep AdminBusinessBanner in sync (banners tab).
         banner_instance = AdminBusinessBanner.objects.filter(
-            user_id=instance.user_id
+            user_id=instance.user_id, is_active=True
         ).first()
+        if banner_instance is None:
+            banner_instance = AdminBusinessBanner.objects.filter(
+                user_id=instance.user_id
+            ).first()
+
         for attr, value in validated_data.items():
             current_value = getattr(instance, attr, None)
             if current_value != value:
@@ -165,9 +180,35 @@ class BusinessSerailizer(serializers.DocumentSerializer):
 
         instance.updated_at = timezone.now()
         instance.save()
+
+        # Always mirror banner image (+ identity fields) onto the banners tab.
+        banner_urls = (
+            validated_data.get('business_banner')
+            or getattr(instance, 'business_banner', None)
+        )
         if banner_instance:
+            if banner_urls:
+                banner_instance.business_banner = banner_urls
+            banner_instance.business_name = instance.business_name
+            banner_instance.business_email = instance.business_email
+            banner_instance.business_category = instance.business_category
+            banner_instance.business_subcategory = instance.business_subcategory
+            banner_instance.is_active = True
             banner_instance.updated_at = timezone.now()
             banner_instance.save()
+        elif banner_urls:
+            AdminBusinessBanner.objects.create(
+                user_id=instance.user_id,
+                business_name=instance.business_name,
+                business_email=instance.business_email,
+                business_banner=banner_urls,
+                business_category=instance.business_category,
+                business_subcategory=instance.business_subcategory,
+                created_at=timezone.now(),
+                updated_at=timezone.now(),
+                is_active=True,
+            )
+
         upsert_businesses_directory_doc(instance)
         return instance
 

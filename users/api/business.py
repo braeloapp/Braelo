@@ -582,6 +582,15 @@ class BusinessBanner(generics.ListCreateAPIView):
 
         instance.updated_at = timezone.now()
         instance.save()
+
+        # Keep the linked Business profile banner in sync with the banners tab.
+        if instance.user_id and instance.business_banner:
+            business = Business.objects.filter(user_id=instance.user_id).first()
+            if business is not None:
+                business.business_banner = list(instance.business_banner)
+                business.updated_at = timezone.now()
+                business.save()
+
         return response(
             status=status.HTTP_200_OK,
             message='Banner updated successfully',
