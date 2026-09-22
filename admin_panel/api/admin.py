@@ -64,6 +64,27 @@ class Pagination(PageNumberPagination):
         )
 
 
+class NotificationPagination(PageNumberPagination):
+    '''Admin notifications list — includes total unread across all pages.'''
+
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
+    def get_paginated_response(self, data):
+        paginated_data = super().get_paginated_response(data).data
+        try:
+            unread_count = Notification.objects.filter(is_read=False).count()
+        except Exception:
+            unread_count = 0
+        paginated_data['unread_count'] = int(unread_count or 0)
+        return response(
+            status=status.HTTP_200_OK,
+            message='Records fetched Successfully',
+            data=paginated_data,
+        )
+
+
 class PaginateReportedUsers(PageNumberPagination):
     '''
     Listing pagination configurations.
@@ -335,7 +356,7 @@ class AllNotifications(generics.ListAPIView):
     '''
 
     permission_classes = [IsAdminUser]
-    pagination_class = Pagination
+    pagination_class = NotificationPagination
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
