@@ -43,6 +43,7 @@ class NotificationPayloadTests(TestCase):
         self.assertEqual(business['type'], 'business')
         self.assertEqual(business['data']['action'], 'open_dashboard')
         support = support_reply_event(3, 'T1')
+        self.assertEqual(support['type'], 'system')
         self.assertEqual(support['data']['type'], 'support_reply')
         self.assertEqual(support['data']['ticket_id'], 'T1')
 

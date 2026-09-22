@@ -63,7 +63,8 @@ def business_created_event(user_id, business_id, business_type=''):
 def support_reply_event(user_id, ticket_id):
     ticket = '' if ticket_id is None else str(ticket_id)
     return {
-        'type': 'support',
+        # Notification.type choices: admin|chat|listing|business|system|marketing
+        'type': 'system',
         'title': 'Support reply',
         'body': 'Support replied to your request.',
         'user_id': [user_id],

@@ -11,6 +11,7 @@ API classes for admin_panel.
 '''
 
 import uuid
+import logging
 
 from django.utils import timezone
 from rest_framework import generics, status
@@ -28,6 +29,8 @@ from notifications.models import Notification
 from admin_panel.serializers import UserSerializer
 from admin_panel.services.moderation import apply_user_moderation
 from admin_panel.services.audit import record_admin_action
+
+logger = logging.getLogger(__name__)
 from admin_panel.services.support import apply_support_filters
 from feedbacks.models import Requests, ReportMessage, Feedbacks
 from feedbacks.serializers import RequestsSerializer, FeedbacksSerializer
@@ -299,9 +302,17 @@ class SupportReply(APIView):
         ticket.save()
 
         if ticket.user_id:
-            deliver_event_notification(
-                support_reply_event(ticket.user_id, str(ticket.id))
-            )
+            try:
+                deliver_event_notification(
+                    support_reply_event(ticket.user_id, str(ticket.id))
+                )
+            except Exception:
+                # Reply is already saved; never fail the API on notification issues.
+                logger.exception(
+                    'Support reply notification failed ticket=%s user=%s',
+                    ticket.id,
+                    ticket.user_id,
+                )
         email_service.send_best_effort(
             to=ticket.email,
             template_key='support_reply',
