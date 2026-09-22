@@ -249,6 +249,7 @@ class Recent(HydratedListsyncListMixin, generics.ListAPIView):
     pagination_class = Pagination
     serializer_class = ListsyncSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get_queryset(self):
         filters = {'is_active': True}
@@ -270,6 +271,7 @@ class Recommendations(HydratedListsyncListMixin, generics.ListAPIView):
     pagination_class = Pagination
     serializer_class = ListsyncSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get_queryset(self):
         user = self.request.user

@@ -19,6 +19,7 @@ from rest_framework.permissions import (
 
 from helpers import ListSync
 from helpers.normalize import resolve_category, resolve_subcategory
+from helpers.optional_jwt import OptionalJWTAuthentication
 from users.models.users import User
 from helpers import handle_exceptions, response
 from listings.api.paginate_listing import Pagination
@@ -60,6 +61,7 @@ class Search(HydratedListsyncListMixin, generics.ListAPIView):
 
     pagination_class = Pagination
     permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
     serializer_class = ListsyncSerializer
 
     def list(self, request, *args, **kwargs):
