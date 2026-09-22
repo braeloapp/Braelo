@@ -27,7 +27,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from users.models import User, Business
 from helpers.constants import CATEGORIES
-from helpers.normalize import resolve_category
+from helpers.normalize import resolve_category, resolve_subcategory
 from helpers import upload_pictures
 from helpers.notifications import business_created_event
 from helpers import response, handle_exceptions
@@ -542,8 +542,9 @@ class BusinessBanner(generics.ListCreateAPIView):
     @handle_exceptions
     def put(self, request, *args, **kwargs):
         '''
-        Admin banner update. A new image replaces the stored banner.
-        Email, name, and category stay as they are unless a link is sent.
+        Admin banner update. Image, link, name, email, and category
+        can all be changed. Matching fields on the linked Business
+        profile are kept in sync.
         '''
         from django.utils import timezone
 
@@ -563,9 +564,29 @@ class BusinessBanner(generics.ListCreateAPIView):
         if url in (None, ''):
             url = request.data.get('business_link')
 
-        if not files and url in (None, ''):
+        business_name = request.data.get('business_name')
+        business_email = request.data.get('business_email')
+        business_category = request.data.get('business_category')
+        business_subcategory = request.data.get('business_subcategory')
+
+        has_meta = any(
+            value not in (None, '')
+            for value in (
+                business_name,
+                business_email,
+                business_category,
+                business_subcategory,
+            )
+        )
+
+        if not files and url in (None, '') and not has_meta:
             raise ValidationError(
-                {'business_banner': 'Upload a banner image to update.'}
+                {
+                    'error': (
+                        'Provide a banner image, link, or at least one '
+                        'field to update.'
+                    )
+                }
             )
 
         if files:
@@ -579,17 +600,58 @@ class BusinessBanner(generics.ListCreateAPIView):
             )
         if url not in (None, ''):
             instance.url = url
+        if business_name not in (None, ''):
+            instance.business_name = str(business_name).strip()
+        if business_email not in (None, ''):
+            instance.business_email = str(business_email).strip()
+        if business_category not in (None, ''):
+            canonical_category = resolve_category(business_category)
+            instance.business_category = (
+                canonical_category
+                if canonical_category is not None
+                else str(business_category).strip()
+            )
+        if business_subcategory not in (None, ''):
+            canonical_sub = resolve_subcategory(
+                instance.business_category, business_subcategory
+            )
+            instance.business_subcategory = (
+                canonical_sub
+                if canonical_sub is not None
+                else str(business_subcategory).strip()
+            )
 
         instance.updated_at = timezone.now()
         instance.save()
 
-        # Keep the linked Business profile banner in sync with the banners tab.
-        if instance.user_id and instance.business_banner:
+        # Keep the linked Business profile in sync with the banners tab.
+        if instance.user_id:
             business = Business.objects.filter(user_id=instance.user_id).first()
             if business is not None:
-                business.business_banner = list(instance.business_banner)
+                if instance.business_banner:
+                    business.business_banner = list(instance.business_banner)
+                if business_name not in (None, ''):
+                    business.business_name = instance.business_name
+                if business_email not in (None, ''):
+                    business.business_email = instance.business_email
+                if business_category not in (None, ''):
+                    business.business_category = instance.business_category
+                if business_subcategory not in (None, ''):
+                    business.business_subcategory = instance.business_subcategory
                 business.updated_at = timezone.now()
                 business.save()
+
+            # Keep every active banner for this business on the same name / email.
+            sibling_updates = {}
+            if business_name not in (None, ''):
+                sibling_updates['business_name'] = instance.business_name
+            if business_email not in (None, ''):
+                sibling_updates['business_email'] = instance.business_email
+            if sibling_updates:
+                sibling_updates['updated_at'] = timezone.now()
+                AdminBusinessBanner.objects.filter(
+                    user_id=instance.user_id, is_active=True
+                ).update(**sibling_updates)
 
         return response(
             status=status.HTTP_200_OK,

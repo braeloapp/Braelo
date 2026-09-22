@@ -430,7 +430,16 @@ class BannerSearilizer(SQL_serializer.Serializer):
             instance.user_id,
             image_type='business_banner',
         )
-        allowed_update_attrs = frozenset({'business_banner', 'url'})
+        allowed_update_attrs = frozenset(
+            {
+                'business_banner',
+                'url',
+                'business_name',
+                'business_email',
+                'business_category',
+                'business_subcategory',
+            }
+        )
         if url_update is not None:
             validated_data['url'] = url_update
 
@@ -440,7 +449,12 @@ class BannerSearilizer(SQL_serializer.Serializer):
             if current_value != value:
                 if attr not in allowed_update_attrs:
                     raise ValidationError(
-                        {'error': 'Only allowed to update business banner or link'}
+                        {
+                            'error': (
+                                'Only allowed to update banner image, link, '
+                                'name, email, category, or subcategory'
+                            )
+                        }
                     )
                 setattr(instance, attr, value)
 
