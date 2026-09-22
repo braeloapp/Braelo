@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 from helpers import response
 from helpers import CATEGORIES
 from helpers.normalize import resolve_subcategory, is_all_token
+from helpers.optional_jwt import OptionalJWTAuthentication
 from listings.models import (
     VehicleListing,
     RealEstateListing,
@@ -66,6 +67,8 @@ class QueryFilter(generics.ListAPIView):
     '''
 
     model_class = None
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get_queryset(self):
         if self.model_class is None:

@@ -21,6 +21,7 @@ from users.permissions import DenyAdminPathUnlessStaff, is_admin_path, is_staff_
 from helpers import ListSync
 from helpers.model_map import MODEL_MAP
 from helpers.normalize import resolve_category
+from helpers.optional_jwt import OptionalJWTAuthentication
 from listings.api.paginate_listing import Pagination
 from listings.geo import request_geo_filter
 from listings.visibility import exclude_blocked_owners
@@ -167,9 +168,12 @@ class UserListing(generics.CreateAPIView):
 class LookupListing(generics.CreateAPIView):
     '''
     look up user listing based on id.
+    Public read: guests can open listing detail without a token.
+    Authenticated business click analytics still tracked when logged in.
     '''
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     @handle_exceptions
     def get(self, request, **kwargs):
@@ -180,6 +184,7 @@ class LookupListing(generics.CreateAPIView):
         '''
         try:
             user = request.user
+            authenticated = bool(getattr(user, 'is_authenticated', False))
             category = request.GET.get('category')
             listing_id = request.GET.get('listing_id')
             if not category or not listing_id:
@@ -201,7 +206,7 @@ class LookupListing(generics.CreateAPIView):
             model = MODEL_MAP[category]
 
             listing = model.objects.get(id=listing_id)
-            if listing.from_business:
+            if listing.from_business and authenticated:
                 # Don't add clicks if users clicks his own listings
                 if listing.user_id != user.id:
                     with transaction.atomic():
@@ -244,6 +249,7 @@ class Recent(HydratedListsyncListMixin, generics.ListAPIView):
     pagination_class = Pagination
     serializer_class = ListsyncSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get_queryset(self):
         filters = {'is_active': True}
@@ -265,6 +271,7 @@ class Recommendations(HydratedListsyncListMixin, generics.ListAPIView):
     pagination_class = Pagination
     serializer_class = ListsyncSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get_queryset(self):
         user = self.request.user
