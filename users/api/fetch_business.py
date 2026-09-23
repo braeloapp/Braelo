@@ -207,7 +207,16 @@ class FetchSingleBusiness(generics.ListAPIView):
 
 class ExploreBusiness(generics.ListAPIView):
     '''
-    API view that retrieves businesses located within a 10km radius of the specified location.
+    Explore businesses for the map / explore feed.
+
+    Query params:
+    - ``category`` (required): taxonomy key or ``ALL``
+    - ``coordinates`` (required): JSON ``[longitude, latitude]`` (kept for
+      client contract / future distance sort; not used to hide businesses
+      unless ``radius`` is also sent)
+    - ``radius`` (optional, meters): when present, limit to businesses near
+      ``coordinates``; when omitted, return **all** matching active businesses
+      in the database (category filter still applies)
     '''
 
     permission_classes = [AllowAny]
@@ -267,21 +276,27 @@ class ExploreBusiness(generics.ListAPIView):
         search_business = {
             'is_active': True,
         }
-        search_business.update(
-            geo_near_filter(
-                lon,
-                lat,
-                parse_radius_meters(request.GET.get('radius')),
-                field='business_coordinates',
+        # Only apply geo when the client explicitly asks for a radius.
+        # Default explore (coordinates + category=ALL) returns every active
+        # business so newly added businesses are not hidden by the 10km filter.
+        raw_radius = request.GET.get('radius')
+        if raw_radius is not None and str(raw_radius).strip() != '':
+            search_business.update(
+                geo_near_filter(
+                    lon,
+                    lat,
+                    parse_radius_meters(raw_radius),
+                    field='business_coordinates',
+                )
             )
-        )
 
         if category != 'ALL' and category in CATEGORIES:
             search_business['business_category'] = category
 
         nearby_business = Business.objects.filter(**search_business)
         nearby_business_data = self.get_serializer(nearby_business, many=True)
-        businesses = {item['id']: item for item in nearby_business_data.data}
+        # Return a list — dict-by-id collapsed rows that shared a missing/duplicate id.
+        businesses = list(nearby_business_data.data)
 
         return response(
             status=status.HTTP_200_OK,
