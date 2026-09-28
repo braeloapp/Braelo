@@ -66,9 +66,14 @@ class ResendEmailVerification(generics.CreateAPIView):
                 message='Email is already verified.',
                 data={'is_email_verified': True},
             )
-        send_verification_email(user, request=request)
+        record = send_verification_email(user, request=request)
         return response(
             status=status.HTTP_200_OK,
             message='Verification code sent to your email.',
-            data={'email': user.email, 'is_email_verified': False},
+            data={
+                'email': user.email,
+                'is_email_verified': False,
+                # Returned for developer testing (same pattern as forgot-password).
+                'otp': record.otp,
+            },
         )

@@ -347,8 +347,27 @@ class EmailVerificationTests(TestCase):
         self.assertEqual(body.get("status"), 201)
         self.assertTrue(body["data"].get("email_verification_required"))
         self.assertIsNone(body["data"].get("token"))
+        self.assertEqual(len(body["data"].get("otp") or ""), 6)
         user = User.objects.get(email="new@example.com")
         self.assertFalse(user.is_email_verified)
+        mock_mail.assert_called_once()
+
+    @patch("users.services.email_verification.email_service.send")
+    def test_resend_verification_returns_otp(self, mock_mail):
+        user = User.objects.create(
+            username="resend@example.com",
+            email="resend@example.com",
+            name="Resend",
+            is_email_verified=False,
+        )
+        response = self.client.post(
+            "/auth/resend/verification",
+            data={"email": user.email},
+            content_type="application/json",
+        )
+        body = response.json()
+        self.assertEqual(body.get("status"), 200)
+        self.assertEqual(len(body["data"].get("otp") or ""), 6)
         mock_mail.assert_called_once()
 
     @patch("users.services.email_verification.email_service.send")

@@ -87,13 +87,15 @@ class SignUpWithEmail(generics.CreateAPIView):
                 data=admin_data,
             )
 
-        send_verification_email(user, request=request)
+        record = send_verification_email(user, request=request)
         data = {
             'email': user.email,
             'name': user.name,
             'user_status': user.is_business,
             'is_email_verified': False,
             'email_verification_required': True,
+            # Returned for developer testing (same pattern as forgot-password).
+            'otp': record.otp,
         }
         return response(
             status=status.HTTP_201_CREATED,
