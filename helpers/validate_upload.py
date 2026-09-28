@@ -99,6 +99,13 @@ ALLOWED_IMAGE_CONTENT_TYPES = {
     'image/jpg',
     'image/png',
 }
+# GetX MultipartFile sends this unless the client sets contentType.
+# A .jpg/.png filename is enough when the part MIME is generic.
+GENERIC_UPLOAD_CONTENT_TYPES = {
+    'application/octet-stream',
+    'binary/octet-stream',
+    'application/binary',
+}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
@@ -108,8 +115,12 @@ def validate_image(file, picture):
         name = (getattr(file, 'name', None) or '').lower()
         if not name.endswith(ALLOWED_IMAGE_EXTENSIONS):
             raise ValidationError({picture: f'Invalid {picture} format'})
-        content_type = (getattr(file, 'content_type', None) or '').lower()
-        if content_type and content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        content_type = (getattr(file, 'content_type', None) or '').split(';')[0].strip().lower()
+        if (
+            content_type
+            and content_type not in ALLOWED_IMAGE_CONTENT_TYPES
+            and content_type not in GENERIC_UPLOAD_CONTENT_TYPES
+        ):
             raise ValidationError({picture: f'Invalid {picture} type'})
         size = getattr(file, 'size', None)
         if size is not None and size > MAX_IMAGE_BYTES:

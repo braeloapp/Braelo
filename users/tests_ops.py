@@ -145,6 +145,14 @@ class ImageValidationTests(TestCase):
         with self.assertRaises(ValidationError):
             validate_image(upload, "picture")
 
+    def test_accepts_octet_stream_jpeg(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        upload = SimpleUploadedFile(
+            "scaled_19.jpg", b"jpeg-bytes", content_type="application/octet-stream"
+        )
+        validate_image(upload, "profile_picture")
+
     def test_rejects_oversized_image(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 

@@ -53,15 +53,18 @@ class InterestListCreateView(generics.ListCreateAPIView):
                 data['tags'] = tags_list
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        resp = serializer.save()
-        if not resp:
-            # todo: needs better logic
-            raise Exception('Cannot Add interests to Database')
 
         profile_url = None
         picture = request.FILES.get('profile_picture')
         if picture is not None:
             validate_image(picture, 'profile_picture')
+
+        resp = serializer.save()
+        if not resp:
+            # todo: needs better logic
+            raise Exception('Cannot Add interests to Database')
+
+        if picture is not None:
             urls = upload_pictures(
                 [picture],
                 'user',
