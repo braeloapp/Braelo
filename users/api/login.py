@@ -20,6 +20,7 @@ from users.permissions import is_admin_path
 from users.serializers import EmailLogin, TokenBlacklistSerializer
 from users.services.rate_limit import enforce_rate_limit
 from users.services.business_lookup import find_user_business
+from users.services.user_payload import public_profile_picture
 
 # login part
 
@@ -57,6 +58,7 @@ class LoginWithEmail(generics.CreateAPIView):
             'is_email_verified': user.is_email_verified,
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
+            'profile_picture': public_profile_picture(user),
         }
         return response(
             status=status.HTTP_200_OK,

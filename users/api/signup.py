@@ -34,6 +34,7 @@ from users.services.firebase_identity import (
 )
 from users.services.email_verification import send_verification_email
 from users.services.rate_limit import enforce_rate_limit
+from users.services.user_payload import public_profile_picture
 from helpers import (
     handle_exceptions,
     get_token,
@@ -219,6 +220,7 @@ class LoginAuth(generics.CreateAPIView):
                 'user_status': user.is_business,
                 'is_warned': user.is_warned,
                 'is_banned': user.is_banned,
+                'profile_picture': public_profile_picture(user),
             }
 
         provider_id_check = User.objects.filter(
@@ -236,6 +238,7 @@ class LoginAuth(generics.CreateAPIView):
             'name': new_user.name,
             'token': new_token,
             'user_status': new_user.is_business,
+            'profile_picture': public_profile_picture(new_user),
         }
 
     @handle_exceptions
@@ -292,6 +295,7 @@ class LoginAuth(generics.CreateAPIView):
                     'user_status': user.is_business,
                     'is_warned': user.is_warned,
                     'is_banned': user.is_banned,
+                    'profile_picture': public_profile_picture(user),
                 }
                 return response(
                     status=status.HTTP_200_OK,
@@ -313,6 +317,7 @@ class LoginAuth(generics.CreateAPIView):
                 'name': new_user.name,
                 'token': token,
                 'user_status': new_user.is_business,
+                'profile_picture': public_profile_picture(new_user),
             }
             return response(
                 status=status.HTTP_200_OK,

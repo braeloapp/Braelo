@@ -17,6 +17,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from users.models import Interest
 from users.serializers import InterestSerializer
 from helpers import handle_exceptions, response, upload_pictures, validate_image
+from users.services.user_payload import public_profile_picture
 
 
 class InterestListCreateView(generics.ListCreateAPIView):
@@ -80,8 +81,10 @@ class InterestListCreateView(generics.ListCreateAPIView):
         }
         if profile_url:
             out['profile_picture'] = profile_url
-        elif getattr(request.user, 'profile_picture', None):
-            out['profile_picture'] = request.user.profile_picture
+        else:
+            pic = public_profile_picture(request.user)
+            if pic:
+                out['profile_picture'] = pic
 
         return response(
             status=status.HTTP_201_CREATED,

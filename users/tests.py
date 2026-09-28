@@ -437,6 +437,44 @@ class EmailVerificationTests(TestCase):
         self.assertFalse(user.is_email_verified)
 
 
+class InterestTagsSerializerTests(TestCase):
+    def test_comma_separated_multipart_tags_resolve(self):
+        user = User.objects.create(
+            username="tags@example.com",
+            email="tags@example.com",
+            name="Tags",
+            is_email_verified=True,
+        )
+        from users.serializers.profile import InterestSerializer
+
+        serializer = InterestSerializer(
+            data={"user_id": user.id, "tags": "Real estate,Events,Fashion"},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(
+            serializer.validated_data["tags"],
+            ["realestate", "events", "fashion"],
+        )
+
+    def test_json_array_string_tags_resolve(self):
+        user = User.objects.create(
+            username="tags2@example.com",
+            email="tags2@example.com",
+            name="Tags",
+            is_email_verified=True,
+        )
+        from users.serializers.profile import InterestSerializer
+
+        serializer = InterestSerializer(
+            data={
+                "user_id": user.id,
+                "tags": '["Vehicles","Jobs"]',
+            },
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["tags"], ["Vehicles", "jobs"])
+
+
 class AdminAuthorizationTests(TestCase):
     def setUp(self):
         self.regular = User.objects.create_user(

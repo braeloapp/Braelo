@@ -39,6 +39,16 @@ for _canon in INTERESTS:
 _INTERESTS_EXACT = frozenset(INTERESTS)
 
 
+class FlexibleTagsField(serializers.Field):
+    """List or multipart string (JSON array or comma-separated)."""
+
+    def to_internal_value(self, data):
+        return data
+
+    def to_representation(self, value):
+        return value if value is not None else []
+
+
 def _resolve_interest_tag(tag):
     if tag in _INTERESTS_EXACT:
         return tag
@@ -50,7 +60,7 @@ def _resolve_interest_tag(tag):
 
 class InterestSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=True)
-    tags = serializers.JSONField(required=False, default=list)
+    tags = FlexibleTagsField(required=False, default=list)
 
     def validate_tags(self, tags):
         '''
@@ -318,4 +328,5 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'state',
             'city',
             'zip_code',
+            'profile_picture',
         ]

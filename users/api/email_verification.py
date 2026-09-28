@@ -13,6 +13,7 @@ from users.services.email_verification import (
     send_verification_email,
     verify_email_otp,
 )
+from users.services.user_payload import public_profile_picture
 
 
 class VerifyEmail(generics.CreateAPIView):
@@ -41,6 +42,7 @@ class VerifyEmail(generics.CreateAPIView):
                 'token': token,
                 'user_status': user.is_business,
                 'is_email_verified': True,
+                'profile_picture': public_profile_picture(user),
             },
         )
 
