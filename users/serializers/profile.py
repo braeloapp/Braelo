@@ -56,11 +56,21 @@ class InterestSerializer(serializers.Serializer):
         '''
         Check if the provided tags are correct.
         Resolves display labels (e.g. "Real estate") to INTERESTS canonical values (e.g. "realestate").
+        Accepts list, comma-separated string, or JSON array string (multipart).
         '''
         if tags is None:
             return []
         if isinstance(tags, str):
-            tags = [p for p in tags.split(',') if p and str(p).strip()]
+            raw = tags.strip()
+            if raw.startswith('['):
+                import json
+
+                try:
+                    tags = json.loads(raw)
+                except (TypeError, ValueError):
+                    raise ValidationError('Incorrect tag.')
+            else:
+                tags = [p for p in raw.split(',') if p and str(p).strip()]
         if isinstance(tags, dict):
             raise ValidationError('Incorrect tag.')
         if not isinstance(tags, (list, tuple)):
