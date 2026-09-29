@@ -114,7 +114,7 @@ class ChatroomPagination(PageNumberPagination):
             record['last_message'] = (
                 message_preview(last_message) if last_message else ''
             )
-            attach_listing_payload(record)
+            attach_listing_payload(record, peer_user_id=second_user_id)
 
         paginated_data['results'] = paginate_results
 

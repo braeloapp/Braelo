@@ -299,7 +299,7 @@ def enrich_chat_for_viewer(record: dict, viewer_id) -> dict:
         )
 
     if not peer:
-        return record
+        return attach_listing_payload(record)
 
     from users.models import Business
 
@@ -327,7 +327,7 @@ def enrich_chat_for_viewer(record: dict, viewer_id) -> dict:
             else None
         )
         record['user_name'] = user_display_name(peer_user) or 'User'
-    return attach_listing_payload(record)
+    return attach_listing_payload(record, peer_user_id=peer)
 
 
 def serialize_listing_for_chat(listing) -> dict:
@@ -385,32 +385,90 @@ def resolve_listsync(listing_id):
         return None
 
 
-def attach_listing_payload(record: dict) -> dict:
-    '''Attach nested ``listing`` object when chat has listing_id.'''
+def _listsync_for_user(user_id):
+    '''Most recent active listing for a user, else any listing.'''
+    text = normalize_user_id(user_id)
+    if not text:
+        return None
+    try:
+        from helpers.models import ListSync
+
+        uid = int(text)
+    except (ImportError, TypeError, ValueError):
+        return None
+    try:
+        doc = (
+            ListSync.objects.filter(user_id=uid, is_active=True)
+            .order_by('-created_at')
+            .first()
+        )
+        if doc is not None:
+            return doc
+        return ListSync.objects.filter(user_id=uid).order_by('-created_at').first()
+    except Exception:
+        logger.exception('_listsync_for_user failed for %s', text)
+        return None
+
+
+def resolve_fallback_listing(record: dict, peer_user_id=None):
+    '''
+    When chat has no listing_id, pick a listing owned by the business-side
+    participant (or peer / either participant) so inbox/header can show it.
+    '''
+    if not isinstance(record, dict):
+        return None
+    ordered_ids = []
+
+    def _push(uid):
+        text = normalize_user_id(uid)
+        if text and text not in ordered_ids:
+            ordered_ids.append(text)
+
+    for role_key in ('receiver', 'sender'):
+        role = record.get(role_key) or {}
+        if str(role.get('user_type') or '').lower() == 'business':
+            _push(role.get('user_id'))
+    _push(peer_user_id)
+    for participant in record.get('participants') or []:
+        _push(participant)
+
+    for uid in ordered_ids:
+        doc = _listsync_for_user(uid)
+        if doc is not None:
+            return doc
+    return None
+
+
+def attach_listing_payload(record: dict, peer_user_id=None) -> dict:
+    '''Attach nested ``listing`` for chat list / create / detail responses.'''
     if not isinstance(record, dict):
         return record
-    listing_id = record.get('listing_id') or ''
-    if not listing_id:
+    listing_id = str(record.get('listing_id') or '').strip()
+    listing_doc = resolve_listsync(listing_id) if listing_id else None
+    if listing_doc is None:
+        listing_doc = resolve_fallback_listing(record, peer_user_id)
+        if listing_doc is not None:
+            resolved_id = str(getattr(listing_doc, 'listing_id', '') or '')
+            if resolved_id:
+                record['listing_id'] = resolved_id
+                # Persist so later list/detail calls stay stable.
+                chat_id = str(record.get('chat_id') or '').strip()
+                if chat_id:
+                    try:
+                        Chat.objects.filter(chat_id=chat_id).update(
+                            set__listing_id=resolved_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            'Failed to persist listing_id on chat %s', chat_id
+                        )
+    if listing_doc is None:
         record.pop('listing', None)
         return record
-    listing = resolve_listsync(listing_id)
-    if listing is None:
-        record['listing'] = {
-            'id': str(listing_id),
-            'title': '',
-            'location': '',
-            'price': None,
-            'price_label': None,
-            'is_active': True,
-            'status': 'Active',
-            'picture': None,
-            'category': '',
-            'subcategory': '',
-        }
-        return record
-    record['listing'] = serialize_listing_for_chat(listing)
-    # Keep listing_id normalized to ListSync ObjectId string.
-    record['listing_id'] = record['listing'].get('id') or str(listing_id)
+    record['listing'] = serialize_listing_for_chat(listing_doc)
+    record['listing_id'] = record['listing'].get('id') or str(
+        record.get('listing_id') or ''
+    )
     return record
 
 
