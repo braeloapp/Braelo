@@ -29,6 +29,7 @@ from users.models.business import Business
 
 
 from users.services.business_lookup import find_user_business
+from users.services.customer_profile import build_customer_profile
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,23 @@ class UserProfile(generics.CreateAPIView):
             status=status.HTTP_200_OK,
             message='Profile retrieved successfully',
             data=serializer.data,  # Send serialized user data
+        )
+
+
+class CustomerProfile(generics.GenericAPIView):
+    '''
+    Account tab summary: listing counts, saved counts, and views.
+    GET /auth/customer_profile
+    '''
+
+    permission_classes = [IsAuthenticated, DenyAdminPathUnlessStaff]
+
+    @handle_exceptions
+    def get(self, request, *args, **kwargs):
+        return response(
+            status=status.HTTP_200_OK,
+            message='Customer profile fetched successfully',
+            data=build_customer_profile(request.user),
         )
 
 

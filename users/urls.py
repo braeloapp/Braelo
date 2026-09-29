@@ -29,6 +29,7 @@ from .api import (
     CreatePassword,
     UpdateProfile,
     UserProfile,
+    CustomerProfile,
     AboutUser,
     DeactivateUser,
     PublicProfile,
@@ -78,6 +79,7 @@ urlpatterns = [
     # Update Profile
     path('update/profile', UpdateProfile.as_view()),
     path('user/profile', UserProfile.as_view()),
+    path('customer_profile', CustomerProfile.as_view()),
     # about user
     path('user/about', AboutUser.as_view()),
     # Delete

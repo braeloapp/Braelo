@@ -16,6 +16,7 @@ from users.api.email_verification import VerifyEmail, ResendEmailVerification
 from users.api.profile import (
     UpdateProfile,
     UserProfile,
+    CustomerProfile,
     AboutUser,
     PublicProfile,
     DeactivateUser,
