@@ -26,6 +26,7 @@ from chats.serializers.chat import ChatSerializer
 from chats.services import (
     assert_not_blocked,
     assert_user_can_chat,
+    attach_listing_payload,
     block_user,
     enrich_chat_for_viewer,
     first_media_url,
@@ -113,6 +114,7 @@ class ChatroomPagination(PageNumberPagination):
             record['last_message'] = (
                 message_preview(last_message) if last_message else ''
             )
+            attach_listing_payload(record)
 
         paginated_data['results'] = paginate_results
 
@@ -226,6 +228,7 @@ class CreateChatroomApi(generics.CreateAPIView):
         second_user_id = request.data.get('user_id')
         receiver_type = request.data.get('receiver')
         sender_type = request.data.get('sender')
+        listing_id = str(request.data.get('listing_id') or '').strip() or None
 
         if not second_user_id:
             raise ValidationError(
@@ -257,6 +260,10 @@ class CreateChatroomApi(generics.CreateAPIView):
         )
 
         if chatroom:
+            if listing_id and chatroom.listing_id != listing_id:
+                chatroom.listing_id = listing_id
+                chatroom.updated_at = timezone.now()
+                chatroom.save()
             data = enrich_chat_for_viewer(
                 ChatSerializer(chatroom).data, user_id
             )
@@ -271,6 +278,7 @@ class CreateChatroomApi(generics.CreateAPIView):
             receiver=receiver,
             sender=sender,
             participants=[user_id, second_user_id],
+            listing_id=listing_id,
             is_active=True,
             created_at=timezone.now(),
             updated_at=timezone.now(),
@@ -385,11 +393,12 @@ class ChatroomDetailApi(generics.ListAPIView):
                 data={},
             )
         chat_data = self.get_serializer(chat)
+        data = enrich_chat_for_viewer(chat_data.data, user_id)
 
         return response(
             status=status.HTTP_200_OK,
             message='Chatroom Fetched Successfully',
-            data=chat_data.data,
+            data=data,
         )
 
 

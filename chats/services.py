@@ -327,6 +327,90 @@ def enrich_chat_for_viewer(record: dict, viewer_id) -> dict:
             else None
         )
         record['user_name'] = user_display_name(peer_user) or 'User'
+    return attach_listing_payload(record)
+
+
+def serialize_listing_for_chat(listing) -> dict:
+    '''Slim listing DTO for chat header cards (title · location, price · status).'''
+    price = getattr(listing, 'price', None)
+    price_label = None
+    if price is not None and str(price).strip() != '':
+        try:
+            numeric = float(price)
+            if numeric == int(numeric):
+                price_label = f'${int(numeric)}'
+            else:
+                price_label = f'${numeric:.2f}'
+        except (TypeError, ValueError):
+            price_label = f'${price}'
+        category = (getattr(listing, 'category', None) or '').strip().lower()
+        if category in {'services', 'service'}:
+            price_label = f'{price_label} per visit'
+
+    pictures = getattr(listing, 'pictures', None) or []
+    is_active = bool(getattr(listing, 'is_active', True))
+    return {
+        'id': str(getattr(listing, 'listing_id', '') or ''),
+        'title': getattr(listing, 'title', None) or '',
+        'location': getattr(listing, 'location', None) or '',
+        'price': str(price) if price is not None else None,
+        'price_label': price_label,
+        'is_active': is_active,
+        'status': 'Active' if is_active else 'Inactive',
+        'picture': first_media_url(pictures),
+        'category': getattr(listing, 'category', None) or '',
+        'subcategory': getattr(listing, 'subcategory', None) or '',
+    }
+
+
+def resolve_listsync(listing_id):
+    '''Fetch ListSync by listing ObjectId string.'''
+    text = str(listing_id or '').strip()
+    if not text:
+        return None
+    try:
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        from helpers.models import ListSync
+    except ImportError:
+        return None
+    try:
+        oid = ObjectId(text)
+    except (InvalidId, TypeError, ValueError):
+        return None
+    try:
+        return ListSync.objects.filter(listing_id=oid).first()
+    except Exception:
+        logger.exception('resolve_listsync failed for %s', text)
+        return None
+
+
+def attach_listing_payload(record: dict) -> dict:
+    '''Attach nested ``listing`` object when chat has listing_id.'''
+    if not isinstance(record, dict):
+        return record
+    listing_id = record.get('listing_id') or ''
+    if not listing_id:
+        record.pop('listing', None)
+        return record
+    listing = resolve_listsync(listing_id)
+    if listing is None:
+        record['listing'] = {
+            'id': str(listing_id),
+            'title': '',
+            'location': '',
+            'price': None,
+            'price_label': None,
+            'is_active': True,
+            'status': 'Active',
+            'picture': None,
+            'category': '',
+            'subcategory': '',
+        }
+        return record
+    record['listing'] = serialize_listing_for_chat(listing)
+    # Keep listing_id normalized to ListSync ObjectId string.
+    record['listing_id'] = record['listing'].get('id') or str(listing_id)
     return record
 
 

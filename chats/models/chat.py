@@ -34,6 +34,8 @@ class Chat(Document):
     receiver = DictField(required=True)
     sender = DictField(required=True)
     pair_key = StringField(required=True)
+    # Optional listing that started / contextualizes this chat (ListSync.listing_id).
+    listing_id = StringField(required=False)
     is_active = BooleanField(default=True)
     is_blocked = BooleanField(default=False)
     created_at = DateTimeField()
