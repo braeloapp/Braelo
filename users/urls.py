@@ -41,6 +41,7 @@ from .api import (
     BussinessListing,
     FetchBusinesses,
     ScanBusinessQR,
+    PublicBusinessProfile,
     DeactivateBusiness,
     FetchListings,
     UpdateBusiness,
@@ -117,6 +118,8 @@ urlpatterns = [
     path('business/explore', ExploreBusiness.as_view()),
     # Business Banners
     path('business/banner', BusinessBanner.as_view()),
-    # Fetch Business
+    # Public profile by owner user_id (must be before business/<pk>)
+    path('business/public', PublicBusinessProfile.as_view()),
+    # Fetch Business by Mongo id (QR)
     path('business/<str:pk>', ScanBusinessQR.as_view()),
 ]
