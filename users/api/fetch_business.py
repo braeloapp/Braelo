@@ -113,42 +113,6 @@ class ScanBusinessQR(generics.ListAPIView):
         )
 
 
-class PublicBusinessProfile(generics.ListAPIView):
-    '''
-    Public business profile by owner user_id (banner / map CTA).
-
-    Query: ``user_id`` (required) — SQL user id of the business owner.
-    '''
-
-    permission_classes = [AllowAny]
-
-    @handle_exceptions
-    def get(self, request, **kwargs):
-        raw = (request.query_params.get('user_id') or '').strip()
-        try:
-            user_id = int(raw)
-        except (TypeError, ValueError):
-            raise ValidationError({'error': 'user_id is required'})
-
-        business = find_user_business(user_id)
-        if business is None or not getattr(business, 'is_active', False):
-            raise ValidationError({'error': 'No Business Found'})
-
-        from users.services.explore_map import serialize_business_for_map
-
-        data = serialize_business_for_map(business)
-        data['email'] = business.business_email or ''
-        data['banner'] = list(business.business_banner or [])
-        data['images'] = list(business.business_images or [])
-        data['goals'] = business.business_goals or ''
-
-        return response(
-            status=status.HTTP_200_OK,
-            message='Business Found',
-            data=data,
-        )
-
-
 class FetchListings(HydratedListsyncListMixin, generics.ListAPIView):
     '''
     Fetch user listings created from his business account.

@@ -50,27 +50,15 @@ class BusinessPagination(PageNumberPagination):
     max_page_size = 50
 
     def get_paginated_response(self, data):
-        # Prefer serializer `business_id` (maps user_id); fall back to raw user_id
-        # so View business / Message CTAs never get a null owner id.
-        filtered_data = []
-        for obj in data:
-            owner_id = obj.get('business_id')
-            if owner_id is None:
-                owner_id = obj.get('user_id')
-            link = obj.get('business_link')
-            if link in (None, ''):
-                link = obj.get('url') or 'business_details'
-            filtered_data.append(
-                {
-                    'id': obj.get('id'),
-                    'business_banner': obj.get('business_banner', []),
-                    'business_id': owner_id,
-                    'business_link': link,
-                    'business_name': obj.get('business_name'),
-                    'business_category': obj.get('business_category'),
-                    'business_subcategory': obj.get('business_subcategory'),
-                }
-            )
+        filtered_data = [
+            {
+                'id': obj.get('id'),
+                'business_banner': obj.get('business_banner', []),
+                'business_id': obj.get('business_id'),
+                'business_link': obj.get('business_link'),
+            }
+            for obj in data
+        ]
         paginated_data = super().get_paginated_response(filtered_data).data
         return response(
             status=status.HTTP_200_OK,
